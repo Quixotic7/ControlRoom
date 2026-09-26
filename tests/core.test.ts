@@ -506,6 +506,46 @@ test("two actual Git worktrees resolve to one canonical board; branch changes pa
   await s.reconcile("another-branch");
   assert.equal((await ticket(linked)).meta.title, "Task");
 });
+test("a submodule shares its superproject's board only when one exists", async (t) => {
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "workboard-test-")),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        ...args,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+  const host = path.join(root, "host"),
+    tool = path.join(host, "tool"),
+    nested = path.join(tool, "src");
+  fs.mkdirSync(nested, { recursive: true });
+  git(host, "init", "-b", "main");
+  git(tool, "init", "-b", "main");
+  git(tool, "commit", "--allow-empty", "-m", "tool");
+  git(host, "submodule", "add", "./tool", "tool");
+  // A library submodule in a project without a board keeps its own root.
+  assert.equal(canonicalProject(nested), tool);
+  const board = new Store(host).initialize();
+  assert.equal(canonicalProject(tool), host);
+  assert.equal(canonicalProject(nested), host);
+  const fromSubmodule = new Store(nested).initialize();
+  assert.equal(fromSubmodule.root, host);
+  assert.equal(fs.existsSync(path.join(tool, ".workboard")), false);
+  const r = await ticket(board);
+  assert.equal(fromSubmodule.get(r.meta.id).meta.title, "Task");
+  // Explicit destinations (install/upgrade) are never redirected.
+  assert.equal(canonicalProject(tool, false), tool);
+});
 test("API requires local authentication and rejects cross-origin writes", async (t) => {
   const s = fixture(t),
     app = await buildServer(s);

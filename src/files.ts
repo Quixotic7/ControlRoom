@@ -101,8 +101,7 @@ export function git(cwd: string, args: string[]) {
     return "";
   }
 }
-export function canonicalProject(cwd: string, discoverParents = true) {
-  const resolved = fs.realpathSync(cwd);
+function gitProject(resolved: string) {
   const list = git(resolved, ["worktree", "list", "--porcelain"]);
   if (list) {
     const main = list
@@ -112,7 +111,27 @@ export function canonicalProject(cwd: string, discoverParents = true) {
     if (main) return fs.realpathSync(main);
   }
   const top = git(resolved, ["rev-parse", "--show-toplevel"]);
-  if (top) return fs.realpathSync(top);
+  return top ? fs.realpathSync(top) : "";
+}
+export function canonicalProject(cwd: string, discoverParents = true): string {
+  const resolved = fs.realpathSync(cwd);
+  const repo = gitProject(resolved);
+  if (repo) {
+    // A submodule shares its superproject's board, but only when that project
+    // already has one: a library submodule must not create a board in its host.
+    if (discoverParents) {
+      const parent = git(repo, [
+        "rev-parse",
+        "--show-superproject-working-tree",
+      ]);
+      if (parent) {
+        const shared = canonicalProject(parent);
+        if (fs.existsSync(path.join(shared, ".workboard", "config.yml")))
+          return shared;
+      }
+    }
+    return repo;
+  }
   if (!discoverParents) return resolved;
   let dir = resolved;
   while (true) {
