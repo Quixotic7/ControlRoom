@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { spawn } from "node:child_process";
 import { ZodError } from "zod";
 import { Store } from "./store.js";
 import { atomic, Problem, read } from "./files.js";
@@ -291,6 +292,23 @@ export async function buildServer(
     return { ok: true };
   });
   app.get("/api/capture/status", async () => captureStatus());
+  // Opens the macOS privacy pane the capture companion needs.
+  app.post("/api/capture/settings", async (req: any) => {
+    const panes: Record<string, string> = {
+      "input-monitoring": "Privacy_ListenEvent",
+      "screen-recording": "Privacy_ScreenCapture",
+    };
+    const pane = panes[req.body?.pane];
+    if (!pane) throw new Problem(400, "Unknown settings pane");
+    if (process.platform !== "darwin")
+      throw new Problem(400, "System permissions are only needed on macOS");
+    spawn(
+      "open",
+      [`x-apple.systempreferences:com.apple.preference.security?${pane}`],
+      { stdio: "ignore" },
+    ).unref();
+    return { ok: true };
+  });
   app.get("/api/capture/drafts", async () => {
     const p = store.file(".local/capture-drafts");
     return fs.existsSync(p)

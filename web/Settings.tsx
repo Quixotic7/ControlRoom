@@ -191,6 +191,26 @@ export function Settings({
         <div className="capture-status">
           <span className="tag">{capture?.state ?? "Checking…"}</span>
           <p>{capture?.message}</p>
+          <div className="inline-actions" style={{ marginTop: 10 }}>
+            {(
+              [
+                ["input-monitoring", "Input Monitoring"],
+                ["screen-recording", "Screen Recording"],
+              ] as const
+            ).map(([pane, label]) => (
+              <button
+                key={pane}
+                className={`button small${String(capture?.state ?? "").includes(pane) ? " primary" : ""}`}
+                onClick={() =>
+                  api("/capture/settings", "POST", { pane }).catch((e) =>
+                    onError(String(e)),
+                  )
+                }
+              >
+                Open {label} settings
+              </button>
+            ))}
+          </div>
         </div>
         <label className="field">
           Global shortcut

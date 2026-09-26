@@ -16,7 +16,7 @@ import { RecordDetail } from "./RecordDetail";
 import { Screenshots } from "./Screenshots";
 import { Settings } from "./Settings";
 import { Shortcuts } from "./Shortcuts";
-import { Logo, PlusIcon } from "./Icons";
+import { ImageIcon, Logo, PlusIcon } from "./Icons";
 import { pages, themes, TopNav, type Page, type Theme } from "./TopNav";
 import { useProjectState } from "./useProjectState";
 
@@ -317,6 +317,18 @@ export function App() {
               title="Screenshots"
               description="Capture, annotate, and keep visual notes, with or without a ticket."
             >
+              <button
+                className="button"
+                title="Select a region or window with the macOS companion"
+                onClick={() =>
+                  api("/capture/request", "POST", {}).catch((e) =>
+                    setError(String(e)),
+                  )
+                }
+              >
+                <ImageIcon />
+                Capture a region or window
+              </button>
               <label className="button primary file-button">
                 <PlusIcon />
                 Add screenshot
