@@ -30,6 +30,7 @@ import type {
   ProjectState,
   RecordFile,
   Comment,
+  Verification,
 } from "./types.js";
 
 const actorSchema = z.object({
@@ -37,6 +38,14 @@ const actorSchema = z.object({
   kind: z.enum(["human", "agent"]),
 });
 const strings = z.array(z.string().max(1000));
+const viewSchema = z.object({
+  id: z.string().regex(/^[a-z0-9_-]+$/),
+  name: z.string().trim().min(1).max(60),
+  layout: z.enum(["board", "table"]),
+  filter: z.string().max(500),
+  groupBy: z.enum(["none", "parent", "status", "priority", "owner", "label"]),
+  sort: z.enum(["manual", "priority", "number", "updated", "title"]),
+});
 const configSchema = z
   .object({
     schema: z.literal(1),
@@ -52,6 +61,7 @@ const configSchema = z
       )
       .min(5)
       .max(20),
+    views: z.array(viewSchema).min(1).max(30).optional(),
     shortcut: z.object({
       mode: z.enum(["double-alt", "hotkey"]).optional(),
       key: z.number().int().min(0).max(127),
@@ -92,6 +102,18 @@ const metaSchema = z
     supersedes: z.string().optional(),
     references: strings.optional(),
     worktree: z.string().optional(),
+    branch: z.string().max(300).optional(),
+    pr: z.string().max(500).optional(),
+    commits: strings.optional(),
+    verification: z
+      .object({
+        command: z.string().max(2000),
+        exitCode: z.number().int(),
+        output: z.string().max(20000),
+        at: z.string(),
+        cwd: z.string().optional(),
+      })
+      .optional(),
     reviewedRules: z.record(z.string(), z.string()).optional(),
     archived: z.boolean().optional(),
   })
@@ -108,6 +130,24 @@ export class Store {
   root: string;
   dir: string;
   private queue: Promise<unknown> = Promise.resolve();
+  // Parsed files keyed by path, validated against the file's stat on every
+  // read, so the disk stays authoritative while unchanged files cost nothing.
+  private cache = new Map<
+    string,
+    { key: string; value: RecordFile | Comment | Attachment }
+  >();
+  private cached<T extends RecordFile | Comment | Attachment>(
+    file: string,
+    parse: (text: string) => T,
+  ): T {
+    const st = fs.statSync(file);
+    const key = `${st.mtimeMs}:${st.size}:${st.ino}`;
+    const hit = this.cache.get(file);
+    if (hit && hit.key === key) return hit.value as T;
+    const value = parse(read(file));
+    this.cache.set(file, { key, value });
+    return value;
+  }
   constructor(project: string, exact = false) {
     this.root = canonicalProject(project, !exact);
     this.dir = path.join(this.root, ".workboard");
@@ -147,7 +187,7 @@ export class Store {
     if (!fs.existsSync(this.file("README.md")))
       atomic(
         this.file("README.md"),
-        "# Project records\n\nMarkdown and annotation JSON are authoritative. Images live in the ignored assets directory. Use Workboard export to back up both. All Git worktrees connect to this main checkout. Use the CLI for coordinated edits. Direct edits are detected but cannot participate in application locking.\n",
+        "# Project records\n\nMarkdown and annotation JSON are authoritative. Images live in the ignored assets directory. Use Control Room's export to back up both. All Git worktrees connect to this main checkout. Use the CLI for coordinated edits. Direct edits are detected but cannot participate in application locking.\n",
       );
     if (!fs.existsSync(this.file(".local/branch.json")))
       atomic(
@@ -209,14 +249,22 @@ export class Store {
     return run;
   }
   load(relative: string): RecordFile {
-    const text = read(this.file(relative));
-    const { meta, body } = parseMd(text);
-    const m = metaSchema.parse(meta) as Meta;
-    if (path.basename(relative, ".md") !== m.id)
-      throw new Problem(422, "Record ID must match its filename");
-    if (!relative.startsWith(`records/${folder[m.kind]}/`))
-      throw new Problem(422, "Record kind does not match its folder");
-    return { meta: m, body, revision: hash(text), path: relative };
+    return this.cached(this.file(relative), (text) => {
+      const { meta, body } = parseMd(text);
+      const m = metaSchema.parse(meta) as Meta;
+      if (path.basename(relative, ".md") !== m.id)
+        throw new Problem(422, "Record ID must match its filename");
+      if (!relative.startsWith(`records/${folder[m.kind]}/`))
+        throw new Problem(422, "Record kind does not match its folder");
+      return { meta: m, body, revision: hash(text), path: relative };
+    });
+  }
+  private loadComment(file: string): Comment {
+    return this.cached(file, (text) => {
+      const p = parseMd(text);
+      actorSchema.parse(p.meta.actor);
+      return { ...p.meta, body: p.body, revision: hash(text) } as Comment;
+    });
   }
   get(id: string): RecordFile {
     if (/^#?\d+$/.test(id)) {
@@ -250,12 +298,7 @@ export class Store {
   }
   comments(): Comment[] {
     return walk(this.file("records/comments"), ".md")
-      .map((f) => {
-        const text = read(f);
-        const p = parseMd(text);
-        actorSchema.parse(p.meta.actor);
-        return { ...p.meta, body: p.body, revision: hash(text) } as Comment;
-      })
+      .map((f) => this.loadComment(f))
       .sort((a, b) => a.at.localeCompare(b.at));
   }
   attachments(): Attachment[] {
@@ -264,11 +307,12 @@ export class Store {
     );
   }
   attachment(id: string): Attachment {
-    const text = read(this.file(`records/attachments/${id}.json`));
-    const a = JSON.parse(text);
+    const a = this.cached(
+      this.file(`records/attachments/${id}.json`),
+      (text) => ({ ...JSON.parse(text), revision: hash(text) }) as Attachment,
+    );
     return {
       ...a,
-      revision: hash(text),
       missing: !fs.existsSync(this.file(`assets/${id}/base.png`)),
     };
   }
@@ -290,14 +334,7 @@ export class Store {
     const comments: Comment[] = [];
     for (const f of walk(this.file("records/comments"), ".md")) {
       try {
-        const s = read(f);
-        const p = parseMd(s);
-        actorSchema.parse(p.meta.actor);
-        comments.push({
-          ...p.meta,
-          body: p.body,
-          revision: hash(s),
-        } as Comment);
+        comments.push(this.loadComment(f));
       } catch (e) {
         errors.push({ path: path.relative(this.dir, f), message: String(e) });
       }
@@ -321,7 +358,21 @@ export class Store {
       canonical: this.root,
       ...this.branchState(),
     };
-    return { ...state, revision: hash(JSON.stringify(state)) };
+    // Every part already carries a content hash, so the state revision is a
+    // hash of hashes rather than of the serialized state.
+    const revision = hash(
+      [
+        state.configRevision,
+        ...records.map((r) => r.path + r.revision),
+        ...comments.map((c) => c.id + c.revision),
+        ...attachments.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
+        JSON.stringify(state.claims),
+        JSON.stringify(errors),
+        state.branch,
+        state.acknowledgedBranch,
+      ].join("\n"),
+    );
+    return { ...state, revision };
   }
   private validate(meta: Meta, records = this.list()) {
     metaSchema.parse(meta);
@@ -403,6 +454,8 @@ export class Store {
         "Agent work requires an approved parent scope or an explicitly approved ticket",
       );
   }
+  // Appended to one JSON Lines file, so a busy board does not scatter
+  // thousands of event files through Git. Older per-event files still load.
   private history(
     id: string,
     actor: Actor,
@@ -410,14 +463,16 @@ export class Store {
     before: unknown,
     after: unknown,
   ) {
-    const event = uid("event");
-    atomic(
-      this.file(`records/history/${event}.md`),
-      markdown(
-        { id: event, record: id, actor, action, at: now() },
-        "```json\n" + JSON.stringify({ before, after }, null, 2) + "\n```\n",
-      ),
-    );
+    const line = JSON.stringify({
+      id: uid("event"),
+      record: id,
+      actor,
+      action,
+      at: now(),
+      before,
+      after,
+    });
+    fs.appendFileSync(this.file("records/history.jsonl"), line + "\n");
   }
   // Called only inside the service's serialized writer. The counter travels in backups and Git.
   reserveTicketNumber(): number {
@@ -642,6 +697,7 @@ export class Store {
           ticket,
           actor,
           worktree,
+          branch: fs.existsSync(worktree) ? branch(worktree) : undefined,
           reportedAt: now(),
           expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
         });
@@ -718,6 +774,12 @@ export class Store {
     evidence: string,
     exceptions: string,
     actor: Actor,
+    links: {
+      branch?: string;
+      pr?: string;
+      commits?: string[];
+      verification?: Verification;
+    } = {},
   ) {
     return this.write(() =>
       this.updateNow(
@@ -728,12 +790,165 @@ export class Store {
           handoff,
           evidence,
           exceptions,
+          ...Object.fromEntries(
+            Object.entries(links).filter(([, v]) => v !== undefined),
+          ),
           reviewedRules: this.context(id).ruleRevisions,
         },
         undefined,
         actor,
       ),
     );
+  }
+  // The ticket an agent should pick up next: unclaimed (or its own), not
+  // blocked, inside an approved scope, Selected before Backlog, then by
+  // priority and manual order.
+  next(actor: Actor): RecordFile | null {
+    const columns = this.config().columns;
+    const role = (r: RecordFile) =>
+      columns.find((c) => c.id === r.meta.status)?.role;
+    const claims = this.claims();
+    const stamp = now();
+    const candidates = this.list().filter((r) => {
+      if (r.meta.kind !== "ticket" || r.meta.archived || r.meta.blocked)
+        return false;
+      const stage = role(r);
+      if (stage !== "selected" && stage !== "backlog") return false;
+      if (!this.scope(r)) return false;
+      const claim = claims.find(
+        (c) => c.ticket === r.meta.id && c.expiresAt > stamp,
+      );
+      if (
+        claim &&
+        (claim.actor.name !== actor.name || claim.actor.kind !== actor.kind)
+      )
+        return false;
+      // A parent goal is a container: pick its open children, not the goal.
+      if (
+        this.list().some(
+          (c) => c.meta.parent === r.meta.id && role(c) !== "done",
+        )
+      )
+        return false;
+      return true;
+    });
+    candidates.sort(
+      (a, b) =>
+        (role(a) === "selected" ? 0 : 1) - (role(b) === "selected" ? 0 : 1) ||
+        (a.meta.priority ?? 2) - (b.meta.priority ?? 2) ||
+        (a.meta.order ?? 0) - (b.meta.order ?? 0),
+    );
+    return candidates[0] ?? null;
+  }
+  // A prompt-ready brief for an agent, with a rough token estimate. `brief`
+  // trims decision and rule bodies to their first paragraph.
+  contextMarkdown(id: string, brief = false) {
+    const c = this.context(id);
+    const t = c.ticket;
+    const column = c.workflow.find((w) => w.id === t.meta.status);
+    const number =
+      t.meta.number === undefined ? t.meta.id : `#${t.meta.number}`;
+    const priority = ["Urgent", "High", "Normal", "Low"][t.meta.priority ?? 2];
+    // Brief mode keeps the first real paragraph, skipping bare headings.
+    const trim = (body: string) =>
+      brief
+        ? (body
+            .trim()
+            .split(/\n\s*\n/)
+            .map((p) => p.trim())
+            .find((p) => p && !/^#{1,6}\s/.test(p)) ?? "")
+        : body.trim();
+    const ref = (r: RecordFile) =>
+      r.meta.number === undefined ? r.meta.id : `#${r.meta.number}`;
+    const lines: string[] = [
+      `# ${number} ${t.meta.title}`,
+      "",
+      `Status: ${column?.name ?? t.meta.status} · Priority: ${priority}` +
+        (t.meta.owner ? ` · Owner: ${t.meta.owner}` : "") +
+        (t.meta.labels?.length ? ` · Labels: ${t.meta.labels.join(", ")}` : ""),
+      `Record ID: ${t.meta.id} · Revision (use as --etag): ${t.revision}`,
+    ];
+    if (c.parent) lines.push(`Parent: ${ref(c.parent)} ${c.parent.meta.title}`);
+    lines.push(
+      c.approvedScope
+        ? `Approved scope: ${ref(c.approvedScope)} ${c.approvedScope.meta.title}`
+        : "Approved scope: none. Selecting or implementing this ticket needs a human to approve its scope first.",
+    );
+    if (t.meta.blocked) lines.push(`Blocked: ${t.meta.blocked}`);
+    if (t.meta.branch) lines.push(`Branch: ${t.meta.branch}`);
+    if (t.meta.pr) lines.push(`Pull request: ${t.meta.pr}`);
+    if (c.claim)
+      lines.push(
+        `Claim: ${c.claim.actor.name} in ${c.claim.worktree} until ${c.claim.expiresAt}`,
+      );
+    lines.push("", "## Brief", "", t.body.trim() || "(No description.)");
+    if (t.meta.handoff)
+      lines.push("", "## Current handoff", "", t.meta.handoff.trim());
+    if (t.meta.verification) {
+      const v = t.meta.verification;
+      lines.push(
+        "",
+        "## Last verification",
+        "",
+        `\`${v.command}\` exited ${v.exitCode} at ${v.at}`,
+      );
+    }
+    if (c.dependencies.length) {
+      lines.push("", "## Depends on", "");
+      for (const d of c.dependencies)
+        lines.push(
+          `- ${ref(d)} ${d.meta.title} (${
+            c.workflow.find((w) => w.id === d.meta.status)?.name ??
+            d.meta.status
+          })`,
+        );
+    }
+    if (c.decisions.length) {
+      lines.push("", "## Decisions that apply", "");
+      for (const d of c.decisions)
+        lines.push(`### ${d.meta.title}`, "", trim(d.body), "");
+    }
+    if (c.rules.length) {
+      lines.push("", "## Rules that apply", "");
+      for (const r of c.rules)
+        lines.push(
+          `### ${r.meta.title} (${r.meta.strength ?? "recommended"})`,
+          "",
+          trim(r.body),
+          "",
+        );
+      lines.push(`Rule matching is advisory: ${c.ruleMatching}`);
+    }
+    if (c.comments.length) {
+      const shown = brief ? c.comments.slice(-5) : c.comments;
+      lines.push("", `## Conversation (${c.comments.length})`, "");
+      for (const m of shown)
+        lines.push(
+          `- ${m.actor.name} (${m.kind}${m.resolved ? ", resolved" : ""}, ${m.at}): ${m.body.trim().replace(/\s+/g, " ")}`,
+        );
+    }
+    if (c.attachments.length) {
+      lines.push("", "## Screenshots", "");
+      for (const a of c.attachments) {
+        const notes = a.annotations.filter((n) => !n.resolved);
+        lines.push(
+          `- ${a.name} (${a.width}×${a.height}, ${notes.length} open notes)` +
+            (a.missing
+              ? " — image not present in this checkout"
+              : `: ${this.file(`assets/${a.id}/base.png`)}`),
+        );
+        for (const n of notes)
+          lines.push(`  - ${n.id}: ${n.text || "(no written instruction)"}`);
+      }
+    }
+    lines.push(
+      "",
+      "## Protocol",
+      "",
+      `Claim before working: \`workboard claim ${number}\`. Record discoveries with \`workboard comment ${number} --body ...\` and questions with \`workboard ask\`. Submit with \`workboard review ${number} --etag ${t.revision} --handoff ... --evidence ... --run "test command"\`. A human moves work to Done.`,
+    );
+    const markdown = lines.join("\n") + "\n";
+    return { markdown, tokens: Math.ceil(markdown.length / 4) };
   }
   updateConfig(revision: string, patch: Partial<Config>) {
     return this.write(() => {
@@ -759,6 +974,8 @@ export class Store {
       for (const col of c.columns)
         if (!/^[a-z0-9_-]+$/.test(col.id) || !col.name.trim())
           throw new Problem(422, "Invalid column");
+      if (c.views && new Set(c.views.map((v) => v.id)).size !== c.views.length)
+        throw new Problem(422, "View IDs must be unique");
       for (const r of this.list())
         if (
           r.meta.kind === "ticket" &&
@@ -792,11 +1009,27 @@ export class Store {
   }
   historyFor(id: string) {
     id = this.get(id).meta.id;
-    return walk(this.file("records/history"), ".md")
-      .map((f) => {
-        const s = parseMd(read(f));
-        return { ...s.meta, body: s.body };
-      })
+    const legacy = walk(this.file("records/history"), ".md").map((f) => {
+      const s = parseMd(read(f));
+      return { ...s.meta, body: s.body };
+    });
+    const file = this.file("records/history.jsonl");
+    const lines = fs.existsSync(file)
+      ? read(file)
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => {
+            const e = JSON.parse(l);
+            return {
+              ...e,
+              body:
+                "```json\n" +
+                JSON.stringify({ before: e.before, after: e.after }, null, 2) +
+                "\n```\n",
+            };
+          })
+      : [];
+    return [...legacy, ...lines]
       .filter((e) => e.record === id)
       .sort((a, b) => String(b.at).localeCompare(String(a.at)));
   }

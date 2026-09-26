@@ -43,10 +43,12 @@ To refresh an installation, build this checkout and run `./workboard upgrade /ab
 
 ## Daily workflow
 
-The interface follows Juice Lab's visual style: a dark dotted workspace, compact toolbar navigation, outlined module-like panels, and colored workflow indicators. Backlog uses warm white, selected work blue, active work teal, review orange, and completed work green. Labels accompany the colors. Shared appearance tokens live in `web/styles.css`; Comfortable and Compact density remain available.
+The interface is laid out like GitHub Projects and styled after Juice Machine Lab: a near-black dotted workspace (a light counterpart follows your system, or the **Theme** choice in the **⋯** menu), node-like cards with a thin border and a colored edge, small uppercase captions set in Rajdhani (bundled, no network needed), and a blue selection glow. Workflow stages carry status icons and colors: Backlog gray, Selected blue, In Progress cyan (half disc), Review orange (dot ring), and Done green (check). Labels take a stable color from their name. Shared appearance tokens live in `web/styles.css`, the project layout in `web/project.css`, and the icons and logo in `web/Icons.tsx`; Comfortable and Compact density sit beside Theme in the **⋯** menu, with screenshot upload, imports, and Settings.
 
-- Create tickets and group related work beneath parent tickets. Use labels and priorities to organize them.
-- For quick entry, type a short title in **Add a ticket…** under any workflow column and press Enter. It creates the ticket in that column and parent goal, keeps the box ready for another, and leaves the description optional.
+- **Saved views.** The Project page shows view tabs, like GitHub Projects. Each view has a layout (**Board** or **Table**), a filter, a grouping (parent goal, status, priority, owner, or label), and a sort. Changing any of them marks the view as edited; **Save view** stores it in `config.yml` so every worktree and collaborator sees it, and **Discard** reverts. Use **＋ New view** and each tab's **▾** menu to rename, duplicate, reorder, or delete views.
+- **Filters** use GitHub-style syntax: `label:ui`, `owner:"Agent A"`, `status:review`, `priority:high`, `parent:#0`, `is:blocked`, `is:claimed`, `is:open`, `no:owner`, `has:attachments`. Separate alternatives with commas (`label:ui,forms`) and prefix `-` to exclude (`-status:done`); other words match titles, descriptions, and numbers.
+- Create tickets and group related work beneath parent tickets. Grouped by parent goal, each goal heads its swimlane; click its header to open it. Use labels and priorities to organize tickets.
+- For quick entry, choose **＋ Add item** under any column (or at the end of a table group), type a title, and press Enter. The ticket lands in that column and group (parent, priority, owner, or label), the box stays open for another, and Escape closes it.
 - Tickets display sequential numbers starting at **#0**. Numbers are durable Markdown metadata; existing internal identifiers remain intact so links and history survive upgrades. CLI commands accept a number such as `show 0`.
 - Ticket dialogs are centered. Save, Close, Escape, and clicking the backdrop save changes and close the dialog. Saves send only the fields you changed: if someone else edited different fields meanwhile, your changes are applied on top of theirs. Overlapping edits or validation failures keep the draft open and let you keep your edits on top, reload theirs, or discard. **Discard changes** closes without saving. Add comments directly below the description; owner and label fields suggest existing values as you type.
 - Approve a parent's scope to let agents select and prioritize child work. Standalone tickets can also be explicitly approved.
@@ -55,24 +57,38 @@ The interface follows Juice Lab's visual style: a dark dotted workspace, compact
 - Submit work with a handoff and verification evidence; humans accept Done. Parent completion is explicit.
 - Decisions preserve rationale and predecessors. Both humans and agents can accept guidance, with history.
 - Rules carry scope labels, strength, category, rationale, references, and example images. Existing code tokens and components remain canonical.
-- The interface remembers the last view and density locally in project runtime state. Press **N** for a new ticket and **⌘K** to focus search. Use ticket status controls instead of dragging when preferred.
+- The interface remembers the last page, view, and density locally in project runtime state. Press **N** for a new ticket and **⌘K** to filter the current view. Ungrouped board views show each column as a full-height lane that scrolls on its own, with **Add item** pinned at the bottom; grouped views show swimlanes under a shared column header. Drag cards to change status (the target column highlights) or, when a view is sorted manually or by priority, to reorder; the table's status and priority controls and **↑** button do the same without dragging.
 
 ## Agent interface
 
 See [AGENT_GUIDE.md](AGENT_GUIDE.md) for the participation protocol. Add a short reference to that guide to your existing coding-agent instructions; setup deliberately does not overwrite them.
 
+**MCP.** `./workboard mcp` serves the board as Model Context Protocol tools over stdio, so agents call it natively with typed arguments. For Claude Code:
+
 ```sh
-./workboard list --json
-./workboard context WB-... --json
-./workboard claim WB-... --agent --actor agent-session --worktree /path/to/worktree
-./workboard move WB-... progress --revision HASH --agent --actor agent-session
-./workboard comment WB-... --body "Found a dependency on the search component." --agent --actor agent-session
-./workboard review WB-... --revision HASH --handoff "Implemented the change." --evidence "Relevant tests passed." --agent --actor agent-session
+claude mcp add controlroom --env WORKBOARD_ACTOR=my-session -- ./workboard mcp
 ```
 
-Use `show ID --json` for the current revision before updating. A stale edit returns a conflict instead of overwriting another contributor. Reread and reconcile; do not blindly retry. Claims last 30 minutes and can be renewed by repeating the claim with the same actor and worktree. Stale claims remain visible. A claim or task status is not proof that a process is running.
+Tools: `next_ticket`, `get_context`, `list_tickets`, `get_ticket`, `claim_ticket`, `release_ticket`, `create_ticket`, `update_ticket`, `move_ticket`, `comment`, `ask_question`, `submit_review`, `wait_for_update`, and `list_knowledge`. Their descriptions carry the protocol.
 
-Agent updates rely on the agent following the protocol. Control Room does not monitor arbitrary LLM conversations or infer completion from source edits. The CLI starts a local service when necessary and supports readable or JSON output. Actor names are attribution, not a security boundary between programs under the same OS account.
+**CLI.** The same operations, for any harness:
+
+```sh
+./workboard next                                   # the ticket to pick up, with its brief
+./workboard context 3 --brief                      # a prompt-ready Markdown brief with a token estimate
+./workboard list --open --mine
+./workboard claim 3
+./workboard move 3 progress --etag HASH
+./workboard comment 3 --body "Found a dependency on the search component."
+./workboard ask 3 --body "Should empty search offer to create a customer?"
+./workboard wait 3 --for comment                   # block until the human answers
+./workboard update 3 --etag HASH --set labels=ui,forms --set priority=1
+./workboard review 3 --etag HASH --handoff "Implemented the change." --run "npm test" --commits-since main
+```
+
+Identity comes from the environment: set `WORKBOARD_ACTOR` and `WORKBOARD_ACTOR_KIND` in the agent's launch configuration. Without them, a known agent harness or a non-interactive terminal counts as an agent, so a forgotten flag can never turn an agent into a human. Every write takes the record's etag (its content hash) from `show` or `context`; a stale etag returns a conflict with the current record instead of overwriting another contributor. `--latest` opts into writing over the current version for fields nobody else edits. `review --run` executes the verification command and records its exit code and output on the ticket, refusing a failing run unless `--allow-failure` is given; the branch is recorded automatically and `--pr` and `--commits-since` link the code. Claims last 30 minutes and are renewed by repeating the claim. A claim or task status is not proof that a process is running.
+
+Control Room does not monitor LLM conversations or infer completion from source edits; updates rely on the agent following the protocol. The CLI starts the local service when necessary. Actor names are attribution, not a security boundary between programs under the same OS account.
 
 ## Files and worktrees
 
@@ -84,7 +100,7 @@ Agent updates rely on the agent following the protocol. Control Room does not mo
     comments/*.md            attributed conversations and questions
     decisions/*.md           durable project choices
     rules/*.md               UI guidance and references
-    history/*.md             before/after revisions from coordinated edits
+    history.jsonl            before/after revisions from coordinated edits, one line per event
     attachments/*.json       normalized annotation geometry and image identity
     attachments/*.md         readable annotation instructions
   staging/*.json             proposed document imports

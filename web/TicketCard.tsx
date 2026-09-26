@@ -1,0 +1,131 @@
+import { useState } from "react";
+import type { Claim, RecordFile } from "../src/types";
+import { ago, recordId } from "./api";
+import { BlockedIcon, Label, StageIcon } from "./Icons";
+import { priorityName, priorityOf, type Context } from "./model";
+
+export const dragType = "text/workboard-ticket";
+
+// Outcome of the last `review --run`, as a small pill on cards and rows.
+export function VerificationTag({ record }: { record: RecordFile }) {
+  const v = record.meta.verification;
+  if (!v) return null;
+  const ok = v.exitCode === 0;
+  return (
+    <span
+      className={`tag ${ok ? "green" : "danger"}`}
+      title={`${v.command} exited with ${v.exitCode}`}
+    >
+      {ok ? "Verified ✓" : "Failed ✗"}
+    </span>
+  );
+}
+
+export function Avatar({ name }: { name?: string }) {
+  if (!name?.trim()) return null;
+  return (
+    <span className="avatar" title={name} aria-label={`Owner ${name}`}>
+      {name.trim().slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
+
+export function TicketCard({
+  record,
+  ctx,
+  claim,
+  showParent,
+  tabIndex,
+  onOpen,
+  onDropCard,
+}: {
+  record: RecordFile;
+  ctx: Context;
+  claim?: Claim;
+  showParent: boolean;
+  // Roving tabindex: the board keeps exactly one card in the Tab order.
+  tabIndex?: number;
+  onOpen: (id: string) => void;
+  // A ticket dragged onto this card: place it before this one.
+  onDropCard?: (draggedId: string, target: RecordFile) => void;
+}) {
+  const m = record.meta;
+  const role = ctx.columns.find((c) => c.id === m.status)?.role;
+  const parent = m.parent ? ctx.byId.get(m.parent) : undefined;
+  const priority = priorityOf(record);
+  const live = claim && claim.expiresAt > new Date().toISOString();
+  const [dragging, setDragging] = useState(false);
+  const details =
+    !!m.labels?.length ||
+    priority !== 2 ||
+    m.scopeApproved ||
+    m.blocked ||
+    m.verification ||
+    claim;
+  return (
+    <button
+      className={`ticket-card${dragging ? " dragging" : ""}`}
+      data-stage={role}
+      data-id={m.id}
+      tabIndex={tabIndex}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(dragType, m.id);
+        e.dataTransfer.effectAllowed = "move";
+        setDragging(true);
+      }}
+      onDragEnd={() => setDragging(false)}
+      onDragOver={(e) => onDropCard && e.preventDefault()}
+      onDrop={(e) => {
+        const id = e.dataTransfer.getData(dragType);
+        if (id && onDropCard) {
+          e.preventDefault();
+          e.stopPropagation();
+          onDropCard(id, record);
+        }
+      }}
+      onClick={() => onOpen(m.id)}
+    >
+      <span className="card-meta">
+        <StageIcon role={role} />
+        <span className="record-id">{recordId(record)}</span>
+        {showParent && parent && (
+          <span className="card-parent" title={parent.meta.title}>
+            {parent.meta.title}
+          </span>
+        )}
+        <Avatar name={m.owner} />
+      </span>
+      <span className="card-title">{m.title}</span>
+      {details && (
+        <span className="card-foot">
+          <span className="card-tags">
+            {m.blocked && (
+              <span className="tag danger" title={m.blocked}>
+                <BlockedIcon />
+                Blocked
+              </span>
+            )}
+            {priority !== 2 && (
+              <span className={`priority p${priority}`}>
+                {priorityName(record)}
+              </span>
+            )}
+            {m.labels?.slice(0, 4).map((l) => (
+              <Label name={l} key={l} />
+            ))}
+            {m.scopeApproved && (
+              <span className="tag green">Approved scope</span>
+            )}
+            <VerificationTag record={record} />
+            {claim && (
+              <span className={`tag ${live ? "claim" : "stale"}`}>
+                {live ? "Claimed" : "Stale claim"} · {ago(claim.reportedAt)}
+              </span>
+            )}
+          </span>
+        </span>
+      )}
+    </button>
+  );
+}

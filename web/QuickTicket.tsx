@@ -1,21 +1,38 @@
 import { useRef, useState } from "react";
 import { actor, api } from "./api";
+import { PlusIcon } from "./Icons";
+import type { Group } from "./model";
 
+// GitHub-style "+ Add item": a quiet button that expands into a title input.
+// Enter creates the ticket and keeps the input ready for the next one.
 export function QuickTicket({
-  parent,
   lane,
   status,
+  defaults,
   onCreated,
 }: {
-  parent: string | null;
   lane: string;
   status: string;
+  defaults: Group["defaults"];
   onCreated: () => Promise<void>;
 }) {
+  const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const pending = useRef(false);
+  if (!open)
+    return (
+      <button
+        type="button"
+        className="add-item"
+        aria-label={`Add item to ${lane}`}
+        onClick={() => setOpen(true)}
+      >
+        <PlusIcon />
+        Add item
+      </button>
+    );
   return (
     <form
       className="quick-ticket"
@@ -28,7 +45,7 @@ export function QuickTicket({
         try {
           await api("/records", "POST", {
             kind: "ticket",
-            meta: { title: title.trim(), parent, status },
+            meta: { ...defaults, title: title.trim(), status },
             body: "",
             actor,
           });
@@ -42,25 +59,27 @@ export function QuickTicket({
         }
       }}
     >
-      <div className="quick-ticket-entry">
-        <span aria-hidden="true">＋</span>
-        <input
-          aria-label={`New ticket in ${lane}`}
-          placeholder="Add a ticket…"
-          title="Type a short name and press Enter to create a ticket here"
-          value={title}
-          maxLength={300}
-          readOnly={saving}
-          onChange={(event) => setTitle(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && event.nativeEvent.isComposing)
-              event.preventDefault();
-          }}
-        />
-        <span className="quick-ticket-hint" aria-hidden="true">
-          {saving ? "Adding…" : "Enter ↵"}
-        </span>
-      </div>
+      <input
+        autoFocus
+        aria-label={`New ticket in ${lane}`}
+        placeholder="Type a title and press Enter"
+        value={title}
+        maxLength={300}
+        readOnly={saving}
+        onChange={(event) => setTitle(event.target.value)}
+        onBlur={() => {
+          if (!title.trim() && !saving) setOpen(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && event.nativeEvent.isComposing)
+            event.preventDefault();
+          if (event.key === "Escape") {
+            event.stopPropagation();
+            setTitle("");
+            setOpen(false);
+          }
+        }}
+      />
       {error && (
         <p className="quick-ticket-error" role="alert">
           {error}

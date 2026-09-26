@@ -34,9 +34,13 @@ export function Shortcuts({
         {[
           [capture, "Capture a screenshot (global, macOS companion)"],
           ["N", "New ticket"],
-          ["⌘ / Ctrl + K", "Focus search"],
+          ["⌘ / Ctrl + K", "Filter the current view"],
           ["?", "Show shortcuts"],
-          ["Enter", "Create a ticket in the focused column"],
+          ["Enter", "Create a ticket in an open “Add item” box"],
+          [
+            "← → ↑ ↓",
+            "Move between board cards once one has focus; Enter opens it",
+          ],
           ["⌘ / Ctrl + Enter", "Post a comment"],
           ["⌘ / Ctrl + S", "Save and close ticket or screenshot"],
           ["Esc", "Save and close ticket"],

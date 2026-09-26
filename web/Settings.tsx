@@ -179,7 +179,7 @@ export function Settings({
             ])
           }
         >
-          ＋ Add column
+          + Add column
         </button>
       </section>
       <section className="settings-card">

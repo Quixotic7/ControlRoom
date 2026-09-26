@@ -1,0 +1,490 @@
+import { useMemo, useState } from "react";
+import type {
+  Claim,
+  GroupBy,
+  ProjectState,
+  ProjectView,
+  RecordFile,
+  SortBy,
+} from "../src/types";
+import { actor, api } from "./api";
+import { BoardView } from "./BoardView";
+import {
+  BoardIcon,
+  ChevronDownIcon,
+  CloseIcon,
+  PlusIcon,
+  ProjectIcon,
+  SearchIcon,
+  SlidersIcon,
+  TableIcon,
+} from "./Icons";
+import { Menu } from "./Menu";
+import {
+  groupByOptions,
+  groupTickets,
+  matches,
+  parseFilter,
+  priorityOf,
+  showsArchived,
+  sortOptions,
+  sortTickets,
+  viewsOf,
+  type Context,
+} from "./model";
+import { TableView } from "./TableView";
+
+const sameView = (a: ProjectView, b: ProjectView) =>
+  JSON.stringify(a) === JSON.stringify(b);
+const orderOf = (r: RecordFile) => r.meta.order ?? Date.parse(r.meta.createdAt);
+
+export function ProjectPage({
+  state,
+  ctx,
+  viewId,
+  setViewId,
+  onOpen,
+  onNewTicket,
+  reload,
+  onError,
+  onNotice,
+}: {
+  state: ProjectState;
+  ctx: Context;
+  viewId: string;
+  setViewId: (id: string) => void;
+  onOpen: (id: string) => void;
+  onNewTicket: () => void;
+  reload: () => Promise<void>;
+  onError: (message: string) => void;
+  onNotice: (message: string) => void;
+}) {
+  const saved = viewsOf(state);
+  const savedView = saved.find((v) => v.id === viewId) ?? saved[0];
+  // Unsaved edits per view, like GitHub's "Save changes" on a modified view.
+  const [drafts, setDrafts] = useState<Record<string, ProjectView>>({});
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const view = drafts[savedView.id] ?? savedView;
+  const dirty = !sameView(view, savedView);
+  const edit = (patch: Partial<ProjectView>) =>
+    setDrafts((d) => ({ ...d, [savedView.id]: { ...view, ...patch } }));
+  const discard = () => setDrafts(({ [savedView.id]: _, ...rest }) => rest);
+
+  async function saveViews(next: ProjectView[], activate?: string) {
+    try {
+      await api("/config", "PATCH", {
+        revision: state.configRevision,
+        patch: { views: next },
+      });
+      await reload();
+      if (activate) setViewId(activate);
+      return true;
+    } catch (e) {
+      onError(String(e));
+      return false;
+    }
+  }
+  const replace = (v: ProjectView) => saved.map((s) => (s.id === v.id ? v : s));
+  async function saveDraft() {
+    if (await saveViews(replace(view))) discard();
+  }
+  const uniqueId = (base: string) => {
+    const slug =
+      base
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "") || "view";
+    let id = slug,
+      n = 2;
+    while (saved.some((v) => v.id === id)) id = `${slug}-${n++}`;
+    return id;
+  };
+  async function addView() {
+    const name = `View ${saved.length + 1}`;
+    const next: ProjectView = {
+      id: uniqueId(name),
+      name,
+      layout: "table",
+      filter: "",
+      groupBy: "none",
+      sort: "number",
+    };
+    if (await saveViews([...saved, next], next.id)) setRenaming(next.id);
+  }
+  async function duplicate(v: ProjectView) {
+    const name = `${v.name} copy`;
+    const copy = { ...(drafts[v.id] ?? v), id: uniqueId(name), name };
+    await saveViews([...saved, copy], copy.id);
+  }
+  async function remove(v: ProjectView) {
+    const next = saved.filter((s) => s.id !== v.id);
+    if (await saveViews(next, next[0].id)) discard();
+  }
+  async function shift(v: ProjectView, by: number) {
+    const i = saved.findIndex((s) => s.id === v.id),
+      j = i + by;
+    if (j < 0 || j >= saved.length) return;
+    const next = [...saved];
+    [next[i], next[j]] = [next[j], next[i]];
+    await saveViews(next);
+  }
+  async function rename(v: ProjectView, name: string) {
+    setRenaming(null);
+    if (name.trim() && name.trim() !== v.name)
+      await saveViews(replace({ ...v, name: name.trim() }));
+  }
+
+  const filter = useMemo(() => parseFilter(view.filter), [view.filter]);
+  const withArchived = showsArchived(filter);
+  const tickets = useMemo(
+    () =>
+      state.records.filter(
+        (r) => r.meta.kind === "ticket" && (withArchived || !r.meta.archived),
+      ),
+    [state, withArchived],
+  );
+  const visible = useMemo(
+    () =>
+      sortTickets(
+        tickets.filter((r) => matches(r, filter, ctx)),
+        view.sort,
+      ),
+    [tickets, filter, ctx, view.sort],
+  );
+  const filtering = filter.text.length + filter.terms.length > 0;
+  const groups = useMemo(
+    () =>
+      groupTickets(visible, view.groupBy, ctx).filter(
+        // Empty groups stay as drop targets, but are noise while filtering.
+        (g) => g.items.length || !filtering,
+      ),
+    [visible, view.groupBy, ctx, filtering],
+  );
+  const claims = useMemo(
+    () => new Map<string, Claim>(state.claims.map((c) => [c.ticket, c])),
+    [state.claims],
+  );
+  const canReorder = view.sort === "manual" || view.sort === "priority";
+
+  async function patch(r: RecordFile, fields: Record<string, unknown>) {
+    try {
+      await api(`/records/${r.meta.id}`, "PATCH", {
+        revision: r.revision,
+        patch: fields,
+        actor,
+      });
+      await reload();
+    } catch (e) {
+      onError(String(e));
+    }
+  }
+  const move = (r: RecordFile, status: string) =>
+    r.meta.status !== status && void patch(r, { status });
+  const setPriority = (r: RecordFile, priority: number) =>
+    priorityOf(r) !== priority && void patch(r, { priority });
+  // Tickets that share an ordering slot with `target` in this view.
+  const peersOf = (target: RecordFile, exclude?: string) =>
+    visible.filter(
+      (r) =>
+        r.meta.id !== exclude &&
+        r.meta.status === target.meta.status &&
+        (view.sort !== "priority" || priorityOf(r) === priorityOf(target)) &&
+        (view.groupBy !== "parent" ||
+          (r.meta.parent ?? null) === (target.meta.parent ?? null)),
+    );
+  const previousPeer = (r: RecordFile) => {
+    const peers = peersOf(r);
+    return peers[peers.findIndex((p) => p.meta.id === r.meta.id) - 1];
+  };
+  function place(draggedId: string, target: RecordFile) {
+    const r = ctx.byId.get(draggedId);
+    if (!r || r.meta.id === target.meta.id) return;
+    const role = ctx.columns.find((c) => c.id === target.meta.status)?.role;
+    if (
+      !canReorder ||
+      (role === "review" && r.meta.status !== target.meta.status)
+    ) {
+      if (r.meta.status !== target.meta.status) move(r, target.meta.status);
+      else if (!canReorder)
+        onNotice(
+          "Sort this view by Manual order or Priority to reorder by dragging.",
+        );
+      return;
+    }
+    if (
+      view.groupBy === "parent" &&
+      (r.meta.parent ?? null) !== (target.meta.parent ?? null)
+    ) {
+      onNotice(
+        "Change a ticket’s parent in its details to move it between goals.",
+      );
+      return;
+    }
+    const peers = peersOf(target, r.meta.id);
+    const index = peers.findIndex((p) => p.meta.id === target.meta.id);
+    const after = orderOf(target);
+    const before = index > 0 ? orderOf(peers[index - 1]) : after - 1024;
+    void patch(r, {
+      status: target.meta.status,
+      order: (before + after) / 2,
+      ...(view.sort === "priority" ? { priority: priorityOf(target) } : {}),
+    });
+  }
+
+  const groupChoices = (Object.keys(groupByOptions) as GroupBy[]).filter(
+    (g) => view.layout === "table" || g !== "status",
+  );
+  return (
+    <div className="project-page">
+      <h1 className="sr-only">{state.config.name} views</h1>
+      <nav className="view-tabs" aria-label="Project views">
+        {saved.map((v) => {
+          const active = v.id === savedView.id;
+          return (
+            <div key={v.id} className={`view-tab ${active ? "active" : ""}`}>
+              {renaming === v.id ? (
+                <input
+                  autoFocus
+                  aria-label="View name"
+                  defaultValue={v.name}
+                  maxLength={60}
+                  onBlur={(e) => void rename(v, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") e.currentTarget.blur();
+                    if (e.key === "Escape") setRenaming(null);
+                  }}
+                />
+              ) : (
+                <button
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setViewId(v.id)}
+                  onDoubleClick={() => setRenaming(v.id)}
+                >
+                  <span className="layout-icon" aria-hidden>
+                    {(drafts[v.id] ?? v).layout === "board" ? (
+                      <BoardIcon />
+                    ) : (
+                      <TableIcon />
+                    )}
+                  </span>
+                  {v.name}
+                  {drafts[v.id] && !sameView(drafts[v.id], v) && (
+                    <span className="unsaved-dot" title="Unsaved changes" />
+                  )}
+                </button>
+              )}
+              {active && renaming !== v.id && (
+                <Menu
+                  label={<ChevronDownIcon />}
+                  ariaLabel={`Options for ${v.name} view`}
+                  className="tab-menu-button"
+                >
+                  {(close) => (
+                    <div className="menu-list">
+                      <button
+                        onClick={() => {
+                          close();
+                          setRenaming(v.id);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => {
+                          close();
+                          void duplicate(v);
+                        }}
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        disabled={saved[0].id === v.id}
+                        onClick={() => {
+                          close();
+                          void shift(v, -1);
+                        }}
+                      >
+                        Move left
+                      </button>
+                      <button
+                        disabled={saved[saved.length - 1].id === v.id}
+                        onClick={() => {
+                          close();
+                          void shift(v, 1);
+                        }}
+                      >
+                        Move right
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={saved.length < 2}
+                        onClick={() => {
+                          close();
+                          void remove(v);
+                        }}
+                      >
+                        Delete view
+                      </button>
+                    </div>
+                  )}
+                </Menu>
+              )}
+            </div>
+          );
+        })}
+        <button className="new-view" onClick={() => void addView()}>
+          <PlusIcon />
+          New view
+        </button>
+      </nav>
+      <div className="filter-bar">
+        <label className="filter-input">
+          <span aria-hidden>
+            <SearchIcon />
+          </span>
+          <input
+            aria-label="Filter tickets"
+            placeholder="Filter by keyword or by field, e.g. label:ui is:blocked -status:done"
+            value={view.filter}
+            onChange={(e) => edit({ filter: e.target.value })}
+          />
+          {view.filter && (
+            <button
+              className="icon-button"
+              aria-label="Clear filter"
+              onClick={() => edit({ filter: "" })}
+            >
+              <CloseIcon />
+            </button>
+          )}
+        </label>
+        {dirty && (
+          <div className="inline-actions">
+            <button className="button subtle" onClick={discard}>
+              Discard
+            </button>
+            <button className="button primary" onClick={() => void saveDraft()}>
+              Save view
+            </button>
+          </div>
+        )}
+        <Menu
+          label={
+            <>
+              <SlidersIcon />
+              View
+            </>
+          }
+          ariaLabel="View options"
+          align="end"
+        >
+          <div className="view-options">
+            <span className="menu-label">Layout</span>
+            <div className="segmented">
+              {(["board", "table"] as const).map((layout) => (
+                <button
+                  key={layout}
+                  aria-pressed={view.layout === layout}
+                  className={view.layout === layout ? "selected" : ""}
+                  onClick={() =>
+                    edit({
+                      layout,
+                      groupBy:
+                        layout === "board" && view.groupBy === "status"
+                          ? "none"
+                          : view.groupBy,
+                    })
+                  }
+                >
+                  {layout === "board" ? <BoardIcon /> : <TableIcon />}
+                  {layout === "board" ? "Board" : "Table"}
+                </button>
+              ))}
+            </div>
+            <label className="field">
+              Group by
+              <select
+                value={view.groupBy}
+                onChange={(e) => edit({ groupBy: e.target.value as GroupBy })}
+              >
+                {groupChoices.map((g) => (
+                  <option key={g} value={g}>
+                    {groupByOptions[g]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Sort by
+              <select
+                value={view.sort}
+                onChange={(e) => edit({ sort: e.target.value as SortBy })}
+              >
+                {(Object.keys(sortOptions) as SortBy[]).map((s) => (
+                  <option key={s} value={s}>
+                    {sortOptions[s]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="help">
+              Filter keys: status, label, owner, priority, parent, is:blocked,
+              is:claimed, is:open, is:archived, no:owner. Prefix with - to
+              exclude.
+            </p>
+          </div>
+        </Menu>
+      </div>
+      {!tickets.length ? (
+        <div className="empty-state">
+          <span className="empty-icon">
+            <ProjectIcon />
+          </span>
+          <h2>Your next chapter starts here</h2>
+          <p>
+            Use “Add item” under any column, or create a ticket with details.
+          </p>
+          <button className="button primary" onClick={onNewTicket}>
+            Create a ticket
+          </button>
+        </div>
+      ) : null}
+      {view.layout === "board" ? (
+        <BoardView
+          groups={groups}
+          groupBy={view.groupBy}
+          ctx={ctx}
+          claims={claims}
+          visible={visible}
+          onOpen={onOpen}
+          onMove={move}
+          onPlace={place}
+          reload={reload}
+        />
+      ) : (
+        <TableView
+          groups={groups}
+          groupBy={view.groupBy}
+          ctx={ctx}
+          claims={claims}
+          canReorder={canReorder}
+          previousPeer={previousPeer}
+          filter={view.filter}
+          onOpen={onOpen}
+          onMove={move}
+          onPriority={setPriority}
+          onPlace={place}
+          reload={reload}
+        />
+      )}
+      {!!tickets.length && !visible.length && (
+        <p className="empty-inline">
+          No tickets match “{view.filter}”.{" "}
+          <button className="text-button" onClick={() => edit({ filter: "" })}>
+            Clear filter
+          </button>
+        </p>
+      )}
+    </div>
+  );
+}

@@ -97,11 +97,11 @@ export async function buildServer(
       )
         throw new Problem(
           401,
-          "Open Workboard locally or provide its project token",
+          "Open Control Room locally or provide its project token",
         );
     } else {
       if (req.headers["sec-fetch-site"] === "cross-site")
-        throw new Problem(403, "Open Workboard from its launcher");
+        throw new Problem(403, "Open Control Room from its launcher");
       reply.header(
         "Set-Cookie",
         `workboard=${token}; HttpOnly; SameSite=Strict; Path=/`,
@@ -133,11 +133,21 @@ export async function buildServer(
   });
   app.get("/api/records/:id", async (req: any) => store.get(req.params.id));
   app.get("/api/records/:id/context", async (req: any) => {
+    // ?format=markdown returns a prompt-ready brief with a token estimate;
+    // ?brief=1 trims decision and rule bodies to their first paragraph.
+    if (req.query?.format === "markdown")
+      return store.contextMarkdown(req.params.id, !!req.query?.brief);
     const c = store.context(req.params.id);
     return {
       ...c,
       attachments: c.attachments.map((a) => imageContext(store, a)),
     };
+  });
+  app.post("/api/next", async (req: any) => {
+    const r = store.next(actor(req.body));
+    return r
+      ? { ticket: r, brief: store.contextMarkdown(r.meta.id, true) }
+      : { ticket: null, brief: null };
   });
   app.get("/api/records/:id/history", async (req: any) =>
     store.historyFor(req.params.id),
@@ -190,6 +200,12 @@ export async function buildServer(
       b.evidence ?? "",
       b.exceptions ?? "",
       actor(b),
+      {
+        branch: b.branch,
+        pr: b.pr,
+        commits: b.commits,
+        verification: b.verification,
+      },
     );
   });
   app.patch("/api/config", async (req: any) =>
@@ -427,6 +443,12 @@ export async function buildServer(
     app.setNotFoundHandler((req, reply) => {
       if (req.url.startsWith("/api/"))
         return reply.code(404).send({ error: "Unknown API route" });
+      // Hijacking bypasses Fastify's reply, so the session cookie and other
+      // headers set by the request hook must be copied to the raw response.
+      // Vite's inline refresh preamble needs the production CSP relaxed here.
+      for (const [name, value] of Object.entries(reply.getHeaders()))
+        if (value !== undefined && name !== "content-security-policy")
+          reply.raw.setHeader(name, value as string);
       reply.hijack();
       vite.middlewares(req.raw, reply.raw, () => {
         reply.raw.statusCode = 404;

@@ -1,0 +1,261 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  attentionReason,
+  context,
+  groupTickets,
+  matches,
+  parseFilter,
+  sortTickets,
+} from "../web/model.js";
+import { Store, defaultColumns } from "../src/store.js";
+import { hash, read } from "../src/files.js";
+import type { Meta, ProjectState, RecordFile } from "../src/types.js";
+
+let n = 0;
+function ticket(meta: Partial<Meta>, body = ""): RecordFile {
+  const id = meta.id ?? `WB-${n}`;
+  const number = meta.number ?? n++;
+  return {
+    meta: {
+      schema: 1,
+      kind: "ticket",
+      title: `Ticket ${number}`,
+      status: "backlog",
+      createdAt: `2026-01-01T00:00:${String(number).padStart(2, "0")}Z`,
+      updatedAt: "2026-01-01T00:00:00Z",
+      author: { name: "You", kind: "human" },
+      ...meta,
+      id,
+      number,
+    } as Meta,
+    body,
+    revision: `rev-${id}`,
+    path: `records/tickets/${id}.md`,
+  };
+}
+function stateOf(records: RecordFile[], extra: Partial<ProjectState> = {}) {
+  return {
+    config: {
+      schema: 1,
+      projectId: "project-1",
+      name: "Test",
+      columns: defaultColumns,
+      shortcut: { key: 1, modifiers: 0, label: "" },
+    },
+    configRevision: "",
+    records,
+    comments: [],
+    attachments: [],
+    claims: [],
+    errors: [],
+    branch: "main",
+    canonical: "/",
+    branchChanged: false,
+    acknowledgedBranch: "main",
+    revision: "",
+    ...extra,
+  } as ProjectState;
+}
+
+test("filters parse GitHub-style keys, negation, lists, quotes, and free text", () => {
+  assert.deepEqual(
+    parseFilter('login -label:wip,draft owner:"Agent A" is:blocked bogus:x'),
+    {
+      text: ["login", "bogus:x"],
+      terms: [
+        { key: "label", values: ["wip", "draft"], negate: true },
+        { key: "owner", values: ["agent a"], negate: false },
+        { key: "is", values: ["blocked"], negate: false },
+      ],
+    },
+  );
+  assert.deepEqual(parseFilter("   "), { text: [], terms: [] });
+});
+
+test("filters match status names, labels, owners, priority, parent, and flags", () => {
+  const goal = ticket({ id: "WB-goal", number: 10, title: "Checkout goal" });
+  const a = ticket({
+    id: "WB-a",
+    title: "Fix login button",
+    status: "progress",
+    labels: ["UI", "forms"],
+    owner: "Agent A",
+    priority: 1,
+    parent: "WB-goal",
+  });
+  const b = ticket({ id: "WB-b", title: "Write docs", blocked: "Waiting" });
+  const s = stateOf([goal, a, b], {
+    claims: [
+      {
+        ticket: "WB-b",
+        actor: { name: "x", kind: "agent" },
+        worktree: "/w",
+        reportedAt: "",
+        expiresAt: "2999-01-01T00:00:00Z",
+      },
+    ],
+  });
+  const ctx = context(s);
+  const pick = (q: string) =>
+    [goal, a, b]
+      .filter((r) => matches(r, parseFilter(q), ctx))
+      .map((r) => r.meta.id);
+  assert.deepEqual(pick('status:"In Progress"'), ["WB-a"]);
+  assert.deepEqual(pick("status:progress"), ["WB-a"]);
+  assert.deepEqual(pick("label:ui"), ["WB-a"]);
+  assert.deepEqual(pick("-label:ui"), ["WB-goal", "WB-b"]);
+  assert.deepEqual(pick('owner:"agent a"'), ["WB-a"]);
+  assert.deepEqual(pick("priority:high"), ["WB-a"]);
+  assert.deepEqual(pick("parent:#10"), ["WB-a"]);
+  assert.deepEqual(pick("parent:checkout"), ["WB-a"]);
+  assert.deepEqual(pick("is:blocked"), ["WB-b"]);
+  assert.deepEqual(pick("is:claimed"), ["WB-b"]);
+  assert.deepEqual(pick("is:parent"), ["WB-goal"]);
+  assert.deepEqual(pick("no:owner"), ["WB-goal", "WB-b"]);
+  assert.deepEqual(pick("login"), ["WB-a"]);
+  assert.deepEqual(pick("#10"), ["WB-goal"]);
+  assert.deepEqual(pick("label:ui,missing is:open"), ["WB-a"]);
+});
+
+test("grouping by parent heads each goal and keeps children nested", () => {
+  const goal = ticket({ id: "WB-g", number: 1, title: "Goal" });
+  const child = ticket({ id: "WB-c", number: 2, parent: "WB-g" });
+  const grandchild = ticket({ id: "WB-gc", number: 3, parent: "WB-c" });
+  const loose = ticket({ id: "WB-l", number: 4 });
+  const s = stateOf([goal, child, grandchild, loose]);
+  const groups = groupTickets(
+    [loose, grandchild, goal, child],
+    "parent",
+    context(s),
+  );
+  assert.deepEqual(
+    groups.map((g) => [
+      g.key,
+      g.record?.meta.id,
+      g.items.map((r) => r.meta.id),
+    ]),
+    [
+      ["WB-g", "WB-g", ["WB-c", "WB-gc"]],
+      ["none", undefined, ["WB-l"]],
+    ],
+  );
+  assert.equal(groups[0].defaults.parent, "WB-g");
+});
+
+test("grouping by status, priority, owner, and label; sorting", () => {
+  const a = ticket({
+    id: "A",
+    status: "review",
+    priority: 0,
+    owner: "Ana",
+    labels: ["x", "y"],
+  });
+  const b = ticket({ id: "B", status: "backlog", priority: 3, labels: [] });
+  const ctx = context(stateOf([a, b]));
+  const keys = (g: ReturnType<typeof groupTickets>) =>
+    g.map((x) => `${x.title}:${x.items.map((r) => r.meta.id).join("")}`);
+  assert.deepEqual(keys(groupTickets([a, b], "status", ctx)), [
+    "Backlog:B",
+    "Review:A",
+  ]);
+  assert.deepEqual(keys(groupTickets([a, b], "priority", ctx)), [
+    "Urgent:A",
+    "Low:B",
+  ]);
+  assert.deepEqual(keys(groupTickets([a, b], "owner", ctx)), [
+    "Ana:A",
+    "No owner:B",
+  ]);
+  assert.deepEqual(keys(groupTickets([a, b], "label", ctx)), [
+    "x:A",
+    "y:A",
+    "No labels:B",
+  ]);
+  assert.deepEqual(keys(groupTickets([a, b], "none", ctx)), ["All tickets:AB"]);
+  assert.deepEqual(
+    sortTickets([b, a], "priority").map((r) => r.meta.id),
+    ["A", "B"],
+  );
+  assert.deepEqual(
+    sortTickets([a, b], "title").map((r) => r.meta.title),
+    [a.meta.title, b.meta.title].sort(),
+  );
+});
+
+test("attention covers blockers, reviews, open questions, and changed rules", () => {
+  const rule = {
+    ...ticket({ id: "UI-r" }),
+    meta: { ...ticket({ id: "UI-r" }).meta, kind: "rule", status: "active" },
+  } as RecordFile;
+  const blocked = ticket({
+    id: "WB-b",
+    blocked: "Needs keys",
+    reviewedRules: { "UI-r": rule.revision },
+  });
+  const review = ticket({
+    id: "WB-r",
+    status: "review",
+    reviewedRules: { "UI-r": rule.revision },
+  });
+  const asked = ticket({
+    id: "WB-q",
+    reviewedRules: { "UI-r": rule.revision },
+  });
+  const stale = ticket({ id: "WB-s", reviewedRules: { "UI-r": "old" } });
+  const calm = ticket({ id: "WB-c", reviewedRules: { "UI-r": rule.revision } });
+  const doneStale = ticket({ id: "WB-d", status: "done", reviewedRules: {} });
+  const s = stateOf([rule, blocked, review, asked, stale, calm, doneStale], {
+    comments: [
+      {
+        id: "c1",
+        ticket: "WB-q",
+        actor: { name: "a", kind: "agent" },
+        at: "",
+        kind: "question",
+        body: "?",
+        resolved: false,
+        revision: "",
+      },
+    ],
+  });
+  const ctx = context(s);
+  assert.deepEqual(
+    [blocked, review, asked, stale, calm, doneStale].map((r) =>
+      attentionReason(r, s, ctx),
+    ),
+    ["blocked", "review", "question", "rules", null, null],
+  );
+});
+
+test("saved views are validated in the project configuration", async (t) => {
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "workboard-test-")),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const s = new Store(root).initialize("Views");
+  const revision = () => hash(read(s.file("config.yml")));
+  const view = {
+    id: "mine",
+    name: "My work",
+    layout: "table",
+    filter: "owner:You",
+    groupBy: "status",
+    sort: "updated",
+  };
+  await s.updateConfig(revision(), { views: [view] } as any);
+  assert.deepEqual(s.config().views, [view]);
+  await assert.rejects(
+    s.updateConfig(revision(), { views: [view, view] } as any),
+    /unique/,
+  );
+  await assert.rejects(
+    s.updateConfig(revision(), {
+      views: [{ ...view, layout: "gantt" }],
+    } as any),
+  );
+  assert.deepEqual(s.config().views, [view]);
+});

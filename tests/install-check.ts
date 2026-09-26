@@ -20,7 +20,7 @@ try {
     timeout: 60000,
   });
   assert.ok(fs.existsSync(path.join(root, "Workboard.command")));
-  assert.match(run(["help"]), /Workboard/);
+  assert.match(run(["help"]), /Control Room/);
   const record = JSON.parse(
     run(["create", "ticket", "--title", "Installed tool works", "--json"]),
   );

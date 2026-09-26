@@ -31,9 +31,22 @@ export type Meta = {
   supersedes?: string;
   references?: string[];
   worktree?: string;
+  // Links from a ticket to the code that implements it.
+  branch?: string;
+  pr?: string;
+  commits?: string[];
+  // Structured evidence captured by `review --run`: what ran and how it ended.
+  verification?: Verification;
   reviewedRules?: Record<string, string>;
   archived?: boolean;
   [key: string]: unknown;
+};
+export type Verification = {
+  command: string;
+  exitCode: number;
+  output: string;
+  at: string;
+  cwd?: string;
 };
 export type RecordFile = {
   meta: Meta;
@@ -56,11 +69,30 @@ export type Column = {
   name: string;
   role: "backlog" | "selected" | "progress" | "review" | "done";
 };
+export type ViewLayout = "board" | "table";
+export type GroupBy =
+  | "none"
+  | "parent"
+  | "status"
+  | "priority"
+  | "owner"
+  | "label";
+export type SortBy = "manual" | "priority" | "number" | "updated" | "title";
+// A saved project view, like a GitHub Projects view tab.
+export type ProjectView = {
+  id: string;
+  name: string;
+  layout: ViewLayout;
+  filter: string;
+  groupBy: GroupBy;
+  sort: SortBy;
+};
 export type Config = {
   schema: number;
   projectId: string;
   name: string;
   columns: Column[];
+  views?: ProjectView[];
   shortcut: {
     mode?: "double-alt" | "hotkey";
     key: number;
@@ -73,6 +105,7 @@ export type Claim = {
   ticket: string;
   actor: Actor;
   worktree: string;
+  branch?: string;
   expiresAt: string;
   reportedAt: string;
 };

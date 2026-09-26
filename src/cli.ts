@@ -7,21 +7,32 @@ import { Store } from "./store.js";
 import { atomic, canonicalProject, now, read, uid } from "./files.js";
 import { buildServer, toolRoot } from "./server.js";
 import { registerCapture, startCompanion } from "./capture.js";
+import {
+  api,
+  ApiError,
+  commitsSince,
+  currentBranch,
+  endpoint,
+  filterRecords,
+  parseArgs,
+  parseSet,
+  resolveActor,
+  runVerification,
+  service,
+  waitForChange,
+} from "./client.js";
+import { startMcp } from "./mcp.js";
 import type { Actor } from "./types.js";
 
-const args = process.argv.slice(2);
-function option(name: string, fallback?: string) {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : fallback;
-}
-function has(name: string) {
-  return args.includes(`--${name}`);
-}
+const parsed = parseArgs(process.argv.slice(2));
+const { option, has, all, positional } = parsed;
 const cwd = path.resolve(option("project", process.cwd())!);
-const who: Actor = {
-  name: option("actor", "You")!,
-  kind: has("agent") ? "agent" : "human",
-};
+const identity = resolveActor({
+  name: option("actor"),
+  agent: has("agent"),
+  human: has("human"),
+});
+const who: Actor = identity.actor;
 const json = has("json");
 function output(value: any) {
   if (json) {
@@ -30,14 +41,18 @@ function output(value: any) {
   }
   if (value?.meta) {
     console.log(
-      `${value.meta.number === undefined ? value.meta.id : `#${value.meta.number}`}  ${value.meta.title}\n${value.meta.status} · ${value.meta.kind}\n\n${value.body}`,
+      `${value.meta.number === undefined ? value.meta.id : `#${value.meta.number}`}  ${value.meta.title}\n${value.meta.status} · ${value.meta.kind} · etag ${value.revision}\n\n${value.body}`,
     );
+    return;
+  }
+  if (Array.isArray(value) && value.length === 0) {
+    console.log("No matching records.");
     return;
   }
   if (Array.isArray(value) && value[0]?.meta) {
     for (const v of value)
       console.log(
-        `${v.meta.number === undefined ? v.meta.id : `#${v.meta.number}`}  ${v.meta.status.padEnd(12)} ${v.meta.title}`,
+        `${(v.meta.number === undefined ? v.meta.id : `#${v.meta.number}`).padEnd(6)} ${v.meta.status.padEnd(12)} ${v.meta.title}${v.meta.owner ? `  (${v.meta.owner})` : ""}`,
       );
     return;
   }
@@ -55,63 +70,6 @@ function inputJson() {
     ? JSON.parse(read(path.resolve(p)))
     : JSON.parse(option("patch", "{}")!);
 }
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-async function endpoint(store: Store): Promise<string | null> {
-  try {
-    const v = JSON.parse(read(store.file(".local/service.json")));
-    if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(v.url)) return null;
-    const r = await fetch(v.url + "/health", {
-      signal: AbortSignal.timeout(500),
-    });
-    const health: any = await r.json();
-    return health.project === store.config().projectId ? v.url : null;
-  } catch {
-    return null;
-  }
-}
-async function service(store: Store) {
-  let url = await endpoint(store);
-  if (url) return url;
-  const cli = fileURLToPath(import.meta.url);
-  const log = fs.openSync(store.file(".local/service.log"), "a");
-  const child = spawn(
-    process.execPath,
-    [
-      ...(cli.endsWith(".ts") ? ["--import", "tsx"] : []),
-      cli,
-      "serve",
-      "--headless",
-      "--project",
-      store.root,
-    ],
-    { detached: true, stdio: ["ignore", log, log] },
-  );
-  child.unref();
-  fs.closeSync(log);
-  for (let i = 0; i < 80; i++) {
-    await delay(100);
-    url = await endpoint(store);
-    if (url) return url;
-  }
-  throw new Error("Service did not start. See .workboard/.local/service.log");
-}
-async function api(store: Store, url: string, method = "GET", body?: unknown) {
-  const base = await service(store);
-  const res = await fetch(base + url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${store.token()}`,
-      "Content-Type": "application/json",
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const data: any = await res.json();
-  if (!res.ok)
-    throw new Error(
-      `${res.status}: ${data.error}${data.detail ? "\n" + JSON.stringify(data.detail) : ""}`,
-    );
-  return data;
-}
 async function serve(store: Store) {
   const running = await endpoint(store);
   if (running) {
@@ -120,7 +78,7 @@ async function serve(store: Store) {
       await api(store, "/api/active", "POST", {});
       startCompanion(toolRoot);
     }
-    output(`Workboard is already running: ${running}`);
+    output(`Control Room is already running: ${running}`);
     if (has("open")) spawn("open", [running], { stdio: "ignore" });
     return;
   }
@@ -131,7 +89,7 @@ async function serve(store: Store) {
     const pid = Number(read(lock));
     try {
       process.kill(pid, 0);
-      throw new Error("Another Workboard service is starting");
+      throw new Error("Another Control Room service is starting");
     } catch (e: any) {
       if (e.code !== "ESRCH") throw e;
       fs.unlinkSync(lock);
@@ -162,7 +120,7 @@ async function serve(store: Store) {
       captureFile = registerCapture(store, Number(new URL(url).port));
       startCompanion(toolRoot);
     }
-    console.log(`Workboard: ${url}\nProject: ${store.root}`);
+    console.log(`Control Room: ${url}\nProject: ${store.root}`);
     if (has("open") && process.platform === "darwin")
       spawn("open", [url], { stdio: "ignore" });
     const stop = async () => {
@@ -272,39 +230,37 @@ async function install(destination: string) {
     `Installed Workboard ${version} in ${root}\nRun ./.workboard/workboard serve --open or double-click Workboard.command.\nProject records were preserved.`,
   );
 }
+const help = `Control Room — project-local tasks, decisions, and UI rules for humans and coding agents
+
+Reading
+  list [--status S] [--owner O] [--label L] [--mine] [--open] [--archived] [--kind ticket|decision|rule]
+  show ID                      the record and its etag
+  context ID [--markdown] [--brief]   everything an agent needs, as JSON or a prompt-ready brief
+  next                         the ticket this agent should pick up next, with its brief
+  wait ID [--for comment|status|any] [--timeout SECONDS]   block until the ticket changes
+
+Writing (need --etag from show or context, or --latest to use the current one)
+  create ticket|decision|rule --title TITLE [--body-file FILE|--body TEXT] [--parent ID] [--labels a,b] [--set key=value ...]
+  update ID --etag HASH [--set key=value ...] [--patch JSON] [--body-file FILE]
+  move ID STATUS --etag HASH
+  handoff ID --etag HASH --body TEXT
+  comment ID --body TEXT | ask ID --body TEXT
+  claim ID [--worktree PATH] | release ID
+  review ID --etag HASH --handoff TEXT [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
+
+Service and data
+  serve [--open] [--dev] | stop | mcp | init
+  export --output FILE | restore --file FILE
+  import brief --file PATHS_JSON | import stage --file PROPOSALS_JSON
+  install DESTINATION | upgrade DESTINATION
+
+Identity: set WORKBOARD_ACTOR (name) and WORKBOARD_ACTOR_KIND (human|agent) in the environment, or pass --actor NAME with --agent or --human. A known agent harness or a non-interactive terminal counts as an agent.
+All commands accept --project PATH and --json. IDs may be #numbers or record IDs. Claims expire after 30 minutes; repeat claim to renew.
+`;
 async function main() {
-  // Options can precede commands in the installed launcher.
-  const valueOptions = new Set([
-    "--project",
-    "--actor",
-    "--body-file",
-    "--body",
-    "--file",
-    "--patch",
-    "--title",
-    "--parent",
-    "--labels",
-    "--revision",
-    "--handoff",
-    "--evidence",
-    "--exceptions",
-    "--output",
-    "--port",
-    "--worktree",
-  ]);
-  const positional: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    if (valueOptions.has(args[i])) {
-      i++;
-      continue;
-    }
-    if (!args[i].startsWith("--")) positional.push(args[i]);
-  }
   const [command, id, extra] = positional;
   if (!command || command === "help") {
-    output(
-      `Workboard — project-local tasks, decisions, and UI rules\n\ninit | serve [--open] [--dev] | stop | list | show ID | context ID\ncreate ticket|decision|rule --title TITLE [--body-file FILE] [--parent ID]\nupdate ID --revision HASH --patch JSON [--body-file FILE]\nmove ID STATUS --revision HASH\ncomment ID --body TEXT | ask ID --body TEXT\nclaim ID | release ID [--worktree PATH]\nhandoff ID --revision HASH --body TEXT\nreview ID --revision HASH --handoff TEXT --evidence TEXT [--exceptions TEXT]\nexport --output FILE | restore --file FILE\nimport brief --file PATHS_JSON | import stage --file PROPOSALS_JSON\ninstall DESTINATION | upgrade DESTINATION\n\nAll commands accept --project PATH, --actor NAME, --agent, and --json.\nMutations require a revision from show/context to prevent lost updates.\nClaims expire after 30 minutes; repeat claim to renew.\n`,
-    );
+    output(help);
     return;
   }
   if (command === "install" || command === "upgrade") {
@@ -314,17 +270,21 @@ async function main() {
   }
   const store = new Store(cwd).initialize();
   if (command === "init") {
-    output({ project: store.root, records: store.dir });
+    output({ project: store.root, records: store.dir, actor: who });
     return;
   }
   if (command === "serve") {
     await serve(store);
     return;
   }
+  if (command === "mcp") {
+    await startMcp(store, who);
+    return;
+  }
   if (command === "stop") {
     const url = await endpoint(store);
     if (!url) {
-      output("Workboard is not running.");
+      output("Control Room is not running.");
       return;
     }
     const result = await fetch(url + "/api/shutdown", {
@@ -332,38 +292,119 @@ async function main() {
       headers: { Authorization: `Bearer ${store.token()}` },
     });
     if (!result.ok) throw new Error("Could not stop service");
-    output("Workboard is stopping.");
+    output("Control Room is stopping.");
     return;
   }
-  const rev = () => {
-    const r = option("revision");
-    if (!r)
-      throw new Error(
-        "--revision is required; obtain the current revision using show --json",
-      );
-    return r;
+  const mutation = [
+    "create",
+    "update",
+    "move",
+    "handoff",
+    "comment",
+    "ask",
+    "claim",
+    "release",
+    "review",
+  ].includes(command);
+  if (mutation && identity.inferred && who.kind === "agent")
+    console.error(
+      `Acting as agent "${who.name}". Set WORKBOARD_ACTOR to name this session, or pass --human if you are a person.`,
+    );
+  // The record's content hash guards against lost updates. --latest opts into
+  // writing over whatever is current, for fields nobody else is editing.
+  const etag = async () => {
+    const r = option("etag") ?? option("if-match") ?? option("revision");
+    if (r) return r;
+    if (has("latest")) return (await api(store, `/api/records/${id}`)).revision;
+    throw new Error(
+      "--etag is required: take it from `show ID` or `context ID`, or pass --latest to write over the current version.",
+    );
   };
   if (command === "list") {
-    output((await api(store, "/api/state")).records);
-    return;
-  }
-  if (command === "show" || command === "context") {
+    const state = await api(store, "/api/state");
     output(
-      await api(
-        store,
-        `/api/records/${id}${command === "context" ? "/context" : ""}`,
-      ),
+      filterRecords(state.records, {
+        kind: option("kind"),
+        status: option("status"),
+        owner: option("owner"),
+        label: option("label"),
+        mine: has("mine") ? who.name : undefined,
+        open: has("open"),
+        archived: has("archived"),
+        columns: state.config.columns,
+        claims: state.claims,
+      }),
     );
     return;
   }
+  if (command === "show") {
+    output(await api(store, `/api/records/${id}`));
+    return;
+  }
+  if (command === "context") {
+    if (has("markdown") || has("brief")) {
+      const r = await api(
+        store,
+        `/api/records/${id}/context?format=markdown${has("brief") ? "&brief=1" : ""}`,
+      );
+      output(json ? r : r.markdown);
+    } else output(await api(store, `/api/records/${id}/context`));
+    return;
+  }
+  if (command === "next") {
+    const r = await api(store, "/api/next", "POST", { actor: who });
+    if (json) output(r);
+    else if (!r.ticket)
+      output(
+        "Nothing to pick up: no unclaimed, unblocked ticket inside an approved scope. Ask a human to approve a scope or select work.",
+      );
+    else output(r.brief.markdown);
+    return;
+  }
+  if (command === "wait") {
+    const seconds = Number(option("timeout", "600"));
+    const waitFor = (option("for", "any") ?? "any") as
+      | "comment"
+      | "status"
+      | "any";
+    if (!["comment", "status", "any"].includes(waitFor))
+      throw new Error("--for must be comment, status, or any");
+    const r = await waitForChange(store, id, waitFor, seconds * 1000);
+    if (!r) {
+      output(json ? { change: null } : `No change within ${seconds}s.`);
+      process.exitCode = 2;
+      return;
+    }
+    if (json) output(r);
+    else {
+      const last = r.comments.at(-1);
+      output(
+        `${r.change}: ${r.ticket.meta.title} is now ${r.ticket.meta.status}` +
+          (r.change === "comment" && last
+            ? `\n${last.actor.name} (${last.kind}): ${last.body}`
+            : ""),
+      );
+    }
+    return;
+  }
   if (command === "create") {
+    const labels = option("labels", "")!
+      .split(",")
+      .map((l) => l.trim())
+      .filter(Boolean);
     output(
       await api(store, "/api/records", "POST", {
         kind: id,
         meta: {
-          title: option("title"),
+          ...(option("title") ? { title: option("title") } : {}),
           parent: option("parent") ?? null,
-          labels: option("labels", "")!.split(",").filter(Boolean),
+          ...(labels.length ? { labels } : {}),
+          ...(option("priority")
+            ? { priority: Number(option("priority")) }
+            : {}),
+          ...(option("owner") ? { owner: option("owner") } : {}),
+          ...(option("status") ? { status: option("status") } : {}),
+          ...parseSet(all("set")),
         },
         body: bodyFile(),
         actor: who,
@@ -377,10 +418,12 @@ async function main() {
         ? { status: extra }
         : command === "handoff"
           ? { handoff: bodyFile() }
-          : inputJson();
+          : { ...inputJson(), ...parseSet(all("set")) };
+    if (command === "move" && !extra)
+      throw new Error("move needs a status, e.g. move 3 progress");
     output(
       await api(store, `/api/records/${id}`, "PATCH", {
-        revision: rev(),
+        revision: await etag(),
         patch,
         body:
           command === "update" && option("body-file") ? bodyFile() : undefined,
@@ -410,12 +453,38 @@ async function main() {
     return;
   }
   if (command === "review") {
+    const run = option("run");
+    const verification = run ? runVerification(run, cwd) : undefined;
+    if (verification) {
+      console.error(`${verification.command} exited ${verification.exitCode}`);
+      if (verification.exitCode !== 0 && !has("allow-failure"))
+        throw new Error(
+          `Verification failed (exit ${verification.exitCode}); not submitting for review. Fix it, or pass --allow-failure to submit anyway.\n${verification.output.slice(-2000)}`,
+        );
+    }
+    const commits = option("commits")
+      ? option("commits")!
+          .split(",")
+          .map((c) => c.trim())
+          .filter(Boolean)
+      : option("commits-since")
+        ? commitsSince(cwd, option("commits-since")!)
+        : undefined;
+    const evidence =
+      option("evidence") ??
+      (verification
+        ? `\`${verification.command}\` exited ${verification.exitCode} at ${verification.at}.`
+        : "");
     output(
       await api(store, `/api/records/${id}/review`, "POST", {
-        revision: rev(),
+        revision: await etag(),
         handoff: option("handoff", ""),
-        evidence: option("evidence", ""),
+        evidence,
         exceptions: option("exceptions", ""),
+        branch: option("branch") ?? currentBranch(cwd),
+        pr: option("pr"),
+        commits,
+        verification,
         actor: who,
       }),
     );
@@ -462,6 +531,10 @@ async function main() {
   throw new Error(`Unknown command: ${command}. Run workboard help.`);
 }
 main().catch((e) => {
-  console.error(e.message);
+  console.error(
+    e instanceof ApiError
+      ? `${e.status}: ${e.message}${e.detail ? "\n" + JSON.stringify(e.detail) : ""}`
+      : e.message,
+  );
   process.exitCode = 1;
 });

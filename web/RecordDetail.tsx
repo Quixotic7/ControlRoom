@@ -1,8 +1,14 @@
+import { CloseIcon, StageIcon } from "./Icons";
 import React, { useEffect, useRef, useState } from "react";
 import { TagInput } from "./TagInput";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { Kind, Meta, ProjectState, RecordFile } from "../src/types";
+import { imageMarkdown, pasteImage, RecordMarkdown } from "./RecordMarkdown";
+import type {
+  Kind,
+  Meta,
+  ProjectState,
+  RecordFile,
+  Verification,
+} from "../src/types";
 import { actor, api, ApiError, ago, recordId, split, uploadImage } from "./api";
 
 // Absent, null, "" and [] all mean "no value" in a record form.
@@ -20,6 +26,48 @@ function changedFields(
     if (key !== "updatedAt" && normalized(from[key]) !== normalized(to[key]))
       out[key] = to[key];
   return out;
+}
+
+const isHttp = (s: unknown): s is string =>
+  typeof s === "string" && /^https?:\/\/\S+$/i.test(s.trim());
+const shortHash = (hash: string) =>
+  /^[0-9a-f]{7,64}$/i.test(hash) ? hash.slice(0, 7) : hash;
+
+// What `review --run` captured: the command, how it ended, and its output.
+const previewLines = 12;
+function VerificationPanel({ v }: { v: Verification }) {
+  const [all, setAll] = useState(false);
+  const lines = v.output.replace(/\n$/, "").split("\n");
+  const long = lines.length > previewLines;
+  const ok = v.exitCode === 0;
+  return (
+    <section
+      className="verification"
+      data-status={ok ? "pass" : "fail"}
+      aria-label="Verification"
+    >
+      <div className="verification-head">
+        <span className="eyebrow">Verification</span>
+        <span className={`tag ${ok ? "green" : "danger"}`}>
+          Exit {v.exitCode}
+        </span>
+        <span className="muted" title={new Date(v.at).toLocaleString()}>
+          {ago(v.at)}
+        </span>
+      </div>
+      <code className="verification-command">{v.command}</code>
+      {v.cwd && <span className="help">in {v.cwd}</span>}
+      <pre className="verification-output">
+        {(all || !long ? lines : lines.slice(0, previewLines)).join("\n")}
+        {long && !all ? "\n…" : ""}
+      </pre>
+      {long && (
+        <button className="text-button" onClick={() => setAll(!all)}>
+          {all ? "Show less" : `Show all (${lines.length} lines)`}
+        </button>
+      )}
+    </section>
+  );
 }
 
 export function RecordDetail({
@@ -100,9 +148,10 @@ export function RecordDetail({
   const set = (key: string, value: any) =>
     setM((v: any) => ({ ...v, [key]: value }));
   const pending = useRef(false);
-  async function save(review = false, closeAfter = true) {
+  // `draft` lets a one-click change (archive) save without waiting for state.
+  async function save(review = false, closeAfter = true, draft = m) {
     if (pending.current) return false;
-    if (!m.title.trim()) {
+    if (!draft.title.trim()) {
       setError("Give the ticket a short title before closing.");
       return false;
     }
@@ -111,19 +160,23 @@ export function RecordDetail({
     setError("");
     try {
       let r: RecordFile;
+      const changed = baseline
+        ? Object.keys(changedFields(baseline.meta, draft)).length > 0 ||
+          body !== baseline.body
+        : true;
       if (!baseline)
-        r = await api("/records", "POST", { kind, meta: m, body, actor });
-      else if (!dirty) r = baseline;
-      else r = await patchRecord(baseline);
+        r = await api("/records", "POST", { kind, meta: draft, body, actor });
+      else if (!changed) r = baseline;
+      else r = await patchRecord(baseline, draft);
       setBaseline(r);
       setConflict(null);
       setCloseFailed(false);
       if (review)
         r = await api(`/records/${r.meta.id}/review`, "POST", {
           revision: r.revision,
-          handoff: m.handoff,
-          evidence: m.evidence,
-          exceptions: m.exceptions,
+          handoff: draft.handoff,
+          evidence: draft.evidence,
+          exceptions: draft.exceptions,
           actor,
         });
       setBaseline(r);
@@ -143,8 +196,11 @@ export function RecordDetail({
   // Sends only the fields this draft changed. If someone else saved in the
   // meantime and touched different fields, the draft is applied on top of
   // their version; overlapping edits stop for the user to choose.
-  async function patchRecord(base: RecordFile): Promise<RecordFile> {
-    const patch = changedFields(base.meta, m),
+  async function patchRecord(
+    base: RecordFile,
+    draft: Meta,
+  ): Promise<RecordFile> {
+    const patch = changedFields(base.meta, draft),
       bodyChanged = body !== base.body;
     const send = (revision: string) =>
       api<RecordFile>(`/records/${base.meta.id}`, "PATCH", {
@@ -233,14 +289,21 @@ export function RecordDetail({
       setPosting(false);
     }
   }
+  // Functional update: concurrent uploads must not overwrite each other.
+  const attachId = (id: string) =>
+    setM((v: any) =>
+      v.attachments?.includes(id)
+        ? v
+        : { ...v, attachments: [...(v.attachments ?? []), id] },
+    );
   async function attach(file: File) {
     try {
       const a = await uploadImage(file);
-      // Functional update: concurrent uploads must not overwrite each other.
-      setM((v: any) => ({
-        ...v,
-        attachments: [...(v.attachments ?? []), a.id],
-      }));
+      attachId(a.id);
+      // Attached from the images section: also reference it in the text.
+      setBody(
+        (b: string) => `${b.trimEnd()}\n\n${imageMarkdown(a.id, a.name)}\n`,
+      );
       openImage(a.id);
     } catch (e) {
       setError(String(e));
@@ -314,9 +377,7 @@ export function RecordDetail({
                 <span className="muted">{ago(c.at)}</span>
               </div>
               <div className="markdown">
-                <Markdown remarkPlugins={[remarkGfm]} skipHtml>
-                  {c.body}
-                </Markdown>
+                <RecordMarkdown openImage={openImage}>{c.body}</RecordMarkdown>
               </div>
               {c.kind === "question" && (
                 <button
@@ -345,6 +406,11 @@ export function RecordDetail({
         <textarea
           value={comment}
           onChange={(e) => setComment(e.target.value)}
+          onPaste={(e) =>
+            pasteImage(e, (t) => setComment((c: string) => t(c)))
+              .then((id) => id && attachId(id))
+              .catch((err) => setError(String(err)))
+          }
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
               e.preventDefault();
@@ -397,7 +463,8 @@ export function RecordDetail({
     >
       <div className="dialog-top">
         <span className="eyebrow">
-          {baseline ? recordId(baseline) : "NEW"} / {kind}
+          {baseline ? recordId(baseline) : "New"} ·{" "}
+          {kind.charAt(0).toUpperCase() + kind.slice(1)}
         </span>
         <button
           className="icon-button"
@@ -405,7 +472,7 @@ export function RecordDetail({
           disabled={saving}
           onClick={() => void close()}
         >
-          ×
+          <CloseIcon />
         </button>
       </div>
       <div className="record-title">
@@ -423,6 +490,19 @@ export function RecordDetail({
           onChange={(e) => set("title", e.target.value)}
         />
         <div className="record-subtitle">
+          {kind === "ticket" &&
+            (() => {
+              const column = state.config.columns.find(
+                (c) => c.id === m.status,
+              );
+              return column ? (
+                <span className="stage-pill" data-stage={column.role}>
+                  <StageIcon role={column.role} />
+                  {column.name}
+                </span>
+              ) : null;
+            })()}
+          {m.archived && <span className="tag">Archived</span>}
           {baseline ? (
             <>
               Created by {baseline.meta.author.name} ·{" "}
@@ -667,9 +747,7 @@ export function RecordDetail({
               </div>
               {preview ? (
                 <div className="markdown prose">
-                  <Markdown remarkPlugins={[remarkGfm]} skipHtml>
-                    {body}
-                  </Markdown>
+                  <RecordMarkdown openImage={openImage}>{body}</RecordMarkdown>
                 </div>
               ) : (
                 <textarea
@@ -682,6 +760,11 @@ export function RecordDetail({
                   }
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
+                  onPaste={(e) =>
+                    pasteImage(e, (t) => setBody((b: string) => t(b)))
+                      .then((id) => id && attachId(id))
+                      .catch((err) => setError(String(err)))
+                  }
                   spellCheck
                 />
               )}
@@ -720,6 +803,40 @@ export function RecordDetail({
                       />
                     </label>
                   </div>
+                  <div className="fields two code-links">
+                    {field("branch", "Branch", "feature/short-name")}
+                    <label className="field">
+                      Pull request
+                      <input
+                        value={m.pr ?? ""}
+                        placeholder="https://…/pull/123"
+                        onChange={(e) => set("pr", e.target.value)}
+                      />
+                      {isHttp(m.pr) && (
+                        <a
+                          className="pr-link"
+                          href={m.pr.trim()}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open pull request ↗
+                        </a>
+                      )}
+                    </label>
+                  </div>
+                  {!!m.commits?.length && (
+                    <div className="field">
+                      Commits
+                      <ul className="commit-list">
+                        {(m.commits as string[]).map((c) => (
+                          <li key={c}>
+                            <code title={c}>{shortHash(c)}</code>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {m.verification && <VerificationPanel v={m.verification} />}
                   <details className="disclosure">
                     <summary>Dependencies and relevant knowledge</summary>
                     <div className="fields">
@@ -796,7 +913,7 @@ export function RecordDetail({
                 <div className="section-heading">
                   <h3>Images & visual feedback</h3>
                   <label className="button subtle file-button">
-                    ＋ Attach image
+                    + Attach image
                     <input
                       type="file"
                       accept="image/*"
@@ -833,8 +950,9 @@ export function RecordDetail({
                 </div>
                 {!m.attachments?.length && (
                   <p className="help">
-                    Paste a screenshot anywhere, or attach one here. Save this
-                    record to keep new attachment links.
+                    Paste a screenshot into the description or a comment to add
+                    it inline, or attach one here. Save this record to keep new
+                    attachment links.
                   </p>
                 )}
               </section>
@@ -867,7 +985,7 @@ export function RecordDetail({
                   </span>
                 </summary>
                 <div className="markdown">
-                  <Markdown skipHtml>{e.body}</Markdown>
+                  <RecordMarkdown gfm={false}>{e.body}</RecordMarkdown>
                 </div>
               </details>
             ))}
@@ -911,6 +1029,19 @@ export function RecordDetail({
               disabled={saving}
             >
               Discard changes
+            </button>
+          )}
+          {kind === "ticket" && baseline && (
+            <button
+              className="button subtle"
+              disabled={saving || state.branchChanged}
+              onClick={() => {
+                const next = { ...m, archived: !m.archived };
+                setM(next);
+                void save(false, true, next);
+              }}
+            >
+              {m.archived ? "Unarchive" : "Archive"}
             </button>
           )}
         </div>
