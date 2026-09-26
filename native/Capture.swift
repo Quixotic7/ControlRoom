@@ -43,6 +43,8 @@ final class CaptureManager: NSObject {
     var eventTap: CFMachPort?
     var tapSource: CFRunLoopSource?
     var askedForMonitoring = false
+    var askedForRecording = false
+    let startedAt = ISO8601DateFormatter().string(from: Date())
 
     func stopMonitoring() {
         if let source = tapSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
@@ -75,10 +77,19 @@ final class CaptureManager: NSObject {
         return true
     }
 
+    // Every status carries the live permission picture, so the board can point
+    // at the exact System Settings pane and say whether a relaunch is needed.
     func state(_ value: String, _ message: String) {
-        let object: [String: Any] = ["state": value, "message": message, "pid": ProcessInfo.processInfo.processIdentifier, "at": ISO8601DateFormatter().string(from: Date())]
-        if let data = try? JSONSerialization.data(withJSONObject: object) { try? data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("status.json"), options: .atomic) }
+        let object: [String: Any] = ["state": value, "message": message, "pid": ProcessInfo.processInfo.processIdentifier, "at": ISO8601DateFormatter().string(from: Date()), "screenRecording": CGPreflightScreenCaptureAccess(), "inputMonitoring": CGPreflightListenEventAccess(), "startedAt": startedAt]
+        let file = URL(fileURLWithPath: directory).appendingPathComponent("status.json")
+        if let data = try? JSONSerialization.data(withJSONObject: object) {
+            do { try data.write(to: file, options: .atomic) } catch { fputs("Could not write status: \(error)\n", stderr) }
+        }
         statusItem?.button?.toolTip = message
+    }
+    func readyState(_ message: String) {
+        if CGPreflightScreenCaptureAccess() { state("ready", message) }
+        else { state("screen-recording-required", "\(message). Screen Recording permission is not active for this companion: allow Workboard Capture in System Settings, then relaunch the companion.") }
     }
     func projects() -> [[String: Any]] {
         ((try? fm.contentsOfDirectory(atPath: directory)) ?? []).filter { $0.hasPrefix("project-") && $0.hasSuffix(".json") }.compactMap { name in
@@ -102,8 +113,11 @@ final class CaptureManager: NSObject {
         let open = NSMenuItem(title: "Open active project", action: #selector(openProject), keyEquivalent: "")
         open.target = self; menu.addItem(open)
         menu.addItem(NSMenuItem.separator())
+        let relaunch = NSMenuItem(title: "Relaunch capture companion", action: #selector(relaunchCompanion), keyEquivalent: "")
+        relaunch.target = self; menu.addItem(relaunch)
         let quit = NSMenuItem(title: "Quit capture companion", action: #selector(quitCompanion), keyEquivalent: "")
         quit.target = self; menu.addItem(quit); statusItem?.menu = menu
+        if !CGPreflightScreenCaptureAccess() { state("screen-recording-required", "Screen Recording permission is not active for this companion. Allow Workboard Capture in System Settings, then relaunch the companion.") }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
             DispatchQueue.main.async { manager.trigger() }; return noErr
@@ -125,12 +139,12 @@ final class CaptureManager: NSObject {
             if signature != next {
                 if let ref = hotkey { UnregisterEventHotKey(ref); hotkey = nil }
                 if doubleTap {
-                    if monitorOption() { signature = next; state("ready", "Double-tap Option to capture for \(p["name"] as? String ?? "project")") }
+                    if monitorOption() { signature = next; readyState("Double-tap Option to capture for \(p["name"] as? String ?? "project")") }
                 } else {
                 stopMonitoring()
                 var ref: EventHotKeyRef?
                 let code = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: 0x57424F41, id: 1), GetApplicationEventTarget(), 0, &ref)
-                if code == noErr { hotkey = ref; signature = next; state("ready", "Capture ready for \(p["name"] as? String ?? "project")") }
+                if code == noErr { hotkey = ref; signature = next; readyState("Capture ready for \(p["name"] as? String ?? "project")") }
                 else { state("shortcut-conflict", "Could not register shortcut (\(code)). Choose another key in Settings. Paste/drop and menu capture remain available.") }
                 }
             }
@@ -145,6 +159,13 @@ final class CaptureManager: NSObject {
         guard !busy else { return }
         guard let destination = projects().first, let drafts = destination["draftDirectory"] as? String else {
             state("destination-unavailable", "No running project is available. Open a project before capturing."); return
+        }
+        // Screen Recording is granted per process: a grant made while this
+        // companion was already running only applies after a relaunch.
+        guard CGPreflightScreenCaptureAccess() else {
+            if !askedForRecording { askedForRecording = true; _ = CGRequestScreenCaptureAccess() }
+            state("screen-recording-required", "Screen Recording permission is not active for this companion. Allow Workboard Capture under System Settings > Privacy & Security > Screen Recording, then relaunch the companion (Relaunch in Settings or the CR menu).")
+            return
         }
         busy = true; target = destination
         try? fm.createDirectory(atPath: drafts, withIntermediateDirectories: true)
@@ -190,6 +211,17 @@ final class CaptureManager: NSObject {
         }.resume()
     }
     @objc func openProject() { if let p = projects().first, let address = p["url"] as? String, let url = URL(string: address) { NSWorkspace.shared.open(url) } }
+    // Picks up permission changes: a fresh process gets the current grants.
+    @objc func relaunchCompanion() {
+        let bundle = Bundle.main.bundleURL
+        let task = Process(); task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        task.arguments = ["-g", "-n", bundle.path, "--args", directory]
+        stopMonitoring(); if let ref = hotkey { UnregisterEventHotKey(ref) }
+        if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
+        state("restarting", "Capture companion is relaunching")
+        try? task.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApplication.shared.terminate(nil) }
+    }
     @objc func quitCompanion() { stopMonitoring(); if let ref = hotkey { UnregisterEventHotKey(ref) }; state("not-running", "Capture companion stopped"); if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) }; NSApplication.shared.terminate(nil) }
 }
 

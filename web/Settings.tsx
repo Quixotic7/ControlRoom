@@ -190,6 +190,20 @@ export function Settings({
         </p>
         <div className="capture-status">
           <span className="tag">{capture?.state ?? "Checking…"}</span>
+          {capture?.pid && (
+            <>
+              <span
+                className={`tag ${capture.screenRecording ? "green" : "danger"}`}
+              >
+                Screen Recording {capture.screenRecording ? "on" : "off"}
+              </span>
+              <span
+                className={`tag ${capture.inputMonitoring ? "green" : "danger"}`}
+              >
+                Input Monitoring {capture.inputMonitoring ? "on" : "off"}
+              </span>
+            </>
+          )}
           <p>{capture?.message}</p>
           <div className="inline-actions" style={{ marginTop: 10 }}>
             {(
@@ -210,7 +224,23 @@ export function Settings({
                 Open {label} settings
               </button>
             ))}
+            <button
+              className="button small"
+              title="Permissions granted while the companion is running only apply to a fresh process"
+              onClick={() =>
+                api("/capture/restart", "POST", {})
+                  .then(() => setTimeout(loadCapture, 1500))
+                  .catch((e) => onError(String(e)))
+              }
+            >
+              Relaunch companion
+            </button>
           </div>
+          <p className="help">
+            After changing a permission, relaunch the companion: macOS applies
+            grants to new processes only. Rebuilding the companion also resets
+            its permissions.
+          </p>
         </div>
         <label className="field">
           Global shortcut

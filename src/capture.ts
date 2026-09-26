@@ -69,6 +69,27 @@ export function captureStatus() {
       "Native capture companion is not running. Paste and drop still work.",
   };
 }
+// Stops the running companion (permissions apply to new processes) and
+// starts a fresh one.
+export async function restartCompanion(toolRoot: string) {
+  const status = captureStatus();
+  if (Number.isInteger(status.pid)) {
+    try {
+      process.kill(status.pid, "SIGTERM");
+    } catch {}
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      try {
+        process.kill(status.pid, 0);
+      } catch {
+        break;
+      }
+    }
+  }
+  const lock = path.join(captureRoot, "companion.lock");
+  if (fs.existsSync(lock)) fs.unlinkSync(lock);
+  startCompanion(toolRoot);
+}
 export function startCompanion(toolRoot: string) {
   if (process.platform !== "darwin") return;
   const bin = path.join(

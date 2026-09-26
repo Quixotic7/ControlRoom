@@ -24,6 +24,7 @@ import {
   captureRoot,
   captureStatus,
   registerCapture,
+  restartCompanion,
   startCompanion,
 } from "./capture.js";
 import type { Actor, Kind } from "./types.js";
@@ -292,6 +293,12 @@ export async function buildServer(
     return { ok: true };
   });
   app.get("/api/capture/status", async () => captureStatus());
+  app.post("/api/capture/restart", async () => {
+    if (process.platform !== "darwin")
+      throw new Problem(400, "The capture companion is macOS only");
+    await restartCompanion(toolRoot);
+    return { ok: true };
+  });
   // Opens the macOS privacy pane the capture companion needs.
   app.post("/api/capture/settings", async (req: any) => {
     const panes: Record<string, string> = {

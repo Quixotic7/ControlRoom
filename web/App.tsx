@@ -321,9 +321,21 @@ export function App() {
                 className="button"
                 title="Select a region or window with the macOS companion"
                 onClick={() =>
-                  api("/capture/request", "POST", {}).catch((e) =>
-                    setError(String(e)),
-                  )
+                  api("/capture/request", "POST", {})
+                    .then(
+                      () =>
+                        new Promise((r) =>
+                          setTimeout(r, 1500),
+                        ) as Promise<void>,
+                    )
+                    .then(() => api("/capture/status"))
+                    .then((s) => {
+                      // Surface a permission or availability problem here,
+                      // instead of leaving it on the Settings page.
+                      if (s?.state && !["ready", "capturing"].includes(s.state))
+                        setNotice(`${s.message} See Settings for permissions.`);
+                    })
+                    .catch((e) => setError(String(e)))
                 }
               >
                 <ImageIcon />
