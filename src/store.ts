@@ -1,0 +1,803 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import YAML from "yaml";
+import { z } from "zod";
+import {
+  atomic,
+  branch,
+  canonicalProject,
+  hash,
+  markdown,
+  mkdir,
+  now,
+  parseMd,
+  patchMd,
+  Problem,
+  read,
+  safe,
+  uid,
+  walk,
+} from "./files.js";
+import type {
+  Actor,
+  Attachment,
+  Claim,
+  Column,
+  Config,
+  Kind,
+  Meta,
+  ProjectState,
+  RecordFile,
+  Comment,
+} from "./types.js";
+
+const actorSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  kind: z.enum(["human", "agent"]),
+});
+const strings = z.array(z.string().max(1000));
+const configSchema = z
+  .object({
+    schema: z.literal(1),
+    projectId: z.string().regex(/^project-[a-f0-9]+$/),
+    name: z.string().trim().min(1).max(200),
+    columns: z
+      .array(
+        z.object({
+          id: z.string().regex(/^[a-z0-9_-]+$/),
+          name: z.string().trim().min(1).max(80),
+          role: z.enum(["backlog", "selected", "progress", "review", "done"]),
+        }),
+      )
+      .min(5)
+      .max(20),
+    shortcut: z.object({
+      mode: z.enum(["double-alt", "hotkey"]).optional(),
+      key: z.number().int().min(0).max(127),
+      modifiers: z.number().int().min(0).max(65535),
+      label: z.string(),
+    }),
+  })
+  .passthrough();
+const metaSchema = z
+  .object({
+    schema: z.literal(1),
+    id: z.string().regex(/^[A-Za-z0-9_-]+$/),
+    kind: z.enum(["ticket", "decision", "rule"]),
+    number: z.number().int().nonnegative().optional(),
+    title: z.string().trim().min(1).max(300),
+    status: z.string().min(1),
+    author: actorSchema,
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    parent: z.string().nullable().optional(),
+    labels: strings.optional(),
+    priority: z.number().finite().optional(),
+    order: z.number().finite().optional(),
+    owner: z.string().optional(),
+    scopeApproved: z.boolean().optional(),
+    blocked: z.string().optional(),
+    dependencies: strings.optional(),
+    decisions: strings.optional(),
+    rules: strings.optional(),
+    attachments: strings.optional(),
+    handoff: z.string().optional(),
+    evidence: z.string().optional(),
+    question: z.string().optional(),
+    exceptions: z.string().optional(),
+    scope: strings.optional(),
+    strength: z.enum(["required", "recommended"]).optional(),
+    category: z.string().optional(),
+    supersedes: z.string().optional(),
+    references: strings.optional(),
+    worktree: z.string().optional(),
+    reviewedRules: z.record(z.string(), z.string()).optional(),
+    archived: z.boolean().optional(),
+  })
+  .passthrough();
+export const defaultColumns: Column[] = [
+  { id: "backlog", name: "Backlog", role: "backlog" },
+  { id: "selected", name: "Selected For Development", role: "selected" },
+  { id: "progress", name: "In Progress", role: "progress" },
+  { id: "review", name: "Review", role: "review" },
+  { id: "done", name: "Done", role: "done" },
+];
+const folder = { ticket: "tickets", decision: "decisions", rule: "rules" };
+export class Store {
+  root: string;
+  dir: string;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(project: string, exact = false) {
+    this.root = canonicalProject(project, !exact);
+    this.dir = path.join(this.root, ".workboard");
+  }
+  initialize(name = path.basename(this.root)) {
+    mkdir(this.dir);
+    for (const d of [
+      "records/tickets",
+      "records/decisions",
+      "records/rules",
+      "records/comments",
+      "records/history",
+      "records/attachments",
+      "staging",
+      "assets",
+      ".local",
+    ])
+      mkdir(safe(this.dir, d));
+    if (!fs.existsSync(this.file("config.yml")))
+      atomic(
+        this.file("config.yml"),
+        YAML.stringify({
+          schema: 1,
+          projectId: uid("project"),
+          name,
+          columns: defaultColumns,
+          shortcut: {
+            mode: "double-alt",
+            key: 1,
+            modifiers: 6400,
+            label: "Double-tap Option / Alt",
+          },
+        }),
+      );
+    if (!fs.existsSync(this.file(".gitignore")))
+      atomic(this.file(".gitignore"), "assets/\n.local/\n*.tmp\n");
+    if (!fs.existsSync(this.file("README.md")))
+      atomic(
+        this.file("README.md"),
+        "# Project records\n\nMarkdown and annotation JSON are authoritative. Images live in the ignored assets directory. Use Workboard export to back up both. All Git worktrees connect to this main checkout. Use the CLI for coordinated edits. Direct edits are detected but cannot participate in application locking.\n",
+      );
+    if (!fs.existsSync(this.file(".local/branch.json")))
+      atomic(
+        this.file(".local/branch.json"),
+        JSON.stringify({ branch: branch(this.root) }),
+      );
+    if (!fs.existsSync(this.file(".local/token")))
+      atomic(
+        this.file(".local/token"),
+        crypto.randomBytes(32).toString("hex"),
+        0o600,
+      );
+    return this;
+  }
+  file(relative: string) {
+    return safe(this.dir, relative);
+  }
+  config(): Config {
+    const c = configSchema.parse(YAML.parse(read(this.file("config.yml"))));
+    if (
+      new Set(c.columns.map((v) => v.id)).size !== c.columns.length ||
+      ["backlog", "selected", "progress", "review", "done"].some(
+        (role) => !c.columns.some((col) => col.role === role),
+      )
+    )
+      throw new Problem(
+        422,
+        "Configuration requires unique columns and each workflow role",
+      );
+    return c as Config;
+  }
+  token() {
+    return read(this.file(".local/token")).trim();
+  }
+  branchState() {
+    const current = branch(this.root);
+    const acknowledged = JSON.parse(
+      read(this.file(".local/branch.json")),
+    ).branch;
+    return {
+      branch: current,
+      acknowledgedBranch: acknowledged,
+      branchChanged: current !== acknowledged,
+    };
+  }
+  async write<T>(
+    fn: () => T | Promise<T>,
+    allowBranchChange = false,
+  ): Promise<T> {
+    const run = this.queue.then(async () => {
+      if (!allowBranchChange && this.branchState().branchChanged)
+        throw new Problem(
+          409,
+          "Canonical checkout changed branches. Review the files and reconcile in Settings before writing.",
+        );
+      return fn();
+    });
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  load(relative: string): RecordFile {
+    const text = read(this.file(relative));
+    const { meta, body } = parseMd(text);
+    const m = metaSchema.parse(meta) as Meta;
+    if (path.basename(relative, ".md") !== m.id)
+      throw new Problem(422, "Record ID must match its filename");
+    if (!relative.startsWith(`records/${folder[m.kind]}/`))
+      throw new Problem(422, "Record kind does not match its folder");
+    return { meta: m, body, revision: hash(text), path: relative };
+  }
+  get(id: string): RecordFile {
+    if (/^#?\d+$/.test(id)) {
+      const numbered = this.list().find(
+        (r) =>
+          r.meta.kind === "ticket" &&
+          r.meta.number === Number(id.replace("#", "")),
+      );
+      if (numbered) return numbered;
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(id))
+      throw new Problem(400, "Invalid record ID");
+    for (const dir of Object.values(folder)) {
+      const p = `records/${dir}/${id}.md`;
+      if (fs.existsSync(this.file(p))) return this.load(p);
+    }
+    throw new Problem(404, `Record ${id} not found`);
+  }
+  list(): RecordFile[] {
+    return Object.values(folder).flatMap((d) =>
+      walk(this.file(`records/${d}`), ".md")
+        .map((f) => {
+          try {
+            return this.load(path.relative(this.dir, f));
+          } catch {
+            return null;
+          }
+        })
+        .filter((v): v is RecordFile => !!v),
+    );
+  }
+  comments(): Comment[] {
+    return walk(this.file("records/comments"), ".md")
+      .map((f) => {
+        const text = read(f);
+        const p = parseMd(text);
+        actorSchema.parse(p.meta.actor);
+        return { ...p.meta, body: p.body, revision: hash(text) } as Comment;
+      })
+      .sort((a, b) => a.at.localeCompare(b.at));
+  }
+  attachments(): Attachment[] {
+    return walk(this.file("records/attachments"), ".json").map((f) =>
+      this.attachment(path.basename(f, ".json")),
+    );
+  }
+  attachment(id: string): Attachment {
+    const text = read(this.file(`records/attachments/${id}.json`));
+    const a = JSON.parse(text);
+    return {
+      ...a,
+      revision: hash(text),
+      missing: !fs.existsSync(this.file(`assets/${id}/base.png`)),
+    };
+  }
+  claims(): Claim[] {
+    const p = this.file(".local/claims.json");
+    return fs.existsSync(p) ? JSON.parse(read(p)) : [];
+  }
+  state(): ProjectState {
+    const errors: { path: string; message: string }[] = [];
+    const records: RecordFile[] = [];
+    for (const d of Object.values(folder))
+      for (const f of walk(this.file(`records/${d}`), ".md")) {
+        try {
+          records.push(this.load(path.relative(this.dir, f)));
+        } catch (e) {
+          errors.push({ path: path.relative(this.dir, f), message: String(e) });
+        }
+      }
+    const comments: Comment[] = [];
+    for (const f of walk(this.file("records/comments"), ".md")) {
+      try {
+        const s = read(f);
+        const p = parseMd(s);
+        actorSchema.parse(p.meta.actor);
+        comments.push({
+          ...p.meta,
+          body: p.body,
+          revision: hash(s),
+        } as Comment);
+      } catch (e) {
+        errors.push({ path: path.relative(this.dir, f), message: String(e) });
+      }
+    }
+    const attachments: Attachment[] = [];
+    for (const f of walk(this.file("records/attachments"), ".json")) {
+      try {
+        attachments.push(this.attachment(path.basename(f, ".json")));
+      } catch (e) {
+        errors.push({ path: path.relative(this.dir, f), message: String(e) });
+      }
+    }
+    const state = {
+      config: this.config(),
+      configRevision: hash(read(this.file("config.yml"))),
+      records,
+      comments,
+      attachments,
+      claims: this.claims(),
+      errors,
+      canonical: this.root,
+      ...this.branchState(),
+    };
+    return { ...state, revision: hash(JSON.stringify(state)) };
+  }
+  private validate(meta: Meta, records = this.list()) {
+    metaSchema.parse(meta);
+    if (meta.kind === "ticket") {
+      if (!this.config().columns.some((c) => c.id === meta.status))
+        throw new Problem(422, "Unknown ticket status");
+      const seen = new Set([meta.id]);
+      let p = meta.parent;
+      while (p) {
+        if (seen.has(p))
+          throw new Problem(422, "Parent tickets cannot form a cycle");
+        seen.add(p);
+        const parent = records.find((r) => r.meta.id === p);
+        if (!parent || parent.meta.kind !== "ticket")
+          throw new Problem(422, "Parent ticket does not exist");
+        p = parent.meta.parent;
+      }
+      for (const id of meta.dependencies ?? [])
+        if (
+          id === meta.id ||
+          !records.some((r) => r.meta.id === id && r.meta.kind === "ticket")
+        )
+          throw new Problem(422, `Invalid dependency: ${id}`);
+    } else if (
+      !(
+        meta.kind === "decision"
+          ? ["proposed", "accepted", "rejected", "superseded"]
+          : ["proposed", "active", "deprecated"]
+      ).includes(meta.status)
+    )
+      throw new Problem(422, "Unknown lifecycle status");
+    if (meta.supersedes) {
+      const seen = new Set([meta.id]);
+      let p: string | undefined = meta.supersedes;
+      while (p) {
+        if (seen.has(p))
+          throw new Problem(422, "Predecessors cannot form a cycle");
+        seen.add(p);
+        const old = records.find((r) => r.meta.id === p);
+        if (!old || old.meta.kind !== meta.kind)
+          throw new Problem(422, "Invalid predecessor");
+        p = old.meta.supersedes;
+      }
+    }
+    for (const id of meta.rules ?? [])
+      if (!records.some((r) => r.meta.id === id && r.meta.kind === "rule"))
+        throw new Problem(422, `Unknown rule ${id}`);
+    for (const id of meta.decisions ?? [])
+      if (!records.some((r) => r.meta.id === id && r.meta.kind === "decision"))
+        throw new Problem(422, `Unknown decision ${id}`);
+  }
+  scope(record: RecordFile): RecordFile | undefined {
+    const seen = new Set<string>();
+    let r: RecordFile | undefined = record;
+    while (r && !seen.has(r.meta.id)) {
+      seen.add(r.meta.id);
+      if (r.meta.scopeApproved) return r;
+      r = r.meta.parent ? this.get(r.meta.parent) : undefined;
+    }
+    return undefined;
+  }
+  private authority(actor: Actor, next: Meta, old?: RecordFile) {
+    actorSchema.parse(actor);
+    if (actor.kind !== "agent" || next.kind !== "ticket") return;
+    if (next.scopeApproved !== old?.meta.scopeApproved && next.scopeApproved)
+      throw new Problem(403, "Only a human can approve task scope");
+    const role = this.config().columns.find((c) => c.id === next.status)?.role;
+    if (role === "done" && old?.meta.status !== next.status)
+      throw new Problem(
+        403,
+        "Agents submit work to Review; a human accepts Done",
+      );
+    if (
+      ["selected", "progress", "review"].includes(role ?? "") &&
+      !this.scope({ meta: next, body: "", revision: "", path: "" })
+    )
+      throw new Problem(
+        403,
+        "Agent work requires an approved parent scope or an explicitly approved ticket",
+      );
+  }
+  private history(
+    id: string,
+    actor: Actor,
+    action: string,
+    before: unknown,
+    after: unknown,
+  ) {
+    const event = uid("event");
+    atomic(
+      this.file(`records/history/${event}.md`),
+      markdown(
+        { id: event, record: id, actor, action, at: now() },
+        "```json\n" + JSON.stringify({ before, after }, null, 2) + "\n```\n",
+      ),
+    );
+  }
+  // Called only inside the service's serialized writer. The counter travels in backups and Git.
+  reserveTicketNumber(): number {
+    const file = this.file("records/ticket-sequence.json");
+    const stored = fs.existsSync(file) ? JSON.parse(read(file)).next : 0;
+    if (!Number.isSafeInteger(stored) || stored < 0)
+      throw new Problem(422, "Invalid ticket sequence");
+    const next = Math.max(
+      stored,
+      ...this.list()
+        .filter((r) => r.meta.kind === "ticket")
+        .map((r) => (r.meta.number ?? -1) + 1),
+    );
+    atomic(file, JSON.stringify({ next: next + 1 }));
+    return next;
+  }
+  migrateTicketNumbers() {
+    return this.write(() => {
+      const records = this.list()
+        .filter((r) => r.meta.kind === "ticket")
+        .sort(
+          (a, b) =>
+            a.meta.createdAt.localeCompare(b.meta.createdAt) ||
+            a.meta.id.localeCompare(b.meta.id),
+        );
+      for (const r of records)
+        if (r.meta.number === undefined) {
+          atomic(
+            this.file(r.path),
+            patchMd(read(this.file(r.path)), {
+              number: this.reserveTicketNumber(),
+            }),
+          );
+        }
+    });
+  }
+  private createNow(
+    kind: Kind,
+    input: Record<string, unknown>,
+    body: string,
+    actor: Actor,
+  ): RecordFile {
+    if (!["ticket", "decision", "rule"].includes(kind))
+      throw new Problem(400, "Unknown record type");
+    const stamp = now(),
+      id = uid(kind === "ticket" ? "WB" : kind === "decision" ? "DEC" : "UI");
+    const meta = {
+      ...input,
+      schema: 1,
+      id,
+      kind,
+      title: input.title,
+      status:
+        input.status ??
+        (kind === "ticket"
+          ? this.config().columns.find((c) => c.role === "backlog")!.id
+          : "proposed"),
+      createdAt: stamp,
+      updatedAt: stamp,
+      author: actor,
+    } as Meta;
+    this.validate(meta);
+    this.authority(actor, meta);
+    if (kind === "ticket") meta.number = this.reserveTicketNumber();
+    if (kind === "ticket" && meta.order === undefined) meta.order = Date.now();
+    if (kind === "ticket")
+      meta.reviewedRules = Object.fromEntries(
+        this.applicableRules({ meta, body, revision: "", path: "" }).map(
+          (r) => [r.meta.id, r.revision],
+        ),
+      );
+    const rel = `records/${folder[kind]}/${id}.md`;
+    atomic(this.file(rel), markdown(meta, body));
+    this.history(id, actor, "created", null, { meta, body });
+    return this.load(rel);
+  }
+  create(
+    kind: Kind,
+    input: Record<string, unknown>,
+    body: string,
+    actor: Actor,
+  ) {
+    return this.write(() => this.createNow(kind, input, body, actor));
+  }
+  private updateNow(
+    id: string,
+    revision: string,
+    patch: Record<string, unknown>,
+    body: string | undefined,
+    actor: Actor,
+  ): RecordFile {
+    const old = this.get(id);
+    id = old.meta.id;
+    if (old.revision !== revision)
+      throw new Problem(
+        409,
+        "This record changed. Reload it before saving; your edit has not been applied.",
+        { current: old },
+      );
+    for (const key of ["id", "number", "kind", "schema", "createdAt", "author"])
+      if (
+        key in patch &&
+        JSON.stringify(patch[key]) !== JSON.stringify(old.meta[key])
+      )
+        throw new Problem(422, `Cannot change ${key}`);
+    const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
+    this.validate(meta);
+    this.authority(actor, meta, old);
+    if (
+      meta.kind === "ticket" &&
+      actor.kind === "agent" &&
+      this.config().columns.find((c) => c.id === meta.status)?.role ===
+        "review" &&
+      old.meta.status !== meta.status &&
+      (!meta.handoff?.trim() || !meta.evidence?.trim())
+    )
+      throw new Problem(
+        422,
+        "Review requires a handoff and verification evidence",
+      );
+    const oldText = read(this.file(old.path));
+    if (hash(oldText) !== revision)
+      throw new Problem(409, "File changed during save");
+    atomic(
+      this.file(old.path),
+      patchMd(oldText, { ...patch, updatedAt: meta.updatedAt }, body),
+    );
+    this.history(
+      id,
+      actor,
+      "updated",
+      { meta: old.meta, body: old.body },
+      { meta, body: body ?? old.body },
+    );
+    return this.load(old.path);
+  }
+  update(
+    id: string,
+    revision: string,
+    patch: Record<string, unknown>,
+    body: string | undefined,
+    actor: Actor,
+  ) {
+    return this.write(() => this.updateNow(id, revision, patch, body, actor));
+  }
+  comment(
+    ticket: string,
+    body: string,
+    actor: Actor,
+    kind: Comment["kind"] = "comment",
+  ) {
+    return this.write(() => {
+      ticket = this.get(ticket).meta.id;
+      actorSchema.parse(actor);
+      if (!body.trim()) throw new Problem(422, "Comment cannot be empty");
+      if (!["comment", "question", "handoff", "review"].includes(kind))
+        throw new Problem(422, "Unknown comment type");
+      const meta = {
+        id: uid("comment"),
+        ticket,
+        actor,
+        kind,
+        at: now(),
+        resolved: false,
+      };
+      atomic(this.file(`records/comments/${meta.id}.md`), markdown(meta, body));
+      return meta;
+    });
+  }
+  resolveComment(
+    id: string,
+    revision: string,
+    resolved: boolean,
+    actor: Actor,
+  ) {
+    return this.write(() => {
+      const p = this.file(`records/comments/${id}.md`),
+        s = read(p);
+      if (hash(s) !== revision) throw new Problem(409, "Comment changed");
+      const before = parseMd(s).meta;
+      atomic(p, patchMd(s, { resolved, resolvedBy: actor, resolvedAt: now() }));
+      this.history(
+        before.ticket,
+        actor,
+        resolved ? "resolved question" : "reopened question",
+        before,
+        { ...before, resolved },
+      );
+    });
+  }
+  claim(ticket: string, actor: Actor, worktree: string, release = false) {
+    return this.write(() => {
+      const r = this.get(ticket);
+      ticket = r.meta.id;
+      if (r.meta.kind !== "ticket")
+        throw new Problem(422, "Only tickets can be claimed");
+      this.authority(
+        actor,
+        {
+          ...r.meta,
+          status: this.config().columns.find((c) => c.role === "progress")!.id,
+        },
+        r,
+      );
+      const claims = this.claims(),
+        existing = claims.find((c) => c.ticket === ticket);
+      if (
+        existing &&
+        existing.expiresAt > now() &&
+        (existing.actor.name !== actor.name ||
+          existing.actor.kind !== actor.kind ||
+          existing.worktree !== worktree)
+      )
+        throw new Problem(
+          409,
+          `Claimed by ${existing.actor.name} in ${existing.worktree}`,
+          existing,
+        );
+      const result = claims.filter((c) => c.ticket !== ticket);
+      if (!release)
+        result.push({
+          ticket,
+          actor,
+          worktree,
+          reportedAt: now(),
+          expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+        });
+      atomic(this.file(".local/claims.json"), JSON.stringify(result, null, 2));
+      return result.find((c) => c.ticket === ticket) ?? null;
+    });
+  }
+  applicableRules(ticket: RecordFile) {
+    const scope = this.scope(ticket);
+    const labels = new Set([
+      ...(ticket.meta.labels ?? []),
+      ...(scope?.meta.labels ?? []),
+    ]);
+    const records = this.list();
+    const replaced = new Set(
+      records
+        .filter((r) => r.meta.kind === "rule" && r.meta.status === "active")
+        .map((r) => r.meta.supersedes)
+        .filter(Boolean),
+    );
+    return records.filter(
+      (r) =>
+        r.meta.kind === "rule" &&
+        r.meta.status === "active" &&
+        !replaced.has(r.meta.id) &&
+        ((ticket.meta.rules ?? []).includes(r.meta.id) ||
+          !r.meta.scope?.length ||
+          r.meta.scope.includes("*") ||
+          r.meta.scope.some((s) => labels.has(s))),
+    );
+  }
+  context(id: string) {
+    const ticket = this.get(id),
+      rules = this.applicableRules(ticket),
+      scope = this.scope(ticket);
+    return {
+      ticket,
+      workflow: this.config().columns,
+      parent: ticket.meta.parent ? this.get(ticket.meta.parent) : null,
+      approvedScope: scope ?? null,
+      decisions: this.list().filter(
+        (r) =>
+          r.meta.kind === "decision" &&
+          r.meta.status === "accepted" &&
+          !this.list().some(
+            (n) =>
+              n.meta.kind === "decision" &&
+              n.meta.status === "accepted" &&
+              n.meta.supersedes === r.meta.id,
+          ) &&
+          (!r.meta.scope?.length ||
+            r.meta.scope.includes("*") ||
+            (ticket.meta.decisions ?? []).includes(r.meta.id) ||
+            r.meta.scope.some((s) => (ticket.meta.labels ?? []).includes(s))),
+      ),
+      rules,
+      ruleRevisions: Object.fromEntries(
+        rules.map((r) => [r.meta.id, r.revision]),
+      ),
+      ruleMatching:
+        "Explicit links, global rules, and labels on the ticket or approved parent. Review for missing rules.",
+      dependencies: (ticket.meta.dependencies ?? []).map((d) => this.get(d)),
+      comments: this.comments().filter((c) => c.ticket === ticket.meta.id),
+      attachments: (ticket.meta.attachments ?? []).map((a) =>
+        this.attachment(a),
+      ),
+      claim: this.claims().find((c) => c.ticket === ticket.meta.id) ?? null,
+    };
+  }
+  review(
+    id: string,
+    revision: string,
+    handoff: string,
+    evidence: string,
+    exceptions: string,
+    actor: Actor,
+  ) {
+    return this.write(() =>
+      this.updateNow(
+        id,
+        revision,
+        {
+          status: this.config().columns.find((c) => c.role === "review")!.id,
+          handoff,
+          evidence,
+          exceptions,
+          reviewedRules: this.context(id).ruleRevisions,
+        },
+        undefined,
+        actor,
+      ),
+    );
+  }
+  updateConfig(revision: string, patch: Partial<Config>) {
+    return this.write(() => {
+      const p = this.file("config.yml"),
+        s = read(p);
+      if (hash(s) !== revision) throw new Problem(409, "Configuration changed");
+      const c = {
+        ...this.config(),
+        ...patch,
+        schema: 1,
+        projectId: this.config().projectId,
+      };
+      configSchema.parse(c);
+      if (!c.name.trim()) throw new Problem(422, "Project name is required");
+      if (
+        !c.columns.length ||
+        new Set(c.columns.map((v) => v.id)).size !== c.columns.length
+      )
+        throw new Problem(422, "Column IDs must be unique");
+      for (const role of ["backlog", "selected", "progress", "review", "done"])
+        if (!c.columns.some((v) => v.role === role))
+          throw new Problem(422, `Keep a column with the ${role} role`);
+      for (const col of c.columns)
+        if (!/^[a-z0-9_-]+$/.test(col.id) || !col.name.trim())
+          throw new Problem(422, "Invalid column");
+      for (const r of this.list())
+        if (
+          r.meta.kind === "ticket" &&
+          !c.columns.some((v) => v.id === r.meta.status)
+        )
+          throw new Problem(
+            422,
+            `Move tickets out of ${r.meta.status} before removing it`,
+          );
+      atomic(p, YAML.stringify(c));
+      return c;
+    });
+  }
+  reconcile(expectedBranch: string) {
+    return this.write(() => {
+      const current = branch(this.root);
+      if (current !== expectedBranch)
+        throw new Problem(409, "Branch changed again");
+      const errors = this.state().errors;
+      if (errors.length)
+        throw new Problem(
+          422,
+          "Fix invalid records before reconciling",
+          errors,
+        );
+      atomic(
+        this.file(".local/branch.json"),
+        JSON.stringify({ branch: current }),
+      );
+    }, true);
+  }
+  historyFor(id: string) {
+    id = this.get(id).meta.id;
+    return walk(this.file("records/history"), ".md")
+      .map((f) => {
+        const s = parseMd(read(f));
+        return { ...s.meta, body: s.body };
+      })
+      .filter((e) => e.record === id)
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  }
+}

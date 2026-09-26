@@ -1,0 +1,145 @@
+import fs from "node:fs";
+import { z } from "zod";
+import { atomic, hash, now, Problem, read, uid } from "./files.js";
+import type { Actor, Annotation, Attachment } from "./types.js";
+import type { Store } from "./store.js";
+
+const coord = z.number().finite().min(0).max(1);
+const annotationSchema = z.object({
+  id: z.string().regex(/^[\w-]+$/),
+  type: z.enum(["pin", "box", "arrow", "draw", "text"]),
+  x: coord,
+  y: coord,
+  x2: coord.optional(),
+  y2: coord.optional(),
+  points: z
+    .array(z.tuple([coord, coord]))
+    .max(10000)
+    .optional(),
+  text: z.string().max(10000),
+  resolved: z.boolean(),
+  actor: z
+    .object({ name: z.string(), kind: z.enum(["human", "agent"]) })
+    .optional(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+});
+function png(data: string) {
+  const raw = data.replace(/^data:image\/png;base64,/, "");
+  if (raw.length > 40_000_000)
+    throw new Problem(413, "Image is too large (maximum 30 MB)");
+  const bytes = Buffer.from(raw, "base64");
+  if (
+    bytes.length < 24 ||
+    !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+  )
+    throw new Problem(422, "Images must be normalized PNG files");
+  const width = bytes.readUInt32BE(16),
+    height = bytes.readUInt32BE(20);
+  if (
+    !width ||
+    !height ||
+    width > 16000 ||
+    height > 16000 ||
+    width * height > 60_000_000
+  )
+    throw new Problem(422, "Image dimensions exceed the supported size");
+  return { bytes, width, height };
+}
+export function addImage(store: Store, name: string, data: string) {
+  return store.write(() => {
+    const { bytes, width, height } = png(data);
+    const id = uid("image");
+    const a = {
+      id,
+      name: name.slice(0, 300),
+      hash: hash(bytes),
+      width,
+      height,
+      mime: "image/png",
+      annotations: [],
+      createdAt: now(),
+    };
+    atomic(store.file(`assets/${id}/base.png`), bytes);
+    atomic(
+      store.file(`records/attachments/${id}.json`),
+      JSON.stringify(a, null, 2),
+    );
+    return store.attachment(id);
+  });
+}
+export function saveAnnotations(
+  store: Store,
+  id: string,
+  revision: string,
+  annotations: Annotation[],
+  preview: string | undefined,
+  actor: Actor,
+) {
+  return store.write(() => {
+    const a = store.attachment(id);
+    if (a.revision !== revision)
+      throw new Problem(409, "Annotations changed. Reload before saving.");
+    const validated = z.array(annotationSchema).max(500).parse(annotations);
+    if (new Set(validated.map((v) => v.id)).size !== validated.length)
+      throw new Problem(422, "Annotation IDs must be unique");
+    for (const v of validated) {
+      if (
+        ["box", "arrow"].includes(v.type) &&
+        (v.x2 === undefined || v.y2 === undefined)
+      )
+        throw new Problem(422, "Region and arrow endpoints are required");
+      if (v.type === "draw" && !v.points?.length)
+        throw new Problem(422, "Drawing needs points");
+    }
+    let rendered: Buffer | undefined;
+    if (preview) {
+      const p = png(preview);
+      if (p.width !== a.width || p.height !== a.height)
+        throw new Problem(
+          422,
+          "Preview dimensions must match the source image",
+        );
+      rendered = p.bytes;
+    }
+    const { revision: _, missing: __, ...base } = a;
+    const result = {
+      ...base,
+      annotations: validated,
+      updatedAt: now(),
+      updatedBy: actor,
+    };
+    atomic(
+      store.file(`records/attachments/${id}.json`),
+      JSON.stringify(result, null, 2),
+    );
+    if (rendered) atomic(store.file(`assets/${id}/preview.png`), rendered);
+    else {
+      const p = store.file(`assets/${id}/preview.png`);
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    }
+    atomic(
+      store.file(`records/attachments/${id}.md`),
+      `# ${a.name}\n\nImage: ${id} (${a.width} × ${a.height}), SHA-256 ${a.hash}\n\n` +
+        validated
+          .map(
+            (n, i) =>
+              `## A${i + 1} — ${n.id}${n.resolved ? " (resolved)" : ""}\n\n${n.text || "(No written instruction)"}\n\nType: ${n.type}; normalized region: (${n.x}, ${n.y})${n.x2 !== undefined ? ` → (${n.x2}, ${n.y2})` : ""}.\n`,
+          )
+          .join("\n"),
+    );
+    return store.attachment(id);
+  });
+}
+export function imageContext(store: Store, a: Attachment) {
+  return {
+    ...a,
+    basePath: store.file(`assets/${a.id}/base.png`),
+    previewPath: fs.existsSync(store.file(`assets/${a.id}/preview.png`))
+      ? store.file(`assets/${a.id}/preview.png`)
+      : null,
+    instructionsPath: store.file(`records/attachments/${a.id}.md`),
+  };
+}

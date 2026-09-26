@@ -1,0 +1,42 @@
+{
+  "name": "project-workboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts serve --dev",
+    "start": "tsx src/cli.ts serve",
+    "workboard": "tsx src/cli.ts",
+    "build": "tsc --noEmit && vite build && esbuild src/cli.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/cli.js",
+    "test": "tsx --test tests/*.test.ts",
+    "test:browser": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "build:native": "bash scripts/build-native.sh",
+    "setup:runtime": "node scripts/setup-runtime.mjs"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.4",
+    "fastify": "5.12.5",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "yaml": "2.9.1",
+    "zod": "4.1.11"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.55.1",
+    "@types/node": "24.5.2",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "@vitejs/plugin-react": "5.0.3",
+    "esbuild": "0.25.10",
+    "prettier": "3.6.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "7.3.6"
+  }
+}

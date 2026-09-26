@@ -1,0 +1,118 @@
+export type Kind = "ticket" | "decision" | "rule";
+export type Actor = { name: string; kind: "human" | "agent" };
+export type Meta = {
+  schema: number;
+  id: string;
+  kind: Kind;
+  number?: number;
+  title: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  author: Actor;
+  labels?: string[];
+  parent?: string | null;
+  priority?: number;
+  order?: number;
+  owner?: string;
+  scopeApproved?: boolean;
+  blocked?: string;
+  dependencies?: string[];
+  decisions?: string[];
+  rules?: string[];
+  attachments?: string[];
+  handoff?: string;
+  evidence?: string;
+  question?: string;
+  exceptions?: string;
+  scope?: string[];
+  strength?: "required" | "recommended";
+  category?: string;
+  supersedes?: string;
+  references?: string[];
+  worktree?: string;
+  reviewedRules?: Record<string, string>;
+  archived?: boolean;
+  [key: string]: unknown;
+};
+export type RecordFile = {
+  meta: Meta;
+  body: string;
+  revision: string;
+  path: string;
+};
+export type Comment = {
+  id: string;
+  ticket: string;
+  actor: Actor;
+  at: string;
+  kind: "comment" | "question" | "handoff" | "review";
+  body: string;
+  resolved?: boolean;
+  revision: string;
+};
+export type Column = {
+  id: string;
+  name: string;
+  role: "backlog" | "selected" | "progress" | "review" | "done";
+};
+export type Config = {
+  schema: number;
+  projectId: string;
+  name: string;
+  columns: Column[];
+  shortcut: {
+    mode?: "double-alt" | "hotkey";
+    key: number;
+    modifiers: number;
+    label: string;
+  };
+  [key: string]: unknown;
+};
+export type Claim = {
+  ticket: string;
+  actor: Actor;
+  worktree: string;
+  expiresAt: string;
+  reportedAt: string;
+};
+export type Annotation = {
+  id: string;
+  type: "pin" | "box" | "arrow" | "draw" | "text";
+  x: number;
+  y: number;
+  x2?: number;
+  y2?: number;
+  points?: number[][];
+  text: string;
+  resolved: boolean;
+  actor?: Actor;
+  color?: string;
+};
+export type Attachment = {
+  id: string;
+  name: string;
+  hash: string;
+  width: number;
+  height: number;
+  mime: string;
+  annotations: Annotation[];
+  revision: string;
+  missing?: boolean;
+  createdAt: string;
+};
+export type ProjectState = {
+  config: Config;
+  configRevision: string;
+  records: RecordFile[];
+  comments: Comment[];
+  attachments: Attachment[];
+  claims: Claim[];
+  errors: { path: string; message: string }[];
+  branch: string;
+  canonical: string;
+  branchChanged: boolean;
+  acknowledgedBranch: string;
+  revision: string;
+};
+export const human: Actor = { name: "You", kind: "human" };

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.runtime/
+# This checkout's own board data. The tool is installed into other projects,
+# which track their own .workboard/records.
+.workboard/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.DS_Store
