@@ -2,6 +2,7 @@
 // No React or DOM here, so it can be unit tested directly.
 import type {
   Column,
+  Attachment,
   GroupBy,
   ProjectState,
   ProjectView,
@@ -95,6 +96,7 @@ export function parseFilter(query: string): Filter {
 }
 
 export type Context = {
+  attachments: Map<string, Attachment>;
   columns: Column[];
   byId: Map<string, RecordFile>;
   claimed: Set<string>;
@@ -104,6 +106,7 @@ export function context(state: ProjectState): Context {
   const byId = new Map(state.records.map((r) => [r.meta.id, r]));
   const now = new Date().toISOString();
   return {
+    attachments: new Map(state.attachments.map((a) => [a.id, a])),
     columns: state.config.columns,
     byId,
     claimed: new Set(

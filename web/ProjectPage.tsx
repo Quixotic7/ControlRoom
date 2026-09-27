@@ -156,7 +156,10 @@ export function ProjectPage({
     () =>
       groupTickets(visible, view.groupBy, ctx).filter(
         // Empty groups stay as drop targets, but are noise while filtering.
-        (g) => g.items.length || !filtering,
+        (g) =>
+          g.items.length ||
+          !filtering ||
+          (g.record && visible.some((r) => r.meta.id === g.record!.meta.id)),
       ),
     [visible, view.groupBy, ctx, filtering],
   );
@@ -268,14 +271,31 @@ export function ProjectPage({
                     )}
                   </span>
                   {v.name}
-                  {drafts[v.id] && !sameView(drafts[v.id], v) && (
-                    <span className="unsaved-dot" title="Unsaved changes" />
-                  )}
+                  <span
+                    className={
+                      drafts[v.id] && !sameView(drafts[v.id], v)
+                        ? "unsaved-dot"
+                        : "unsaved-dot-placeholder"
+                    }
+                    style={{
+                      visibility:
+                        drafts[v.id] && !sameView(drafts[v.id], v)
+                          ? "visible"
+                          : "hidden",
+                    }}
+                    title={
+                      drafts[v.id] && !sameView(drafts[v.id], v)
+                        ? "Unsaved changes"
+                        : undefined
+                    }
+                    aria-hidden="true"
+                  />
                 </button>
               )}
-              {active && renaming !== v.id && (
+              {active && renaming !== v.id ? (
                 <Menu
-                  label={<ChevronDownIcon />}
+                  label={<span aria-hidden="true">⋯</span>}
+                  escapeClipping
                   ariaLabel={`Options for ${v.name} view`}
                   className="tab-menu-button"
                 >
@@ -328,6 +348,8 @@ export function ProjectPage({
                     </div>
                   )}
                 </Menu>
+              ) : (
+                <span className="tab-menu-placeholder" aria-hidden="true" />
               )}
             </div>
           );

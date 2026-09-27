@@ -50,6 +50,12 @@ export function Shortcuts({
           ],
           ["⌘ / Ctrl + Z", "Undo annotation change"],
           ["⌘ / Ctrl + Shift + Z", "Redo annotation change"],
+          ["Space + drag / middle-button drag", "Pan the screenshot"],
+          [
+            "Scroll / + / −",
+            "Zoom the screenshot (scroll zooms around the pointer)",
+          ],
+          ["0 / 1", "Fit screenshot / show actual pixels (100%)"],
         ].map(([key, description]) => (
           <div key={key}>
             <dt>

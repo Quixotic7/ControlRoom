@@ -92,6 +92,10 @@ Control Room does not monitor LLM conversations or infer completion from source 
 
 ## Files and worktrees
 
+The board location and code checkout are separate. Launch the CLI/MCP from the code checkout, or pass `--worktree /absolute/code/checkout`; use `--project` to select the board. Verification commands, default claims, branches, and commit links use that execution directory. This also applies when the board belongs to a superproject and the code is a submodule.
+
+Commands accept plain numbers (`show 0`) and quoted hash numbers (`show '#0'`). Parent/dependency inputs accept the same forms, for example `create ticket --title 'Child' --parent 0` or `update 1 --etag HASH --set dependencies=#0`. Numeric links are stored as stable internal IDs. Generated agent commands use plain numbers so they can be pasted into a shell.
+
 ```text
 .workboard/
   config.yml                 project identity, columns, capture shortcut
@@ -121,11 +125,33 @@ Paste or drop an image anywhere, attach it to a record, or capture through the n
 
 macOS may ask for Input Monitoring permission for the double-Option shortcut and Screen Recording permission for Workboard Capture. The listener detects the shortcut without recording key contents. Select a desktop region, use Space for a window, or Escape to cancel. Native capture requires a running companion; paste/drop works without it.
 
+Native captures save silently to the active project's screenshot library, keeping focus in the source application. Open **Screenshots** later to annotate; an already open board updates automatically. Capture no longer opens a browser window or an annotation editor.
+
 The **Screenshots** tab keeps every image and its editable annotations, including screenshots with no ticket. **Save screenshot** saves to the library and closes the editor; attaching to a ticket is optional. Closing with unsaved marks (Escape or ×) asks whether to save, discard, or keep editing. Select a mark and press **Delete / Backspace** to remove it. **⌘Z** undoes annotation changes, while typing in a text field retains normal text editing behavior.
 
 Draw, add text, pins, boxes, or arrows; use Select / move to reposition them. Add a written instruction for each mark. Save to one ticket or split a selected annotation (or all unresolved annotations) into linked tickets. Resolve annotations individually. Agent context includes base-image and preview paths, image hash/dimensions, normalized geometry, and stable written references.
 
+Use **Fit image** or **0** to see the whole screenshot, **100%** or **1** for actual pixels, and **+ / −** to zoom. Scrolling over the image zooms around the pointer. Pan with the **Pan** tool, **Space + drag**, or a middle-button drag. View changes never alter saved annotation coordinates or preview dimensions.
+
+**Delete screenshot**, inside the screenshot editor, moves an image to **Trash**. In the library, use **Select screenshots** and **Delete selected** to remove several images; filtering drops hidden selections. Trash supports restoration inside the editor or through **Restore selected**. Deletion preserves images, annotations, backups, and existing ticket links; it does not free disk space. Trashed screenshots must be restored before editing. Concurrent deletion, restoration, and annotation saves reject stale revisions; bulk results identify failed items for review and reselection.
+
+Inside a ticket, **Attach recent screenshot** offers searchable recent images, excluding Trash and images already attached. Picking one preserves the description draft; saving the ticket keeps its link. Attached screenshots appear as thumbnails on board cards and in ticket details. In the screenshot editor, **Attach to ticket** searches titles and ticket numbers with keyboard or pointer selection; typing alone does not change the chosen destination.
+
+Tickets with an existing description open in Markdown preview. Choose **Edit Markdown** to change it; new or empty descriptions open ready to type.
+
 If a destination disappears during capture, its PNG draft remains in the project's local capture-drafts folder. Recover it from Settings after restarting the project. Copying an image to another running project retains the original, so existing links do not break.
+
+## macOS permission recovery for development builds
+
+In Settings, **Show current capture app** reveals the exact helper for this installation. If macOS shows permission enabled but the helper reports it unconfirmed, remove the old Workboard Capture entry from the affected privacy pane, add this exact app, enable access, and relaunch. The app does not reset or grant privacy permissions automatically. Screen Recording preflight is diagnostic; a user-requested interactive capture still reaches the system authorization check.
+
+By default the helper is ad-hoc signed. Its identity can change when rebuilt, so an old permission entry may no longer apply. Apple explains this behavior in [TN3127: Code signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements). Unchanged native builds are now reused. To preserve identity across changed builds, use an existing signing certificate consistently:
+
+```sh
+CONTROLROOM_SIGNING_IDENTITY='Apple Development: Your Name (TEAMID)' npm run build:native
+```
+
+This does not create a certificate or notarize the app. Live permission state and capture/cancellation still require testing on the user's Mac.
 
 ## Import existing knowledge
 

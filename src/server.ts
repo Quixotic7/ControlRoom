@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { ZodError } from "zod";
 import { Store } from "./store.js";
 import { atomic, Problem, read } from "./files.js";
-import { addImage, imageContext, saveAnnotations } from "./media.js";
+import { addImage, imageContext, saveAnnotations, trashImage } from "./media.js";
 import {
   applyImport,
   backup,
@@ -207,6 +207,7 @@ export async function buildServer(
         pr: b.pr,
         commits: b.commits,
         verification: b.verification,
+        reviewInstructions: b.reviewInstructions,
       },
     );
   });
@@ -240,6 +241,10 @@ export async function buildServer(
     if (!fs.existsSync(p))
       throw new Problem(404, "No current annotated preview");
     return reply.type("image/png").send(fs.readFileSync(p));
+  });
+  app.put("/api/images/:id/trash", async (req: any) => {
+    const b = req.body;
+    return trashImage(store, req.params.id, b.revision, b.trashed, actor(b));
   });
   app.put("/api/images/:id/annotations", async (req: any) => {
     const b = req.body;
@@ -314,6 +319,15 @@ export async function buildServer(
       [`x-apple.systempreferences:com.apple.preference.security?${pane}`],
       { stdio: "ignore" },
     ).unref();
+    return { ok: true };
+  });
+  app.post("/api/capture/reveal", async () => {
+    if (process.platform !== "darwin")
+      throw new Problem(400, "The capture companion is macOS only");
+    const bundle = path.join(toolRoot, "dist", "WorkboardCapture.app");
+    if (!fs.existsSync(bundle))
+      throw new Problem(404, "Build the capture companion first");
+    spawn("/usr/bin/open", ["-R", bundle], { stdio: "ignore" }).unref();
     return { ok: true };
   });
   app.get("/api/capture/drafts", async () => {

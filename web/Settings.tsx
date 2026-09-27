@@ -195,17 +195,41 @@ export function Settings({
               <span
                 className={`tag ${capture.screenRecording ? "green" : "danger"}`}
               >
-                Screen Recording {capture.screenRecording ? "on" : "off"}
+                Screen Recording{" "}
+                {capture.screenRecording ? "available" : "not confirmed"}
               </span>
               <span
                 className={`tag ${capture.inputMonitoring ? "green" : "danger"}`}
               >
-                Input Monitoring {capture.inputMonitoring ? "on" : "off"}
+                Input Monitoring{" "}
+                {capture.inputMonitoring ? "available" : "not confirmed"}
               </span>
             </>
           )}
           <p>{capture?.message}</p>
+          {capture?.bundlePath && (
+            <p className="help">
+              Running app: <code>{capture.bundlePath}</code>
+            </p>
+          )}
+          {capture?.signingMode === "ad-hoc" && (
+            <p className="help">
+              This local build is ad-hoc signed. A rebuilt app can have a
+              different identity even when macOS still shows its old permission
+              entry as enabled.
+            </p>
+          )}
           <div className="inline-actions" style={{ marginTop: 10 }}>
+            <button
+              className="button small"
+              onClick={() =>
+                api("/capture/reveal", "POST", {}).catch((e) =>
+                  onError(String(e)),
+                )
+              }
+            >
+              Show current capture app
+            </button>
             {(
               [
                 ["input-monitoring", "Input Monitoring"],
@@ -226,7 +250,7 @@ export function Settings({
             ))}
             <button
               className="button small"
-              title="Permissions granted while the companion is running only apply to a fresh process"
+              title="Restart the companion to recheck current permissions"
               onClick={() =>
                 api("/capture/restart", "POST", {})
                   .then(() => setTimeout(loadCapture, 1500))
@@ -237,9 +261,12 @@ export function Settings({
             </button>
           </div>
           <p className="help">
-            After changing a permission, relaunch the companion: macOS applies
-            grants to new processes only. Rebuilding the companion also resets
-            its permissions.
+            If permissions are enabled but remain unconfirmed, use “Show current
+            capture app” to locate this build. Remove the old Workboard Capture
+            entry with the minus button in the relevant macOS privacy pane, add
+            this exact app, enable it, then relaunch. A region capture can still
+            be attempted when the preliminary Screen Recording check is
+            unconfirmed; macOS enforces access during capture.
           </p>
         </div>
         <label className="field">

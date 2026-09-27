@@ -70,6 +70,36 @@ export function addImage(store: Store, name: string, data: string) {
     return store.attachment(id);
   });
 }
+export function trashImage(
+  store: Store,
+  id: string,
+  revision: string,
+  trashed: boolean,
+  actor: Actor,
+) {
+  return store.write(() => {
+    const a = store.attachment(id);
+    if (a.revision !== revision)
+      throw new Problem(
+        409,
+        "Screenshot changed. Reload before deleting or restoring.",
+      );
+    z.boolean().parse(trashed);
+    const { revision: _, missing: __, ...result } = a;
+    if (trashed) {
+      result.trashedAt = now();
+      result.trashedBy = actor;
+    } else {
+      delete result.trashedAt;
+      delete result.trashedBy;
+    }
+    atomic(
+      store.file(`records/attachments/${id}.json`),
+      JSON.stringify(result, null, 2),
+    );
+    return store.attachment(id);
+  });
+}
 export function saveAnnotations(
   store: Store,
   id: string,
@@ -82,6 +112,11 @@ export function saveAnnotations(
     const a = store.attachment(id);
     if (a.revision !== revision)
       throw new Problem(409, "Annotations changed. Reload before saving.");
+    if (a.trashedAt)
+      throw new Problem(
+        409,
+        "Screenshot is in Trash. Restore it before editing.",
+      );
     const validated = z.array(annotationSchema).max(500).parse(annotations);
     if (new Set(validated.map((v) => v.id)).size !== validated.length)
       throw new Problem(422, "Annotation IDs must be unique");

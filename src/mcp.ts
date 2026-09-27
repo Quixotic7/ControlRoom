@@ -4,6 +4,7 @@
 // -- ./workboard mcp`). Every call goes through the same local service as the
 // CLI, so revisions, authority, and claims behave identically.
 import readline from "node:readline";
+import path from "node:path";
 import type { Store } from "./store.js";
 import {
   api,
@@ -20,7 +21,7 @@ type Tool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  run: (args: any) => Promise<unknown>;
+  run: (args: any, signal: AbortSignal) => Promise<unknown>;
 };
 const str = (description: string) => ({ type: "string", description });
 const id = str("Ticket number like 3 or #3, or a record ID");
@@ -28,8 +29,12 @@ const etag = str(
   "The record's current etag (revision) from get_ticket or get_context; guards against overwriting someone else's edit",
 );
 
-export async function startMcp(store: Store, who: Actor) {
-  const cwd = store.root;
+export async function startMcp(
+  store: Store,
+  who: Actor,
+  worktree = process.cwd(),
+) {
+  const cwd = path.resolve(worktree);
   const text = (v: unknown) =>
     typeof v === "string" ? v : JSON.stringify(v, null, 2);
   const tools: Tool[] = [
@@ -134,7 +139,7 @@ export async function startMcp(store: Store, who: Actor) {
         properties: {
           id,
           worktree: str(
-            "Absolute path of the worktree doing the work (defaults to the project root)",
+            "Absolute path of the worktree doing the work (defaults to the MCP execution directory)",
           ),
         },
         required: ["id"],
@@ -301,6 +306,9 @@ export async function startMcp(store: Store, who: Actor) {
           handoff: str(
             "What changed, where things stand, the next concrete step",
           ),
+          review_instructions: str(
+            "Specific steps the human should take to review this work; published with the handoff and evidence in the conversation",
+          ),
           evidence: str(
             "How it was verified (auto-filled from run when omitted)",
           ),
@@ -316,8 +324,11 @@ export async function startMcp(store: Store, who: Actor) {
         },
         required: ["id", "etag", "handoff"],
       },
-      run: async (a) => {
-        const verification = a.run ? runVerification(a.run, cwd) : undefined;
+      run: async (a, signal) => {
+        const verification = a.run
+          ? await runVerification(a.run, cwd, { signal })
+          : undefined;
+        signal.throwIfAborted();
         if (verification && verification.exitCode !== 0 && !a.allow_failure)
           throw new Error(
             `Verification failed (exit ${verification.exitCode}); not submitting. Output tail:\n${verification.output.slice(-2000)}`,
@@ -329,6 +340,7 @@ export async function startMcp(store: Store, who: Actor) {
           {
             revision: a.etag,
             handoff: a.handoff,
+            reviewInstructions: a.review_instructions,
             evidence:
               a.evidence ??
               (verification
@@ -365,12 +377,13 @@ export async function startMcp(store: Store, who: Actor) {
         },
         required: ["id"],
       },
-      run: async (a) => {
+      run: async (a, signal) => {
         const r = await waitForChange(
           store,
           a.id,
           a.for ?? "any",
           (a.timeout_seconds ?? 600) * 1000,
+          signal,
         );
         return r
           ? {
@@ -416,6 +429,12 @@ export async function startMcp(store: Store, who: Actor) {
     input: process.stdin,
     crlfDelay: Infinity,
   });
+  const pending = new Map<string | number, AbortController>();
+  const running = new Set<Promise<void>>();
+  const cancelAll = () => {
+    for (const controller of pending.values()) controller.abort();
+  };
+  rl.on("close", cancelAll);
   for await (const line of rl) {
     if (!line.trim()) continue;
     let msg: any;
@@ -440,7 +459,9 @@ export async function startMcp(store: Store, who: Actor) {
         serverInfo: { name: "control-room", version: "0.2.0" },
         instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human moves work to Done.`,
       });
-    else if (
+    else if (msg.method === "notifications/cancelled") {
+      pending.get(msg.params?.requestId)?.abort();
+    } else if (
       msg.method === "notifications/initialized" ||
       msg.method?.startsWith("notifications/")
     ) {
@@ -460,17 +481,43 @@ export async function startMcp(store: Store, who: Actor) {
         fail(-32602, `Unknown tool ${msg.params?.name}`);
         continue;
       }
-      try {
-        const result = await tool.run(msg.params?.arguments ?? {});
-        reply({ content: [{ type: "text", text: text(result) }] });
-      } catch (e: any) {
-        const message =
-          e instanceof ApiError
-            ? `${e.status}: ${e.message}${e.detail ? "\n" + JSON.stringify(e.detail, null, 2) : ""}`
-            : String(e?.message ?? e);
-        reply({ content: [{ type: "text", text: message }], isError: true });
+      if (pending.has(msg.id)) {
+        fail(-32600, "Duplicate in-flight request ID");
+        continue;
       }
+      const controller = new AbortController();
+      pending.set(msg.id, controller);
+      const task = (async () => {
+        try {
+          const result = await tool.run(
+            msg.params?.arguments ?? {},
+            controller.signal,
+          );
+          controller.signal.throwIfAborted();
+          reply({ content: [{ type: "text", text: text(result) }] });
+        } catch (e: any) {
+          const message =
+            e instanceof ApiError
+              ? `${e.status}: ${e.message}${e.detail ? "\n" + JSON.stringify(e.detail, null, 2) : ""}`
+              : String(e?.message ?? e);
+          reply({
+            content: [
+              {
+                type: "text",
+                text: controller.signal.aborted ? "Request cancelled" : message,
+              },
+            ],
+            isError: true,
+          });
+        } finally {
+          pending.delete(msg.id);
+        }
+      })();
+      running.add(task);
+      void task.finally(() => running.delete(task));
     } else if (msg.id !== undefined)
       fail(-32601, `Method not found: ${msg.method}`);
   }
+  cancelAll();
+  await Promise.allSettled(running);
 }

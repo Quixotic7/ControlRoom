@@ -27,6 +27,7 @@ import type { Actor } from "./types.js";
 const parsed = parseArgs(process.argv.slice(2));
 const { option, has, all, positional } = parsed;
 const cwd = path.resolve(option("project", process.cwd())!);
+const executionDirectory = path.resolve(option("worktree", process.cwd())!);
 const identity = resolveActor({
   name: option("actor"),
   agent: has("agent"),
@@ -246,7 +247,7 @@ Writing (need --etag from show or context, or --latest to use the current one)
   handoff ID --etag HASH --body TEXT
   comment ID --body TEXT | ask ID --body TEXT
   claim ID [--worktree PATH] | release ID
-  review ID --etag HASH --handoff TEXT [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
+  review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
 
 Service and data
   serve [--open] [--dev] | stop | mcp | init
@@ -255,7 +256,7 @@ Service and data
   install DESTINATION | upgrade DESTINATION
 
 Identity: set WORKBOARD_ACTOR (name) and WORKBOARD_ACTOR_KIND (human|agent) in the environment, or pass --actor NAME with --agent or --human. A known agent harness or a non-interactive terminal counts as an agent.
-All commands accept --project PATH and --json. IDs may be #numbers or record IDs. Claims expire after 30 minutes; repeat claim to renew.
+All commands accept --project PATH and --json. --project selects the board; --worktree selects the execution checkout (defaults to the caller directory). IDs may be numbers, quoted '#numbers', or record IDs. Claims expire after 30 minutes; repeat claim to renew.
 `;
 async function main() {
   const [command, id, extra] = positional;
@@ -278,7 +279,7 @@ async function main() {
     return;
   }
   if (command === "mcp") {
-    await startMcp(store, who);
+    await startMcp(store, who, executionDirectory);
     return;
   }
   if (command === "stop") {
@@ -315,7 +316,9 @@ async function main() {
   const etag = async () => {
     const r = option("etag") ?? option("if-match") ?? option("revision");
     if (r) return r;
-    if (has("latest")) return (await api(store, `/api/records/${id}`)).revision;
+    if (has("latest"))
+      return (await api(store, `/api/records/${encodeURIComponent(id)}`))
+        .revision;
     throw new Error(
       "--etag is required: take it from `show ID` or `context ID`, or pass --latest to write over the current version.",
     );
@@ -338,17 +341,20 @@ async function main() {
     return;
   }
   if (command === "show") {
-    output(await api(store, `/api/records/${id}`));
+    output(await api(store, `/api/records/${encodeURIComponent(id)}`));
     return;
   }
   if (command === "context") {
     if (has("markdown") || has("brief")) {
       const r = await api(
         store,
-        `/api/records/${id}/context?format=markdown${has("brief") ? "&brief=1" : ""}`,
+        `/api/records/${encodeURIComponent(id)}/context?format=markdown${has("brief") ? "&brief=1" : ""}`,
       );
       output(json ? r : r.markdown);
-    } else output(await api(store, `/api/records/${id}/context`));
+    } else
+      output(
+        await api(store, `/api/records/${encodeURIComponent(id)}/context`),
+      );
     return;
   }
   if (command === "next") {
@@ -422,7 +428,7 @@ async function main() {
     if (command === "move" && !extra)
       throw new Error("move needs a status, e.g. move 3 progress");
     output(
-      await api(store, `/api/records/${id}`, "PATCH", {
+      await api(store, `/api/records/${encodeURIComponent(id)}`, "PATCH", {
         revision: await etag(),
         patch,
         body:
@@ -434,19 +440,24 @@ async function main() {
   }
   if (command === "comment" || command === "ask") {
     output(
-      await api(store, `/api/records/${id}/comments`, "POST", {
-        body: bodyFile(),
-        kind: command === "ask" ? "question" : "comment",
-        actor: who,
-      }),
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/comments`,
+        "POST",
+        {
+          body: bodyFile(),
+          kind: command === "ask" ? "question" : "comment",
+          actor: who,
+        },
+      ),
     );
     return;
   }
   if (command === "claim" || command === "release") {
     output(
-      await api(store, `/api/records/${id}/claim`, "POST", {
+      await api(store, `/api/records/${encodeURIComponent(id)}/claim`, "POST", {
         actor: who,
-        worktree: option("worktree", cwd),
+        worktree: executionDirectory,
         release: command === "release",
       }),
     );
@@ -454,7 +465,9 @@ async function main() {
   }
   if (command === "review") {
     const run = option("run");
-    const verification = run ? runVerification(run, cwd) : undefined;
+    const verification = run
+      ? await runVerification(run, executionDirectory)
+      : undefined;
     if (verification) {
       console.error(`${verification.command} exited ${verification.exitCode}`);
       if (verification.exitCode !== 0 && !has("allow-failure"))
@@ -468,7 +481,7 @@ async function main() {
           .map((c) => c.trim())
           .filter(Boolean)
       : option("commits-since")
-        ? commitsSince(cwd, option("commits-since")!)
+        ? commitsSince(executionDirectory, option("commits-since")!)
         : undefined;
     const evidence =
       option("evidence") ??
@@ -476,17 +489,23 @@ async function main() {
         ? `\`${verification.command}\` exited ${verification.exitCode} at ${verification.at}.`
         : "");
     output(
-      await api(store, `/api/records/${id}/review`, "POST", {
-        revision: await etag(),
-        handoff: option("handoff", ""),
-        evidence,
-        exceptions: option("exceptions", ""),
-        branch: option("branch") ?? currentBranch(cwd),
-        pr: option("pr"),
-        commits,
-        verification,
-        actor: who,
-      }),
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/review`,
+        "POST",
+        {
+          revision: await etag(),
+          handoff: option("handoff", ""),
+          reviewInstructions: option("review-notes"),
+          evidence,
+          exceptions: option("exceptions", ""),
+          branch: option("branch") ?? currentBranch(executionDirectory),
+          pr: option("pr"),
+          commits,
+          verification,
+          actor: who,
+        },
+      ),
     );
     return;
   }

@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, spawnSync } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import type { Store } from "./store.js";
 import { git, now, read } from "./files.js";
 import type { Actor, RecordFile, Verification } from "./types.js";
@@ -32,6 +32,7 @@ export const valueOptions = new Set([
   "--if-match",
   "--handoff",
   "--evidence",
+  "--review-notes",
   "--exceptions",
   "--branch",
   "--pr",
@@ -126,7 +127,9 @@ export async function service(store: Store): Promise<string> {
   const child = spawn(
     process.execPath,
     [
-      ...(entry.endsWith(".ts") ? ["--import", "tsx"] : []),
+      ...(entry.endsWith(".ts")
+        ? ["--import", import.meta.resolve("tsx")]
+        : []),
       entry,
       "serve",
       "--headless",
@@ -158,10 +161,12 @@ export async function api<T = any>(
   url: string,
   method = "GET",
   body?: unknown,
+  signal?: AbortSignal,
 ): Promise<T> {
   const base = await service(store);
   const res = await fetch(base + url, {
     method,
+    signal,
     headers: {
       Authorization: `Bearer ${store.token()}`,
       "Content-Type": "application/json",
@@ -281,23 +286,43 @@ export function commitsSince(cwd: string, since: string): string[] {
 }
 // Runs the verification command and captures how it ended, so review
 // evidence carries what actually ran rather than a description of it.
-export function runVerification(command: string, cwd: string): Verification {
-  const result = spawnSync(command, {
-    cwd,
-    shell: true,
-    encoding: "utf8",
-    maxBuffer: 50 * 1024 * 1024,
-    timeout: 20 * 60_000,
+export function runVerification(
+  command: string,
+  cwd: string,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<Verification> {
+  return new Promise((resolve) => {
+    exec(
+      command,
+      {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: options.timeoutMs ?? 20 * 60_000,
+        signal: options.signal,
+      },
+      (error, stdout, stderr) => {
+        const diagnostic = error
+          ? `\nVerification failed: ${error.signal ? `terminated by ${error.signal}. ` : ""}${error.message}`
+          : "";
+        const output = `${stdout}${stderr}${diagnostic}`;
+        resolve({
+          command,
+          exitCode: error
+            ? typeof error.code === "number" && error.code !== 0
+              ? error.code
+              : 1
+            : 0,
+          output: (output.length > 16000
+            ? "…\n" + output.slice(-16000)
+            : output
+          ).trim(),
+          at: now(),
+          cwd,
+        });
+      },
+    );
   });
-  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  const tail = output.length > 16000 ? "…\n" + output.slice(-16000) : output;
-  return {
-    command,
-    exitCode: result.status ?? (result.error ? 1 : 0),
-    output: tail.trim(),
-    at: now(),
-    cwd,
-  };
 }
 
 // ------------------------------------------------------------------ wait
@@ -310,12 +335,31 @@ export async function waitForChange(
   id: string,
   waitFor: WaitFor,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ change: string; ticket: RecordFile; comments: any[] } | null> {
+  if (!["comment", "status", "any"].includes(waitFor))
+    throw new Error("Unknown wait condition");
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 86_400_000)
+    throw new Error("Wait timeout must be between 0 and 86400 seconds");
+  if (timeoutMs === 0) return null;
+  const controller = new AbortController();
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const combined = AbortSignal.any([
+    controller.signal,
+    deadline,
+    ...(signal ? [signal] : []),
+  ]);
   const snapshot = async () => {
-    const c = await api(store, `/api/records/${id}/context`);
+    const c = await api(
+      store,
+      `/api/records/${encodeURIComponent(id)}/context`,
+      "GET",
+      undefined,
+      combined,
+    );
     return { ticket: c.ticket as RecordFile, comments: c.comments as any[] };
   };
-  const first = await snapshot();
+  let first: Awaited<ReturnType<typeof snapshot>>;
   const changed = (next: typeof first) => {
     if (next.comments.length > first.comments.length && waitFor !== "status")
       return "comment";
@@ -328,40 +372,55 @@ export async function waitForChange(
       return "update";
     return null;
   };
-  const base = await service(store);
-  const controller = new AbortController();
-  const deadline = Date.now() + timeoutMs;
   let events: Promise<void> | null = null;
   const wake: { fn: null | (() => void) } = { fn: null };
+  let pending = false;
   try {
-    const res = await fetch(base + "/api/events", {
-      headers: { Authorization: `Bearer ${store.token()}` },
-      signal: controller.signal,
-    });
-    const reader = res.body?.getReader();
-    if (reader)
-      events = (async () => {
-        while (true) {
-          const { done } = await reader.read();
-          if (done) break;
-          wake.fn?.();
-        }
-      })().catch(() => {});
-  } catch {
-    /* Poll only. */
-  }
-  try {
-    while (Date.now() < deadline) {
-      await new Promise<void>((resolve) => {
-        wake.fn = resolve;
-        setTimeout(resolve, 15_000);
+    first = await snapshot();
+    const base = await service(store);
+    try {
+      const res = await fetch(base + "/api/events", {
+        headers: { Authorization: `Bearer ${store.token()}` },
+        signal: combined,
       });
-      wake.fn = null;
+      const reader = res.body?.getReader();
+      if (reader)
+        events = (async () => {
+          while (true) {
+            const { done } = await reader.read();
+            if (done) break;
+            pending = true;
+            wake.fn?.();
+          }
+        })().catch(() => {});
+    } catch {
+      combined.throwIfAborted(); /* Poll only. */
+    }
+    while (!combined.aborted) {
+      pending = false;
       const next = await snapshot();
       const change = changed(next);
       if (change) return { change, ...next };
+      if (pending) continue;
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          combined.removeEventListener("abort", finish);
+          wake.fn = null;
+          resolve();
+        };
+        const timer = setTimeout(finish, 15_000);
+        wake.fn = finish;
+        combined.addEventListener("abort", finish, { once: true });
+        if (combined.aborted) finish();
+      });
     }
+    signal?.throwIfAborted();
     return null;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (deadline.aborted) return null;
+    throw error;
   } finally {
     controller.abort();
     await events;

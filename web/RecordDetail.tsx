@@ -1,5 +1,8 @@
-import { CloseIcon, StageIcon } from "./Icons";
-import React, { useEffect, useRef, useState } from "react";
+import { ArrowUpIcon, CloseIcon, StageIcon } from "./Icons";
+import { ParentInput } from "./ParentInput";
+import { ScreenshotPicker } from "./ScreenshotPicker";
+import { ImageThumbnail } from "./ImageThumbnail";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TagInput } from "./TagInput";
 import { imageMarkdown, pasteImage, RecordMarkdown } from "./RecordMarkdown";
 import type {
@@ -79,6 +82,8 @@ export function RecordDetail({
   onError,
   openRecord,
   openImage,
+  conversationOrder,
+  onConversationOrder,
 }: {
   record?: RecordFile;
   kind: Kind;
@@ -88,8 +93,17 @@ export function RecordDetail({
   onError: (s: string) => void;
   openRecord: (s: string) => void;
   openImage: (s: string) => void;
+  conversationOrder: "oldest" | "newest";
+  onConversationOrder: (order: "oldest" | "newest") => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const detailBody = useRef<HTMLDivElement>(null);
+  const readingAnchor = useRef<{
+    id: string;
+    top: number;
+    order: string;
+    tab: string;
+  } | null>(null);
   const [baseline, setBaseline] = useState(record),
     [m, setM] = useState<any>(
       record?.meta ?? {
@@ -114,7 +128,10 @@ export function RecordDetail({
         : "## Rule\n\n\n## Why\n\n\n## Examples and implementation references\n\n";
   const [body, setBody] = useState(record?.body ?? template),
     [tab, setTab] = useState("details"),
-    [preview, setPreview] = useState(false),
+    [preview, setPreview] = useState(
+      kind === "ticket" && !!record?.body.trim(),
+    ),
+    [pickingScreenshot, setPickingScreenshot] = useState(false),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false),
     [comment, setComment] = useState(""),
@@ -126,6 +143,47 @@ export function RecordDetail({
       fields: string[];
     } | null>(null),
     [closeFailed, setCloseFailed] = useState(false);
+  function rememberReadingPosition() {
+    const scroller = detailBody.current;
+    if (!scroller || (tab !== "conversation" && tab !== "details")) {
+      readingAnchor.current = null;
+      return;
+    }
+    const viewport = scroller.getBoundingClientRect();
+    const visible = Array.from(
+      scroller.querySelectorAll<HTMLElement>(".comment"),
+    ).find((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    readingAnchor.current = visible
+      ? {
+          id: visible.id,
+          top: visible.getBoundingClientRect().top - viewport.top,
+          order: conversationOrder,
+          tab,
+        }
+      : null;
+  }
+  // Preserve the visible comment when a live update prepends/reflows entries.
+  // A deliberate sort change starts a new anchor instead of preserving the old order.
+  useLayoutEffect(() => {
+    const scroller = detailBody.current;
+    const anchor = readingAnchor.current;
+    if (
+      scroller &&
+      anchor?.tab === tab &&
+      anchor?.order === conversationOrder
+    ) {
+      const node = document.getElementById(anchor.id);
+      if (node)
+        scroller.scrollTop +=
+          node.getBoundingClientRect().top -
+          scroller.getBoundingClientRect().top -
+          anchor.top;
+    }
+    rememberReadingPosition();
+  }, [state.comments, tab, conversationOrder]);
   const dirty = baseline
     ? Object.keys(changedFields(baseline.meta, m)).length > 0 ||
       body !== baseline.body
@@ -176,6 +234,7 @@ export function RecordDetail({
           revision: r.revision,
           handoff: draft.handoff,
           evidence: draft.evidence,
+          reviewInstructions: draft.reviewInstructions,
           exceptions: draft.exceptions,
           actor,
         });
@@ -264,6 +323,7 @@ export function RecordDetail({
     return () => window.removeEventListener("keydown", key);
   });
   const [posting, setPosting] = useState(false);
+  const [postedComment, setPostedComment] = useState<string | null>(null);
   const draftKey = `comment:${state.config.projectId}:${baseline?.meta.id ?? "new"}`;
   useEffect(() => {
     setComment(localStorage.getItem(draftKey) ?? "");
@@ -275,14 +335,19 @@ export function RecordDetail({
     if (!baseline || posting || !comment.trim()) return;
     setPosting(true);
     try {
-      await api(`/records/${baseline.meta.id}/comments`, "POST", {
-        body: comment,
-        kind: commentKind,
-        actor,
-      });
+      const posted = await api(
+        `/records/${baseline.meta.id}/comments`,
+        "POST",
+        {
+          body: comment,
+          kind: commentKind,
+          actor,
+        },
+      );
       setComment("");
       localStorage.removeItem(draftKey);
       await onSaved(baseline.meta.id);
+      setPostedComment(posted.id);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -364,12 +429,57 @@ export function RecordDetail({
         ).map((id) => ({ id, name: id }));
   const conversation = baseline ? (
     <section className="ticket-thread">
-      <h3>Conversation</h3>
+      <div className="conversation-toolbar">
+        <h3>Conversation</h3>
+        <button
+          className="button subtle small"
+          aria-label={`Comments: ${conversationOrder === "oldest" ? "oldest" : "newest"} first. Switch to ${conversationOrder === "oldest" ? "newest" : "oldest"} first`}
+          title={`Switch to ${conversationOrder === "oldest" ? "newest" : "oldest"} first`}
+          onClick={() =>
+            onConversationOrder(
+              conversationOrder === "oldest" ? "newest" : "oldest",
+            )
+          }
+        >
+          <span className={conversationOrder === "oldest" ? "sort-oldest" : ""}>
+            <ArrowUpIcon />
+          </span>
+          {conversationOrder === "oldest" ? "Oldest first" : "Newest first"}
+        </button>
+      </div>
       <div className="conversation">
         {state.comments
           .filter((c) => c.ticket === baseline?.meta.id)
+          .sort(
+            (a, b) =>
+              (a.at.localeCompare(b.at) || a.id.localeCompare(b.id)) *
+              (conversationOrder === "oldest" ? 1 : -1),
+          )
           .map((c) => (
-            <article className="comment" key={c.id}>
+            <article
+              className="comment"
+              key={c.id}
+              id={`thread-${c.id}`}
+              data-kind={c.kind}
+            >
+              <div className="comment-type">
+                <strong>
+                  {c.kind === "review"
+                    ? c.actor.kind === "agent"
+                      ? "Review requested"
+                      : "Review feedback"
+                    : c.kind === "handoff"
+                      ? "Handoff note"
+                      : c.kind === "question"
+                        ? "Question"
+                        : "Comment"}
+                </strong>
+                {c.kind === "question" && (
+                  <span className="tag">
+                    {c.resolved ? "Resolved" : "Needs an answer"}
+                  </span>
+                )}
+              </div>
               <div className="comment-heading">
                 <span className="avatar">{c.actor.name.slice(0, 1)}</span>
                 <strong>{c.actor.name}</strong>
@@ -401,6 +511,18 @@ export function RecordDetail({
             </article>
           ))}
       </div>
+      {postedComment && (
+        <button
+          className="text-button"
+          onClick={() =>
+            document
+              .getElementById(`thread-${postedComment}`)
+              ?.scrollIntoView({ block: "nearest" })
+          }
+        >
+          View your new comment
+        </button>
+      )}
       <label className="field">
         Add to the conversation
         <textarea
@@ -544,7 +666,16 @@ export function RecordDetail({
           </button>
         ))}
       </nav>
-      <div className="detail-body" inert={saving}>
+      <div
+        className="detail-body"
+        ref={detailBody}
+        onScroll={rememberReadingPosition}
+        style={{
+          overflowAnchor:
+            tab === "conversation" || tab === "details" ? "none" : undefined,
+        }}
+        inert={saving}
+      >
         {error && (
           <div className="banner error" role="alert">
             {error}
@@ -642,26 +773,13 @@ export function RecordDetail({
                         .filter(Boolean)}
                       onChange={(v) => set("owner", v)}
                     />
-                    <label className="field">
-                      Parent ticket
-                      <select
-                        value={m.parent ?? ""}
-                        onChange={(e) => set("parent", e.target.value || null)}
-                      >
-                        <option value="">No parent</option>
-                        {state.records
-                          .filter(
-                            (r) =>
-                              r.meta.kind === "ticket" &&
-                              r.meta.id !== baseline?.meta.id,
-                          )
-                          .map((r) => (
-                            <option value={r.meta.id} key={r.meta.id}>
-                              {r.meta.title}
-                            </option>
-                          ))}
-                      </select>
-                    </label>
+                    <ParentInput
+                      records={state.records}
+                      columns={state.config.columns}
+                      ticketId={baseline?.meta.id}
+                      value={m.parent ?? null}
+                      onChange={(id) => set("parent", id)}
+                    />
                     <TagInput
                       key={`labels-${baseline?.revision ?? "new"}`}
                       label="Labels"
@@ -795,6 +913,16 @@ export function RecordDetail({
                       "Leave empty when work can proceed",
                     )}
                     <label className="field">
+                      What the human should review
+                      <textarea
+                        value={m.reviewInstructions ?? ""}
+                        onChange={(e) =>
+                          set("reviewInstructions", e.target.value)
+                        }
+                        placeholder="Specific things to inspect or try, and the expected result."
+                      />
+                    </label>
+                    <label className="field">
                       Rule deviations / approved exceptions
                       <textarea
                         value={m.exceptions ?? ""}
@@ -912,6 +1040,13 @@ export function RecordDetail({
               <section>
                 <div className="section-heading">
                   <h3>Images & visual feedback</h3>
+                  <button
+                    className="button subtle"
+                    aria-expanded={pickingScreenshot}
+                    onClick={() => setPickingScreenshot((v) => !v)}
+                  >
+                    Attach recent screenshot
+                  </button>
                   <label className="button subtle file-button">
                     + Attach image
                     <input
@@ -923,6 +1058,17 @@ export function RecordDetail({
                     />
                   </label>
                 </div>
+                {pickingScreenshot && (
+                  <ScreenshotPicker
+                    images={state.attachments}
+                    attached={m.attachments ?? []}
+                    onClose={() => setPickingScreenshot(false)}
+                    onAttach={(id) => {
+                      attachId(id);
+                      setPickingScreenshot(false);
+                    }}
+                  />
+                )}
                 <div className="attachment-grid">
                   {(m.attachments ?? []).map((id: string) => {
                     const a = state.attachments.find((a) => a.id === id);
@@ -932,17 +1078,18 @@ export function RecordDetail({
                         className="attachment"
                         onClick={() => openImage(id)}
                       >
-                        {a?.missing ? (
+                        {!a ? (
                           <span>Image unavailable locally</span>
                         ) : (
-                          <img
-                            src={`/api/images/${id}/base`}
-                            alt={a?.name ?? "Attached screenshot"}
+                          <ImageThumbnail
+                            key={`${id}-${a.revision}`}
+                            image={a}
                           />
                         )}
                         <span>
                           {a?.name ?? "New screenshot"} ·{" "}
                           {a?.annotations.length ?? 0} notes
+                          {a?.trashedAt ? " · In Trash" : ""}
                         </span>
                       </button>
                     );

@@ -96,7 +96,7 @@ test("context Markdown is a prompt-ready brief with an etag and token estimate",
   assert.match(full.markdown, /One primary action \(required\)/);
   assert.match(full.markdown, /long rationale/);
   assert.match(full.markdown, /Agent A \(question/);
-  assert.match(full.markdown, /workboard claim #1/);
+  assert.match(full.markdown, /workboard claim 1/);
   assert.equal(full.tokens, Math.ceil(full.markdown.length / 4));
   const brief = s.contextMarkdown(child.meta.id, true);
   assert.doesNotMatch(brief.markdown, /long rationale/);
@@ -464,6 +464,7 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
     },
   });
   await until(4);
+  lines.sort((a, b) => a.id - b.id);
   assert.equal(lines[0].result.serverInfo.name, "control-room");
   assert.match(lines[0].result.instructions, /Agent MCP/);
   const names = lines[1].result.tools.map((t: any) => t.name);

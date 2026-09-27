@@ -42,6 +42,9 @@ function fromPreference(value: unknown): { page?: Page; viewId?: string } {
 }
 
 export function App() {
+  const [conversationOrder, setConversationOrder] = useState<
+    "oldest" | "newest"
+  >("oldest");
   const [page, setPage] = useState<Page>(
     () => fromPreference(stored("wb-page")).page ?? "project",
   );
@@ -75,6 +78,11 @@ export function App() {
         if (["compact", "comfortable"].includes(p.density))
           setDensity(p.density);
         if (themes.includes(p.theme)) setTheme(p.theme);
+        if (
+          p.conversationOrder === "oldest" ||
+          p.conversationOrder === "newest"
+        )
+          setConversationOrder(p.conversationOrder);
         if (p.selected) setSelected(p.selected);
         setKnowledgeRead(p.knowledgeRead ?? 0);
       })
@@ -97,8 +105,18 @@ export function App() {
       theme,
       selected,
       knowledgeRead,
+      conversationOrder,
     }).catch(() => {});
-  }, [page, viewId, density, theme, selected, knowledgeRead, prefsReady]);
+  }, [
+    page,
+    viewId,
+    density,
+    theme,
+    selected,
+    knowledgeRead,
+    conversationOrder,
+    prefsReady,
+  ]);
   // "System" follows prefers-color-scheme; an explicit choice overrides it.
   useEffect(() => {
     if (theme === "system") delete document.documentElement.dataset.theme;
@@ -354,7 +372,7 @@ export function App() {
                 />
               </label>
             </PageHeader>
-            <Screenshots state={state} open={setImage} />
+            <Screenshots state={state} open={setImage} reload={reload} />
           </>
         )}
         {page === "insights" && <Insights state={state} ctx={ctx} />}
@@ -388,6 +406,8 @@ export function App() {
           record={active ?? undefined}
           kind={creating ?? active!.meta.kind}
           state={state}
+          conversationOrder={conversationOrder}
+          onConversationOrder={setConversationOrder}
           onClose={() => {
             setSelected(null);
             setCreating(null);

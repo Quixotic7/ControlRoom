@@ -13,7 +13,7 @@ import {
   parseMd,
   safe,
 } from "../src/files.js";
-import { addImage, saveAnnotations } from "../src/media.js";
+import { addImage, saveAnnotations, trashImage } from "../src/media.js";
 import {
   backup,
   restore,
@@ -50,6 +50,60 @@ async function ticket(
     human,
   );
 }
+
+test("screenshot trash preserves references and backup content and rejects stale edits", async (t) => {
+  const s = fixture(t);
+  let image = await addImage(s, "Keep my annotations", png);
+  image = await saveAnnotations(
+    s,
+    image.id,
+    image.revision,
+    [
+      {
+        id: "note-1",
+        type: "pin",
+        x: 0.25,
+        y: 0.75,
+        text: "Keep this",
+        resolved: false,
+      },
+    ],
+    png,
+    human,
+  );
+  const r = await ticket(s, "Linked image", { attachments: [image.id] });
+  const trashed = await trashImage(s, image.id, image.revision, true, human);
+  assert.equal(trashed.trashedBy?.name, human.name);
+  assert.ok(trashed.trashedAt);
+  await assert.rejects(
+    saveAnnotations(s, image.id, image.revision, [], undefined, human),
+    /changed/,
+  );
+  await assert.rejects(
+    saveAnnotations(s, image.id, trashed.revision, [], undefined, human),
+    /Trash/,
+  );
+  await assert.rejects(
+    trashImage(s, image.id, image.revision, false, human),
+    /changed/,
+  );
+  const other = fixture(t);
+  await restore(other, await backup(s));
+  assert.ok(other.attachment(image.id).trashedAt);
+  assert.deepEqual(other.get(r.meta.id).meta.attachments, [image.id]);
+  const restored = await trashImage(
+    other,
+    image.id,
+    other.attachment(image.id).revision,
+    false,
+    human,
+  );
+  assert.equal(restored.trashedAt, undefined);
+  assert.deepEqual(restored.annotations, image.annotations);
+  assert.equal(restored.hash, image.hash);
+  assert.equal(restored.missing, false);
+  assert.ok(fs.existsSync(other.file(`assets/${image.id}/preview.png`)));
+});
 
 test("Markdown updates preserve unknown YAML, comments, and unrelated body", async (t) => {
   const s = fixture(t);

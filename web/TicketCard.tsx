@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ImageThumbnail } from "./ImageThumbnail";
 import type { Claim, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
 import { BlockedIcon, Label, StageIcon } from "./Icons";
@@ -97,6 +98,29 @@ export function TicketCard({
         <Avatar name={m.owner} />
       </span>
       <span className="card-title">{m.title}</span>
+      {!!m.attachments?.length && (
+        <span className="card-images" aria-label="Attached screenshots">
+          {m.attachments.slice(0, 3).map((id) => {
+            const image = ctx.attachments.get(id);
+            return (
+              <span key={id} className="card-image" title={image?.name}>
+                {image ? (
+                  <ImageThumbnail
+                    key={`${id}-${image.revision}`}
+                    image={image}
+                  />
+                ) : (
+                  <span>Image unavailable</span>
+                )}
+                {image?.trashedAt && <small>In Trash</small>}
+              </span>
+            );
+          })}
+          {m.attachments.length > 3 && (
+            <small>+{m.attachments.length - 3}</small>
+          )}
+        </span>
+      )}
       {details && (
         <span className="card-foot">
           <span className="card-tags">

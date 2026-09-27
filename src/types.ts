@@ -23,6 +23,7 @@ export type Meta = {
   attachments?: string[];
   handoff?: string;
   evidence?: string;
+  reviewInstructions?: string;
   question?: string;
   exceptions?: string;
   scope?: string[];
@@ -123,6 +124,8 @@ export type Annotation = {
   color?: string;
 };
 export type Attachment = {
+  trashedAt?: string;
+  trashedBy?: Actor;
   id: string;
   name: string;
   hash: string;

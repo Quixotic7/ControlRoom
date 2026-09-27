@@ -27,6 +27,41 @@ async function moreActions(page: Page) {
   await page.getByRole("button", { name: "More actions" }).click();
 }
 
+test("parent title and number searches keep matching goals openable", async ({
+  page,
+}) => {
+  const title = `Find only this goal ${Date.now()}`;
+  const parent = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "ticket",
+        meta: { title },
+        body: "",
+        actor: { name: "Tester", kind: "human" },
+      },
+    })
+  ).json();
+  await page.request.post("/api/records", {
+    data: {
+      kind: "ticket",
+      meta: { title: "Unrelated child text", parent: parent.meta.id },
+      body: "",
+      actor: { name: "Tester", kind: "human" },
+    },
+  });
+  await page.reload();
+  for (const query of [title, `#${parent.meta.number}`]) {
+    await page.getByRole("textbox", { name: "Filter tickets" }).fill(query);
+    const goal = page.locator(".group-goal").filter({ hasText: title });
+    await expect(goal).toBeVisible();
+    await goal.click();
+    await expect(
+      page.getByRole("textbox", { name: "Title", exact: true }),
+    ).toHaveValue(title);
+    await page.getByRole("button", { name: "Close ticket" }).click();
+  }
+});
+
 test("quick entry creates tickets in their swimlane with an optional longer description", async ({
   page,
 }) => {
@@ -273,6 +308,91 @@ test("create a ticket, discuss it, and submit evidence for review", async ({
     ).meta.status,
   ).toBe("review");
 });
+test("review summaries and conversation types are visible without opening handoff details", async ({
+  page,
+}) => {
+  const ticket = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "ticket",
+        meta: { title: "Readable review conversation", scopeApproved: true },
+        body: "Review the new form.",
+        actor: { name: "Tester", kind: "human" },
+      },
+    })
+  ).json();
+  const response = await page.request.post(
+    `/api/records/${ticket.meta.id}/review`,
+    {
+      data: {
+        revision: ticket.revision,
+        handoff: "The new form preserves notes.",
+        evidence: "Form checks passed.",
+        reviewInstructions:
+          "Enter a title and check that the saved notes remain.",
+        actor: { name: "Fixture agent", kind: "agent" },
+      },
+    },
+  );
+  expect(response.ok()).toBeTruthy();
+  await page.reload();
+  await page
+    .locator(".ticket-card")
+    .filter({ hasText: "Readable review conversation" })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Conversation", exact: false })
+    .click();
+  const review = page.locator('.comment[data-kind="review"]');
+  await expect(
+    review.getByText("Review requested", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "Work completed", exact: true }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "What to review", exact: true }),
+  ).toBeVisible();
+  await expect(
+    review.getByText("Enter a title and check that the saved notes remain."),
+  ).toBeVisible();
+  await page.screenshot({
+    path: "test-results/review-conversation.png",
+    fullPage: true,
+  });
+  for (const [kind, label] of [
+    ["review", "Review feedback"],
+    ["handoff", "Handoff note"],
+    ["question", "Question"],
+    ["comment", "Comment"],
+  ]) {
+    await page.getByLabel("Comment type").selectOption(kind);
+    await page.getByLabel("Add to the conversation").fill(`A ${kind} entry.`);
+    await page.getByRole("button", { name: "Post comment" }).click();
+    const entry = page
+      .locator(".comment")
+      .filter({ hasText: `A ${kind} entry.` });
+    await expect(entry.locator(".comment-type strong")).toHaveText(label);
+  }
+  const question = page.locator('.comment[data-kind="question"]');
+  await expect(
+    question.getByText("Needs an answer", { exact: true }),
+  ).toBeVisible();
+  await question.getByRole("button", { name: "Resolve question" }).click();
+  await expect(question.getByText("Resolved", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close ticket" }).click();
+  await page
+    .locator(".ticket-card")
+    .filter({ hasText: "Readable review conversation" })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Conversation", exact: false })
+    .click();
+  await expect(page.locator(".comment")).toHaveCount(5);
+});
+
 test("knowledge views, import preview, and mobile layout", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Decisions", exact: true }).click();
@@ -455,6 +575,9 @@ test("centered ticket saves on outside click, offers tag suggestions, and keeps 
   await page.mouse.click(8, 8);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await card.click();
+  await page
+    .getByRole("button", { name: "Edit Markdown", exact: true })
+    .click();
   await expect(page.getByLabel("Markdown body")).toHaveValue(
     "Saved when clicking the backdrop.",
   );
@@ -472,6 +595,9 @@ test("centered ticket saves on outside click, offers tag suggestions, and keeps 
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await card.click();
+  await page
+    .getByRole("button", { name: "Edit Markdown", exact: true })
+    .click();
   await expect(page.getByLabel("Markdown body")).toHaveValue(
     "Saved on Escape too.",
   );
@@ -503,7 +629,9 @@ test("standalone screenshots reopen with annotations and support Delete and undo
   await page.getByRole("button", { name: "Screenshots", exact: true }).click();
   await page
     .locator(".screenshot-card")
-    .filter({ hasText: "Standalone screenshot" })
+    .filter({
+      has: page.locator("strong", { hasText: /^Standalone screenshot$/ }),
+    })
     .click();
   await expect(page.locator(".annotation-dialog")).toBeVisible();
   await page.getByRole("button", { name: "Pin", exact: false }).click();
@@ -517,7 +645,9 @@ test("standalone screenshots reopen with annotations and support Delete and undo
   await expect(page.locator(".annotation-dialog")).toHaveCount(0);
   await page
     .locator(".screenshot-card")
-    .filter({ hasText: "Standalone screenshot" })
+    .filter({
+      has: page.locator("strong", { hasText: /^Standalone screenshot$/ }),
+    })
     .click();
   const note = page
     .locator(".annotation-note")

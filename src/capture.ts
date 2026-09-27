@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { atomic, mkdir, now, read } from "./files.js";
+import { atomic, mkdir, now, Problem, read } from "./files.js";
 import type { Store } from "./store.js";
 
 export const captureRoot = path.join(
@@ -73,6 +73,11 @@ export function captureStatus() {
 // starts a fresh one.
 export async function restartCompanion(toolRoot: string) {
   const status = captureStatus();
+  if (status.state === "capturing")
+    throw new Problem(
+      409,
+      "Finish or cancel the current capture before relaunching",
+    );
   if (Number.isInteger(status.pid)) {
     try {
       process.kill(status.pid, "SIGTERM");
@@ -85,9 +90,19 @@ export async function restartCompanion(toolRoot: string) {
         break;
       }
     }
+    let alive = true;
+    try {
+      process.kill(status.pid, 0);
+    } catch {
+      alive = false;
+    }
+    if (alive)
+      throw new Problem(
+        409,
+        "The capture companion is still stopping. Try relaunching again shortly.",
+      );
   }
-  const lock = path.join(captureRoot, "companion.lock");
-  if (fs.existsSync(lock)) fs.unlinkSync(lock);
+  // Keep the flock inode: unlinking it could allow two companions to run.
   startCompanion(toolRoot);
 }
 export function startCompanion(toolRoot: string) {

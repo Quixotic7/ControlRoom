@@ -3,6 +3,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 APP="dist/WorkboardCapture.app/Contents"
 mkdir -p "$APP/MacOS" "$APP/Resources" .runtime/swift-cache
+SIGNING_IDENTITY="${CONTROLROOM_SIGNING_IDENTITY:--}"
+# Do not change an ad-hoc identity just because the build command ran again.
+# Explicit certificates give macOS a stable designated requirement across edits.
+BUILD_KEY="$( { shasum -a 256 native/Capture.swift scripts/build-native.sh; xcrun swiftc --version; uname -m; printf '%s\n' "$SIGNING_IDENTITY"; } | shasum -a 256 | cut -d ' ' -f 1)"
+if [ -f .runtime/capture-build-key ] && [ "$(cat .runtime/capture-build-key)" = "$BUILD_KEY" ] && codesign --verify --deep --strict dist/WorkboardCapture.app 2>/dev/null; then
+  echo "Capture companion unchanged; preserving its existing signing identity."
+  exit 0
+fi
 xcrun swiftc -module-cache-path "$PWD/.runtime/swift-cache" -O native/Capture.swift -o "$APP/MacOS/WorkboardCapture" -framework AppKit -framework Carbon
 cat > "$APP/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -16,4 +24,8 @@ cat > "$APP/Info.plist" <<'PLIST'
 <key>NSScreenCaptureUsageDescription</key><string>Capture a region you select and attach it to your local project.</string>
 </dict></plist>
 PLIST
-codesign --force --sign - dist/WorkboardCapture.app
+SIGNING_MODE="certificate"
+if [ "$SIGNING_IDENTITY" = "-" ]; then SIGNING_MODE="ad-hoc"; fi
+/usr/libexec/PlistBuddy -c "Add :ControlRoomSigningMode string $SIGNING_MODE" "$APP/Info.plist"
+codesign --force --sign "$SIGNING_IDENTITY" dist/WorkboardCapture.app
+printf '%s\n' "$BUILD_KEY" > .runtime/capture-build-key

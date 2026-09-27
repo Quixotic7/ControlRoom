@@ -296,6 +296,15 @@ body,
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--subtle);
+  flex-shrink: 0;
+}
+.tab-menu-placeholder {
+  width: 20px;
+  flex: 0 0 20px;
+}
+.view-tab > .menu {
+  width: 20px;
+  flex: 0 0 20px;
 }
 .view-tab.active {
   background: var(--inset);
@@ -342,7 +351,8 @@ body,
   width: 14px;
   height: 14px;
 }
-.unsaved-dot {
+.unsaved-dot,
+.unsaved-dot-placeholder {
   width: 7px;
   height: 7px;
   border-radius: 50%;

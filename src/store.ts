@@ -94,6 +94,7 @@ const metaSchema = z
     attachments: strings.optional(),
     handoff: z.string().optional(),
     evidence: z.string().optional(),
+    reviewInstructions: z.string().max(10000).optional(),
     question: z.string().optional(),
     exceptions: z.string().optional(),
     scope: strings.optional(),
@@ -424,6 +425,44 @@ export class Store {
       if (!records.some((r) => r.meta.id === id && r.meta.kind === "decision"))
         throw new Problem(422, `Unknown decision ${id}`);
   }
+  // Normalize only supplied link fields so unrelated Markdown stays untouched.
+  // Store canonical IDs, even when callers use the public ticket number.
+  private ticketLinks(input: Record<string, unknown>) {
+    const patch = { ...input };
+    const resolve = (value: unknown, field: string): string => {
+      if (
+        typeof value !== "string" &&
+        !(
+          typeof value === "number" &&
+          Number.isSafeInteger(value) &&
+          value >= 0
+        )
+      )
+        throw new Problem(
+          422,
+          "Ticket references must be IDs or nonnegative ticket numbers",
+        );
+      let record: RecordFile;
+      try {
+        record = this.get(String(value));
+      } catch {
+        throw new Problem(422, `Invalid ${field}: ${String(value)}`);
+      }
+      if (record.meta.kind !== "ticket")
+        throw new Problem(422, "Link must refer to a ticket");
+      return record.meta.id;
+    };
+    if (patch.parent !== undefined && patch.parent !== null)
+      patch.parent = resolve(patch.parent, "parent");
+    if (patch.dependencies !== undefined) {
+      if (!Array.isArray(patch.dependencies))
+        throw new Problem(422, "Dependencies must be a list");
+      patch.dependencies = patch.dependencies.map((value) =>
+        resolve(value, "dependency"),
+      );
+    }
+    return patch;
+  }
   scope(record: RecordFile): RecordFile | undefined {
     const seen = new Set<string>();
     let r: RecordFile | undefined = record;
@@ -520,7 +559,7 @@ export class Store {
     const stamp = now(),
       id = uid(kind === "ticket" ? "WB" : kind === "decision" ? "DEC" : "UI");
     const meta = {
-      ...input,
+      ...(kind === "ticket" ? this.ticketLinks(input) : input),
       schema: 1,
       id,
       kind,
@@ -578,6 +617,7 @@ export class Store {
         JSON.stringify(patch[key]) !== JSON.stringify(old.meta[key])
       )
         throw new Problem(422, `Cannot change ${key}`);
+    if (old.meta.kind === "ticket") patch = this.ticketLinks(patch);
     const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
     this.validate(meta);
     this.authority(actor, meta, old);
@@ -607,6 +647,15 @@ export class Store {
       { meta: old.meta, body: old.body },
       { meta, body: body ?? old.body },
     );
+    if (
+      meta.kind === "ticket" &&
+      actor.kind === "agent" &&
+      this.config().columns.find((c) => c.id === meta.status)?.role ===
+        "review" &&
+      this.config().columns.find((c) => c.id === old.meta.status)?.role !==
+        "review"
+    )
+      this.commentNow(id, this.reviewSummary(meta), actor, "review");
     return this.load(old.path);
   }
   update(
@@ -624,23 +673,60 @@ export class Store {
     actor: Actor,
     kind: Comment["kind"] = "comment",
   ) {
-    return this.write(() => {
-      ticket = this.get(ticket).meta.id;
-      actorSchema.parse(actor);
-      if (!body.trim()) throw new Problem(422, "Comment cannot be empty");
-      if (!["comment", "question", "handoff", "review"].includes(kind))
-        throw new Problem(422, "Unknown comment type");
-      const meta = {
-        id: uid("comment"),
-        ticket,
-        actor,
-        kind,
-        at: now(),
-        resolved: false,
-      };
-      atomic(this.file(`records/comments/${meta.id}.md`), markdown(meta, body));
-      return meta;
-    });
+    return this.write(() => this.commentNow(ticket, body, actor, kind));
+  }
+  private reviewSummary(meta: Meta) {
+    const parts = [
+      "## Work completed",
+      "",
+      meta.handoff!.trim(),
+      "",
+      "## What to review",
+      "",
+      meta.reviewInstructions?.trim() ||
+        "Check the result against this ticket’s acceptance criteria and inspect the verification evidence below. Move the ticket to Done if accepted, or reply with Review feedback describing any changes needed.",
+      "",
+      "## Verification",
+      "",
+      meta.evidence!.trim(),
+    ];
+    if (meta.verification)
+      parts.push(
+        "",
+        `Recorded run: ${meta.verification.command} — exit ${meta.verification.exitCode} (${meta.verification.at}).`,
+      );
+    if (meta.pr) parts.push("", `Pull request: ${meta.pr}`);
+    if (meta.branch) parts.push("", `Branch: ${meta.branch}`);
+    if (meta.exceptions?.trim())
+      parts.push(
+        "",
+        "## Exceptions and limitations",
+        "",
+        meta.exceptions.trim(),
+      );
+    return parts.join("\n") + "\n";
+  }
+  private commentNow(
+    ticket: string,
+    body: string,
+    actor: Actor,
+    kind: Comment["kind"],
+  ) {
+    ticket = this.get(ticket).meta.id;
+    actorSchema.parse(actor);
+    if (!body.trim()) throw new Problem(422, "Comment cannot be empty");
+    if (!["comment", "question", "handoff", "review"].includes(kind))
+      throw new Problem(422, "Unknown comment type");
+    const meta = {
+      id: uid("comment"),
+      ticket,
+      actor,
+      kind,
+      at: now(),
+      resolved: false,
+    };
+    atomic(this.file(`records/comments/${meta.id}.md`), markdown(meta, body));
+    return meta;
   }
   resolveComment(
     id: string,
@@ -779,6 +865,7 @@ export class Store {
       pr?: string;
       commits?: string[];
       verification?: Verification;
+      reviewInstructions?: string;
     } = {},
   ) {
     return this.write(() =>
@@ -882,6 +969,20 @@ export class Store {
         `Claim: ${c.claim.actor.name} in ${c.claim.worktree} until ${c.claim.expiresAt}`,
       );
     lines.push("", "## Brief", "", t.body.trim() || "(No description.)");
+    const ancestors = [c.approvedScope, c.parent];
+    const included = new Set([t.meta.id]);
+    for (const ancestor of ancestors) {
+      if (!ancestor || included.has(ancestor.meta.id)) continue;
+      included.add(ancestor.meta.id);
+      lines.push(
+        "",
+        `## ${ancestor === c.approvedScope ? "Approved scope" : "Parent context"}: ${ref(ancestor)} ${ancestor.meta.title}`,
+        "",
+        `Record: ${ancestor.meta.id} · Author: ${ancestor.meta.author.name} (${ancestor.meta.author.kind}) · Revision: ${ancestor.revision}`,
+        "",
+        ancestor.body.trim() || "(No description.)",
+      );
+    }
     if (t.meta.handoff)
       lines.push("", "## Current handoff", "", t.meta.handoff.trim());
     if (t.meta.verification) {
@@ -945,7 +1046,7 @@ export class Store {
       "",
       "## Protocol",
       "",
-      `Claim before working: \`workboard claim ${number}\`. Record discoveries with \`workboard comment ${number} --body ...\` and questions with \`workboard ask\`. Submit with \`workboard review ${number} --etag ${t.revision} --handoff ... --evidence ... --run "test command"\`. A human moves work to Done.`,
+      `Claim before working: \`workboard claim ${t.meta.number ?? t.meta.id}\`. Record discoveries with \`workboard comment ${t.meta.number ?? t.meta.id} --body ...\` and questions with \`workboard ask\`. Submit with \`workboard review ${t.meta.number ?? t.meta.id} --etag ${t.revision} --handoff ... --review-notes "Human review steps and expected results" --evidence ... --run "test command"\`. Moving agent work into Review posts the handoff, review steps, and evidence to the conversation. A human moves work to Done.`,
     );
     const markdown = lines.join("\n") + "\n";
     return { markdown, tokens: Math.ceil(markdown.length / 4) };

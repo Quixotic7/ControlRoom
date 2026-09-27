@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { Annotation, Attachment, ProjectState } from "../src/types";
 import { api, actor } from "./api";
+import { useImageViewport } from "./useImageViewport";
+import { ParentInput } from "./ParentInput";
 
 const color = "#e55b40";
 const clamp = (v: number) => Math.max(0, Math.min(1, v));
@@ -31,7 +33,7 @@ export function AnnotationEditor({
     img = useRef<HTMLImageElement>(null);
   const [asset, setAsset] = useState<Attachment | null>(null),
     [notes, setNotes] = useState<Annotation[]>([]),
-    [tool, setTool] = useState<Annotation["type"] | "select">("draw"),
+    [tool, setTool] = useState<Annotation["type"] | "select" | "hand">("draw"),
     [selected, setSelected] = useState<string | null>(null),
     [undo, setUndo] = useState<Annotation[][]>([]),
     [redo, setRedo] = useState<Annotation[][]>([]),
@@ -43,6 +45,7 @@ export function AnnotationEditor({
     [projects, setProjects] = useState<any[]>([]),
     [confirmClose, setConfirmClose] = useState(false);
   const dirty = !!asset && canonical(notes) !== canonical(asset.annotations);
+  const viewport = useImageViewport(asset?.width ?? 1000, asset?.height ?? 700);
   function requestClose() {
     if (saving) return;
     if (dirty) setConfirmClose(true);
@@ -86,7 +89,14 @@ export function AnnotationEditor({
     };
   };
   function down(e: React.PointerEvent) {
-    if (e.button !== 0 || !asset) return;
+    if (
+      e.button !== 0 ||
+      !asset ||
+      asset.trashedAt ||
+      tool === "hand" ||
+      viewport.space
+    )
+      return;
     e.preventDefault();
     svg.current?.focus();
     const p = point(e);
@@ -205,7 +215,7 @@ export function AnnotationEditor({
           });
         return;
       }
-      if (typing || saving) return;
+      if (typing || saving || asset?.trashedAt) return;
       if (["Delete", "Backspace"].includes(e.key) && selected) {
         e.preventDefault();
         stash();
@@ -299,7 +309,7 @@ export function AnnotationEditor({
     return canvas.toDataURL("image/png");
   }
   async function save() {
-    if (!asset) return;
+    if (!asset || asset.trashedAt) return;
     setSaving(true);
     setError("");
     try {
@@ -380,6 +390,31 @@ export function AnnotationEditor({
       setSaving(false);
     }
   }
+  async function deleteScreenshot() {
+    if (
+      !asset ||
+      saving ||
+      !window.confirm(
+        `Move “${asset.name}” to Trash? You can restore it later.${dirty ? " Unsaved annotation changes will be discarded." : ""}`,
+      )
+    )
+      return;
+    setSaving(true);
+    setError("");
+    try {
+      await api(`/images/${id}/trash`, "PUT", {
+        revision: asset.revision,
+        trashed: true,
+        actor,
+      });
+      await reload();
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
   const a = notes.find((n) => n.id === selected);
   const W = asset?.width ?? 1000,
     H = asset?.height ?? 700,
@@ -413,7 +448,7 @@ export function AnnotationEditor({
           <span className="inline-actions">
             <button
               className="button primary"
-              disabled={saving || asset?.missing}
+              disabled={saving || asset?.missing || !!asset?.trashedAt}
               onClick={async () => {
                 if (await save()) onClose();
               }}
@@ -434,6 +469,33 @@ export function AnnotationEditor({
           {error}
         </div>
       )}
+      {asset?.trashedAt && (
+        <div className="banner" role="status">
+          This screenshot is in Trash. Existing ticket links are preserved.
+          <button
+            className="button"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                const restored = await api<Attachment>(
+                  `/images/${id}/trash`,
+                  "PUT",
+                  { revision: asset.revision, trashed: false, actor },
+                );
+                setAsset(restored);
+                await reload();
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            Restore screenshot
+          </button>
+        </div>
+      )}
       <div
         className="annotation-tools"
         role="toolbar"
@@ -442,6 +504,7 @@ export function AnnotationEditor({
         {(
           [
             ["select", "↖", "Select / move"],
+            ["hand", "✋", "Pan"],
             ["draw", "✎", "Draw"],
             ["text", "T", "Text"],
             ["pin", "●", "Pin"],
@@ -461,6 +524,29 @@ export function AnnotationEditor({
         <span className="tool-spacer" />
         <button
           className="button"
+          aria-label="Zoom out"
+          onClick={() => viewport.zoomTo(viewport.view.zoom / 1.25)}
+        >
+          −
+        </button>
+        <output aria-label="Image zoom">
+          {Math.round(viewport.view.zoom * 100)}%
+        </output>
+        <button
+          className="button"
+          aria-label="Zoom in"
+          onClick={() => viewport.zoomTo(viewport.view.zoom * 1.25)}
+        >
+          +
+        </button>
+        <button className="button" onClick={viewport.fit}>
+          Fit image
+        </button>
+        <button className="button" onClick={() => viewport.zoomTo(1)}>
+          100%
+        </button>
+        <button
+          className="button"
           disabled={!undo.length}
           onClick={() => history(true)}
         >
@@ -475,7 +561,17 @@ export function AnnotationEditor({
         </button>
       </div>
       <div className="annotation-layout">
-        <div className="image-stage">
+        <div
+          className="image-stage"
+          ref={viewport.stage}
+          tabIndex={0}
+          aria-label="Screenshot viewport"
+          onPointerDownCapture={(e) => viewport.down(e, tool === "hand")}
+          onPointerMoveCapture={viewport.move}
+          onPointerUpCapture={viewport.up}
+          onPointerCancel={viewport.up}
+          onAuxClick={(e) => e.preventDefault()}
+        >
           {asset?.missing ? (
             <div className="empty-state">
               <h2>Image is not available locally</h2>
@@ -488,7 +584,11 @@ export function AnnotationEditor({
             asset && (
               <div
                 className="image-canvas"
-                style={{ aspectRatio: `${W}/${H}` }}
+                style={{
+                  width: W,
+                  height: H,
+                  transform: `translate(${viewport.view.x}px, ${viewport.view.y}px) scale(${viewport.view.zoom})`,
+                }}
               >
                 <img
                   ref={img}
@@ -505,7 +605,14 @@ export function AnnotationEditor({
                   onPointerMove={move}
                   onPointerUp={up}
                   onPointerCancel={up}
-                  style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+                  style={{
+                    cursor:
+                      tool === "hand" || viewport.space
+                        ? "grab"
+                        : tool === "select"
+                          ? "move"
+                          : "crosshair",
+                  }}
                 >
                   <defs>
                     <marker
@@ -605,12 +712,8 @@ export function AnnotationEditor({
               </div>
             )
           )}
-          <p className="help">
-            Draw directly on the image. Select / move repositions a mark;
-            written instructions explain the intended result.
-          </p>
         </div>
-        <aside className="annotation-notes">
+        <aside className="annotation-notes" inert={!!asset?.trashedAt}>
           <div className="section-heading">
             <h3>Annotations</h3>
             <span className="tag">{notes.length}</span>
@@ -679,24 +782,16 @@ export function AnnotationEditor({
       <details className="annotation-save">
         <summary>Attach to a ticket (optional)</summary>
         <div className="fields two">
-          <label className="field">
-            {split ? "Parent ticket (optional)" : "Attach to ticket"}
-            <select
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-            >
-              <option value="">
-                {split ? "No parent" : "Create a new ticket"}
-              </option>
-              {state.records
-                .filter((r) => r.meta.kind === "ticket")
-                .map((r) => (
-                  <option key={r.meta.id} value={r.meta.id}>
-                    {r.meta.title}
-                  </option>
-                ))}
-            </select>
-          </label>
+          <ParentInput
+            above
+            records={state.records}
+            columns={state.config.columns}
+            label={split ? "Parent ticket (optional)" : "Attach to ticket"}
+            emptyLabel={split ? "No parent" : "Create a new ticket"}
+            clearLabel={split ? "Clear parent" : "Create a new ticket instead"}
+            value={destination || null}
+            onChange={(id) => setDestination(id ?? "")}
+          />
           {!destination && !split && (
             <label className="field">
               New ticket title
@@ -748,13 +843,22 @@ export function AnnotationEditor({
         )}
       </details>
       <footer className="dialog-footer">
+        {asset && !asset.trashedAt && (
+          <button
+            className="text-button danger"
+            disabled={saving}
+            onClick={deleteScreenshot}
+          >
+            Delete screenshot
+          </button>
+        )}
         <span className="help">
-          Base image + editable marks + numbered preview + written instructions
+          Scroll to zoom · Space + drag to pan · 0 fit · 1 actual size
         </span>
         <div className="inline-actions">
           <button
             className="button primary"
-            disabled={saving || !asset || asset.missing}
+            disabled={saving || !asset || asset.missing || !!asset.trashedAt}
             onClick={async () => {
               if (await save()) onClose();
             }}
@@ -763,14 +867,14 @@ export function AnnotationEditor({
           </button>
           <button
             className="button"
-            disabled={saving || !asset || asset.missing}
+            disabled={saving || !asset || asset.missing || !!asset.trashedAt}
             onClick={save}
           >
             Save annotations
           </button>
           <button
             className="button"
-            disabled={saving || !asset || asset.missing}
+            disabled={saving || !asset || asset.missing || !!asset.trashedAt}
             onClick={attach}
           >
             {saving

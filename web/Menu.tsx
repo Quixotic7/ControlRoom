@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 // A button with a popover panel. Closes on outside click or Escape and
 // returns focus to its button. `children` may be a function of `close`.
@@ -7,21 +7,45 @@ export function Menu({
   ariaLabel,
   className = "button",
   align = "start",
+  escapeClipping = false,
   children,
 }: {
   label: React.ReactNode;
   ariaLabel?: string;
   className?: string;
   align?: "start" | "end";
+  escapeClipping?: boolean;
   children: React.ReactNode | ((close: () => void) => React.ReactNode);
 }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null),
+    panel = useRef<HTMLDivElement>(null),
     button = useRef<HTMLButtonElement>(null);
   const close = () => {
     setOpen(false);
     button.current?.focus();
   };
+  useLayoutEffect(() => {
+    const el = panel.current;
+    if (!open || !escapeClipping || !el) return;
+    // The top layer escapes horizontally scrolling tab strips without changing
+    // their dimensions or detaching keyboard/outside-click handling.
+    el.showPopover();
+    const position = () => {
+      const b = button.current!.getBoundingClientRect();
+      const left = align === "end" ? b.right - el.offsetWidth : b.left;
+      el.style.left = `${Math.max(8, Math.min(left, innerWidth - el.offsetWidth - 8))}px`;
+      el.style.top = `${Math.max(8, Math.min(b.bottom + 4, innerHeight - el.offsetHeight - 8))}px`;
+    };
+    position();
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      if (el.matches(":popover-open")) el.hidePopover();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
+    };
+  }, [open, escapeClipping, align]);
   useEffect(() => {
     if (!open) return;
     const outside = (e: PointerEvent) => {
@@ -55,7 +79,17 @@ export function Menu({
         {label}
       </button>
       {open && (
-        <div className={`menu-panel ${align}`} role="group">
+        <div
+          ref={panel}
+          popover={escapeClipping ? "manual" : undefined}
+          style={
+            escapeClipping
+              ? { position: "fixed", margin: 0, right: "auto", bottom: "auto" }
+              : undefined
+          }
+          className={`menu-panel ${align}`}
+          role="group"
+        >
           {typeof children === "function" ? children(close) : children}
         </div>
       )}

@@ -44,6 +44,7 @@ final class CaptureManager: NSObject {
     var tapSource: CFRunLoopSource?
     var askedForMonitoring = false
     var askedForRecording = false
+    var captureSucceeded = false
     let startedAt = ISO8601DateFormatter().string(from: Date())
 
     func stopMonitoring() {
@@ -80,7 +81,7 @@ final class CaptureManager: NSObject {
     // Every status carries the live permission picture, so the board can point
     // at the exact System Settings pane and say whether a relaunch is needed.
     func state(_ value: String, _ message: String) {
-        let object: [String: Any] = ["state": value, "message": message, "pid": ProcessInfo.processInfo.processIdentifier, "at": ISO8601DateFormatter().string(from: Date()), "screenRecording": CGPreflightScreenCaptureAccess(), "inputMonitoring": CGPreflightListenEventAccess(), "startedAt": startedAt]
+        let object: [String: Any] = ["state": value, "message": message, "pid": ProcessInfo.processInfo.processIdentifier, "at": ISO8601DateFormatter().string(from: Date()), "screenRecording": CGPreflightScreenCaptureAccess() || captureSucceeded, "screenRecordingPreflight": CGPreflightScreenCaptureAccess(), "inputMonitoring": CGPreflightListenEventAccess(), "startedAt": startedAt, "bundlePath": Bundle.main.bundleURL.path, "signingMode": Bundle.main.object(forInfoDictionaryKey: "ControlRoomSigningMode") as? String ?? "unknown"]
         let file = URL(fileURLWithPath: directory).appendingPathComponent("status.json")
         if let data = try? JSONSerialization.data(withJSONObject: object) {
             do { try data.write(to: file, options: .atomic) } catch { fputs("Could not write status: \(error)\n", stderr) }
@@ -160,12 +161,11 @@ final class CaptureManager: NSObject {
         guard let destination = projects().first, let drafts = destination["draftDirectory"] as? String else {
             state("destination-unavailable", "No running project is available. Open a project before capturing."); return
         }
-        // Screen Recording is granted per process: a grant made while this
-        // companion was already running only applies after a relaunch.
-        guard CGPreflightScreenCaptureAccess() else {
+        // Preflight is diagnostic, not a gate: screencapture performs its own
+        // authorization. A stale preflight must not prevent a user-requested
+        // interactive capture from reaching the system picker.
+        if !CGPreflightScreenCaptureAccess() && !captureSucceeded {
             if !askedForRecording { askedForRecording = true; _ = CGRequestScreenCaptureAccess() }
-            state("screen-recording-required", "Screen Recording permission is not active for this companion. Allow Workboard Capture under System Settings > Privacy & Security > Screen Recording, then relaunch the companion (Relaunch in Settings or the CR menu).")
-            return
         }
         busy = true; target = destination
         try? fm.createDirectory(atPath: drafts, withIntermediateDirectories: true)
@@ -186,6 +186,7 @@ final class CaptureManager: NSObject {
                     } else { self.state("cancelled", "Capture cancelled; no attachment was created.") }
                     return
                 }
+                self.captureSucceeded = true
                 self.deliver(file, data, destination)
             }
         }
@@ -201,12 +202,13 @@ final class CaptureManager: NSObject {
         URLSession.shared.dataTask(with: request) { payload, response, error in
             DispatchQueue.main.async {
                 self.busy = false
-                guard error == nil, let http = response as? HTTPURLResponse, http.statusCode == 200, let payload = payload, let result = try? JSONSerialization.jsonObject(with: payload) as? [String: Any], let id = result["id"] as? String else {
+                guard error == nil, let http = response as? HTTPURLResponse, http.statusCode == 200, let payload = payload, let result = try? JSONSerialization.jsonObject(with: payload) as? [String: Any], result["id"] is String else {
                     self.state("draft-retained", "Project unavailable. Draft retained at \(file.path); recover it from project Settings."); return
                 }
                 try? self.fm.removeItem(at: file)
-                self.state("ready", "Screenshot sent to \(destination["name"] as? String ?? "project")")
-                if let editor = URL(string: base + "/#image=" + id) { NSWorkspace.shared.open(editor) }
+                // Capture is deliberately silent: retain focus in the source app.
+                // The open board receives its normal file-watch update; annotate later.
+                self.state("ready", "Screenshot saved to \(destination["name"] as? String ?? "project"). Open Screenshots to annotate.")
             }
         }.resume()
     }
