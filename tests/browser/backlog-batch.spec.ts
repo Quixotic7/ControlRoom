@@ -18,9 +18,7 @@ async function create(page: Page, title: string, extra = {}) {
   return response.json();
 }
 async function open(page: Page, id: string) {
-  await page.goto("about:blank");
-  await page.request.patch("/api/preferences", { data: { selected: id } });
-  await page.goto("/");
+  await page.goto("/#ticket=" + id);
   await expect(page.getByRole("dialog")).toBeVisible();
 }
 test.beforeEach(async ({ page }) => {
@@ -65,12 +63,15 @@ test("view tabs keep their geometry through selection and unsaved changes", asyn
         return { x: b.x, width: b.width };
       }),
     );
+  await page.evaluate(() => document.fonts.ready);
   const original = await geometry();
   for (const theme of ["light", "dark"]) {
     await page.request.patch("/api/preferences", {
       data: { theme, density: theme === "dark" ? "compact" : "comfortable" },
     });
     await page.reload();
+    await expect(tabs.first()).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
     for (const view of views) {
       await page.getByRole("button", { name: view.name, exact: true }).click();
       const actual = await geometry();
@@ -146,6 +147,7 @@ test("parent autocomplete selects by number, preserves drafts, and excludes chil
   await input.press("Enter");
   await expect(input).toHaveValue(/#0 /);
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   let saved = await (
     await page.request.get(`/api/records/${current.meta.id}`)
   ).json();
@@ -155,6 +157,7 @@ test("parent autocomplete selects by number, preserves drafts, and excludes chil
   input = page.getByRole("combobox", { name: "Parent ticket", exact: true });
   await input.fill("unsaved search text");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   expect(
     (await (await page.request.get(`/api/records/${current.meta.id}`)).json())
       .meta.parent,
@@ -162,6 +165,7 @@ test("parent autocomplete selects by number, preserves drafts, and excludes chil
   await open(page, current.meta.id);
   await page.getByRole("button", { name: "Clear parent", exact: true }).click();
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   expect(
     (await (await page.request.get(`/api/records/${current.meta.id}`)).json())
       .meta.parent,
@@ -201,7 +205,7 @@ test("conversation sort is explicit, deterministic, persistent, and keeps the re
     ).json();
     const file = path.join(
       state.canonical,
-      ".workboard/records/comments",
+      ".controlroom/records/comments",
       `${comment.id}.md`,
     );
     fs.writeFileSync(file, patchMd(fs.readFileSync(file, "utf8"), { at }));

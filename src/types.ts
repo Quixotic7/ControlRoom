@@ -24,6 +24,8 @@ export type Meta = {
   handoff?: string;
   evidence?: string;
   reviewInstructions?: string;
+  manualReviewRequired?: boolean;
+  reviewVerificationAt?: string;
   question?: string;
   exceptions?: string;
   scope?: string[];

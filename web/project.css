@@ -291,12 +291,29 @@ body,
   scrollbar-width: none;
 }
 .view-tab {
+  position: relative;
   display: flex;
   align-items: center;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--subtle);
   flex-shrink: 0;
+}
+.view-tab.drop-before::before,
+.view-tab.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.view-tab.drop-before::before {
+  left: -3px;
+}
+.view-tab.drop-after::after {
+  right: -3px;
 }
 .tab-menu-placeholder {
   width: 20px;

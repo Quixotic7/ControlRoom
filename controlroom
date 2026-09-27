@@ -1,0 +1,12 @@
+#!/bin/sh
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ -x "$HERE/.runtime/node_modules/node/bin/node" ]; then
+  CONTROLROOM_NODE="$HERE/.runtime/node_modules/node/bin/node"
+else
+  CONTROLROOM_NODE="$(command -v node)"
+fi
+if [ -z "$CONTROLROOM_NODE" ] || [ "$("$CONTROLROOM_NODE" -p 'process.versions.node.split(".")[0]')" != "24" ]; then
+  echo "ControlRoom requires Node 24. Run npm run setup:runtime to install it locally without changing your global Node." >&2
+  exit 1
+fi
+exec "$CONTROLROOM_NODE" --import "$HERE/node_modules/tsx/dist/loader.mjs" "$HERE/src/cli.ts" "$@"

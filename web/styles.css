@@ -862,9 +862,10 @@ dialog::backdrop {
   backdrop-filter: blur(2px);
 }
 .record-dialog {
-  width: min(1000px, 94vw);
-  height: min(900px, 90dvh);
-  max-height: 90dvh;
+  width: min(1800px, 95vw);
+  max-width: 95vw;
+  height: 95dvh;
+  max-height: 95dvh;
   margin: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1120,6 +1121,32 @@ dialog::backdrop {
 }
 .child-ticket:hover {
   background: var(--hover);
+}
+.existing-child {
+  margin: 16px 0;
+}
+.description-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.description-images .screenshot-card {
+  width: 240px;
+  max-width: 100%;
+}
+.review-actions {
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 16px;
+  background: var(--subtle);
+}
+.review-actions .section-heading {
+  flex-wrap: wrap;
+}
+.review-actions .field {
+  margin: 0;
 }
 /* Code links and the captured verification run. */
 .code-links {
@@ -1941,4 +1968,85 @@ dialog::backdrop {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* A ticket opened in its own tab is a page, without the board underneath. */
+.record-dialog.standalone-record {
+  position: relative;
+  inset: auto;
+  margin: 0 auto;
+  width: min(1800px, 100%);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+  box-shadow: none;
+}
+.ticket-page .main-content:empty {
+  display: none;
+}
+.review-brief {
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  background: var(--subtle);
+}
+.review-brief h3 {
+  margin: 0 0 8px;
+}
+
+.parent-navigation {
+  padding: 0 20px 10px;
+}
+.parent-navigation button {
+  text-align: left;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.open-questions {
+  border: 1px solid var(--line);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  background: var(--subtle);
+}
+.open-questions h3 {
+  margin: 0 0 12px;
+}
+.open-question + .open-question {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.question-prompt {
+  max-height: 240px;
+  overflow: auto;
+  margin: 10px 0;
+}
+.review-actions .inline-actions {
+  align-items: end;
+}
+.review-actions .inline-actions > .button,
+.review-actions .inline-actions select {
+  min-height: 34px;
+}
+.review-actions .inline-actions .field {
+  min-width: 0;
+  max-width: 100%;
+}
+.review-actions .inline-actions select {
+  max-width: 100%;
+}
+.ticket-title-dialog {
+  width: min(480px, 92vw);
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+.ticket-title-dialog h2 {
+  margin: 0 0 18px;
+}
+.ticket-title-dialog .inline-actions {
+  justify-content: flex-end;
 }

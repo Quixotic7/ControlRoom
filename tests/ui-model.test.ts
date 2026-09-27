@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { context, matches, parseFilter, showsArchived } from "../web/model.js";
+import {
+  attentionReason,
+  context,
+  matches,
+  parseFilter,
+  showsArchived,
+} from "../web/model.js";
 import { defaultColumns } from "../src/store.js";
 import type { Meta, ProjectState, RecordFile } from "../src/types.js";
 
@@ -45,6 +51,28 @@ const stateOf = (records: RecordFile[]): ProjectState => ({
   branchChanged: false,
   acknowledgedBranch: "main",
   revision: "",
+});
+
+test("Done tickets leave Needs you while retaining historical blockers and questions", () => {
+  const r = ticket({ status: "done", blocked: "Old permission check" });
+  const state = stateOf([r]);
+  state.comments.push({
+    id: "question",
+    ticket: r.meta.id,
+    kind: "question",
+    body: "Old question",
+    resolved: false,
+    actor: { name: "Agent", kind: "agent" },
+    at: "2026-01-01",
+    revision: "q1",
+  });
+  assert.equal(attentionReason(r, state, context(state)), null);
+  assert.equal(r.meta.blocked, "Old permission check");
+  assert.equal(state.comments[0].resolved, false);
+  r.meta.status = "progress";
+  assert.equal(attentionReason(r, state, context(state)), "blocked");
+  r.meta.blocked = "";
+  assert.equal(attentionReason(r, state, context(state)), "question");
 });
 
 test("is:archived matches archived tickets and -is:archived excludes them", () => {

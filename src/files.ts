@@ -113,6 +113,29 @@ function gitProject(resolved: string) {
   const top = git(resolved, ["rev-parse", "--show-toplevel"]);
   return top ? fs.realpathSync(top) : "";
 }
+// Legacy projects stay readable until explicitly migrated. Never silently
+// choose between two histories in the same checkout.
+export function dataDirectory(root: string) {
+  const current = path.join(root, ".controlroom");
+  const legacy = path.join(root, ".workboard");
+  if (fs.existsSync(current) && fs.existsSync(legacy))
+    throw new Problem(
+      409,
+      "Both .controlroom and .workboard exist. Reconcile them before opening this project; no records were changed.",
+    );
+  const selected = fs.existsSync(legacy) ? legacy : current;
+  if (fs.existsSync(selected) && fs.lstatSync(selected).isSymbolicLink())
+    throw new Problem(
+      400,
+      "The project data directory must not be a symbolic link",
+    );
+  return selected;
+}
+function hasBoard(root: string) {
+  return [".controlroom", ".workboard"].some((name) =>
+    fs.existsSync(path.join(root, name, "config.yml")),
+  );
+}
 export function canonicalProject(cwd: string, discoverParents = true): string {
   const resolved = fs.realpathSync(cwd);
   const repo = gitProject(resolved);
@@ -126,8 +149,7 @@ export function canonicalProject(cwd: string, discoverParents = true): string {
       ]);
       if (parent) {
         const shared = canonicalProject(parent);
-        if (fs.existsSync(path.join(shared, ".workboard", "config.yml")))
-          return shared;
+        if (hasBoard(shared)) return shared;
       }
     }
     return repo;
@@ -135,7 +157,7 @@ export function canonicalProject(cwd: string, discoverParents = true): string {
   if (!discoverParents) return resolved;
   let dir = resolved;
   while (true) {
-    if (fs.existsSync(path.join(dir, ".workboard", "config.yml"))) return dir;
+    if (hasBoard(dir)) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) return resolved;
     dir = parent;

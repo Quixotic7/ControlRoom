@@ -9,18 +9,51 @@ export class ApiError extends Error {
     super(message);
   }
 }
+export class ConnectionError extends Error {
+  constructor(public method: string) {
+    super(
+      method === "GET"
+        ? "Couldn't reach Control Room's local service. Check that it is running, then try again."
+        : "Couldn't confirm the change with Control Room's local service. It may have completed; check the current result before trying again.",
+    );
+  }
+  override toString() {
+    return this.message;
+  }
+}
 export async function api<T = any>(
   url: string,
   method = "GET",
   data?: unknown,
 ): Promise<T> {
-  const res = await fetch("/api" + url, {
-    method,
-    keepalive: url === "/preferences",
-    headers: { "Content-Type": "application/json" },
-    body: data === undefined ? undefined : JSON.stringify(data),
-  });
-  const text = await res.text();
+  const body = data === undefined ? undefined : JSON.stringify(data);
+  // A read can safely recover from a dropped local connection. Never replay
+  // writes: the server may have committed them before the response was lost.
+  const attempts = method === "GET" ? 3 : 1;
+  let res!: Response, text!: string;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const controller = method === "GET" ? new AbortController() : undefined;
+    const timer = controller
+      ? setTimeout(() => controller.abort(), 8000)
+      : undefined;
+    try {
+      res = await fetch("/api" + url, {
+        method,
+        keepalive: url === "/preferences",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller?.signal,
+      });
+      text = await res.text();
+      break;
+    } catch (e) {
+      if (!(e instanceof TypeError) && !(e instanceof DOMException)) throw e;
+      if (attempt + 1 === attempts) throw new ConnectionError(method);
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
   let result: any;
   try {
     result = JSON.parse(text);

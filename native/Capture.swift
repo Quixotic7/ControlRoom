@@ -56,7 +56,7 @@ final class CaptureManager: NSObject {
         if eventTap != nil { return true }
         guard CGPreflightListenEventAccess() else {
             if !askedForMonitoring { askedForMonitoring = true; _ = CGRequestListenEventAccess() }
-            state("input-monitoring-required", "Double-tap Option needs Input Monitoring permission for Workboard Capture in macOS Settings. Menu capture remains available.")
+            state("input-monitoring-required", "Double-tap Option needs Input Monitoring permission for ControlRoom Capture in macOS Settings. Menu capture remains available.")
             return false
         }
         let mask = [CGEventType.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
@@ -69,7 +69,7 @@ final class CaptureManager: NSObject {
             } else { manager.optionTap.cancel() }
             return Unmanaged.passUnretained(event)
         }, userInfo: nil) else {
-            state("input-monitoring-required", "Unable to listen for Option. Check Input Monitoring permission and restart Workboard Capture."); return false
+            state("input-monitoring-required", "Unable to listen for Option. Check Input Monitoring permission and restart ControlRoom Capture."); return false
         }
         eventTap = tap
         tapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
@@ -90,7 +90,7 @@ final class CaptureManager: NSObject {
     }
     func readyState(_ message: String) {
         if CGPreflightScreenCaptureAccess() { state("ready", message) }
-        else { state("screen-recording-required", "\(message). Screen Recording permission is not active for this companion: allow Workboard Capture in System Settings, then relaunch the companion.") }
+        else { state("screen-recording-required", "\(message). Screen Recording permission is not active for this companion: allow ControlRoom Capture in System Settings, then relaunch the companion.") }
     }
     func projects() -> [[String: Any]] {
         ((try? fm.contentsOfDirectory(atPath: directory)) ?? []).filter { $0.hasPrefix("project-") && $0.hasSuffix(".json") }.compactMap { name in
@@ -118,7 +118,7 @@ final class CaptureManager: NSObject {
         relaunch.target = self; menu.addItem(relaunch)
         let quit = NSMenuItem(title: "Quit capture companion", action: #selector(quitCompanion), keyEquivalent: "")
         quit.target = self; menu.addItem(quit); statusItem?.menu = menu
-        if !CGPreflightScreenCaptureAccess() { state("screen-recording-required", "Screen Recording permission is not active for this companion. Allow Workboard Capture in System Settings, then relaunch the companion.") }
+        if !CGPreflightScreenCaptureAccess() { state("screen-recording-required", "Screen Recording permission is not active for this companion. Allow ControlRoom Capture in System Settings, then relaunch the companion.") }
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
             DispatchQueue.main.async { manager.trigger() }; return noErr
@@ -182,7 +182,7 @@ final class CaptureManager: NSObject {
                     self.busy = false
                     try? self.fm.removeItem(at: file)
                     if diagnostic.lowercased().contains("permission") || diagnostic.lowercased().contains("could not") {
-                        self.state("permission-required", "Capture failed. Check macOS Screen Recording permission for Workboard Capture. \(diagnostic)")
+                        self.state("permission-required", "Capture failed. Check macOS Screen Recording permission for ControlRoom Capture. \(diagnostic)")
                     } else { self.state("cancelled", "Capture cancelled; no attachment was created.") }
                     return
                 }
@@ -248,5 +248,5 @@ if CommandLine.arguments.contains("--self-test") {
     print("Hotkey registration status: \(result); capture executable present: \(FileManager.default.isExecutableFile(atPath: "/usr/sbin/screencapture"))")
     exit(result == noErr ? 0 : 1)
 }
-guard CommandLine.arguments.count > 1 else { fputs("Usage: WorkboardCapture runtime-directory\n", stderr); exit(1) }
+guard CommandLine.arguments.count > 1 else { fputs("Usage: ControlRoomCapture runtime-directory\n", stderr); exit(1) }
 manager.start(CommandLine.arguments[1])

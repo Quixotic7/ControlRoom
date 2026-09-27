@@ -3,10 +3,12 @@ import path from "node:path";
 import crypto from "node:crypto";
 import YAML from "yaml";
 import { z } from "zod";
+import { decisionProtocol } from "./decision-protocol.js";
 import {
   atomic,
   branch,
   canonicalProject,
+  dataDirectory,
   hash,
   markdown,
   mkdir,
@@ -95,6 +97,8 @@ const metaSchema = z
     handoff: z.string().optional(),
     evidence: z.string().optional(),
     reviewInstructions: z.string().max(10000).optional(),
+    manualReviewRequired: z.boolean().optional(),
+    reviewVerificationAt: z.string().optional(),
     question: z.string().optional(),
     exceptions: z.string().optional(),
     scope: strings.optional(),
@@ -151,7 +155,7 @@ export class Store {
   }
   constructor(project: string, exact = false) {
     this.root = canonicalProject(project, !exact);
-    this.dir = path.join(this.root, ".workboard");
+    this.dir = dataDirectory(this.root);
   }
   initialize(name = path.basename(this.root)) {
     mkdir(this.dir);
@@ -618,6 +622,21 @@ export class Store {
       )
         throw new Problem(422, `Cannot change ${key}`);
     if (old.meta.kind === "ticket") patch = this.ticketLinks(patch);
+    if (
+      old.meta.kind === "ticket" &&
+      this.config().columns.find(
+        (c) => c.id === (patch.status ?? old.meta.status),
+      )?.role === "review" &&
+      this.config().columns.find((c) => c.id === old.meta.status)?.role !==
+        "review"
+    ) {
+      // A previous passing run must not silently become this submission's evidence.
+      patch = {
+        ...patch,
+        reviewVerificationAt:
+          (patch.verification as Verification | undefined)?.at ?? "",
+      };
+    }
     const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
     this.validate(meta);
     this.authority(actor, meta, old);
@@ -675,6 +694,83 @@ export class Store {
   ) {
     return this.write(() => this.commentNow(ticket, body, actor, kind));
   }
+  // Keep the receipt in the Markdown record so a lost response can be retried
+  // after a restart. Feedback uses a deterministic ID and is written only once.
+  reviewOutcome(id: string, input: unknown, actor: Actor) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Only a human can accept or request changes");
+      const action = z
+        .object({
+          requestId: z.string().uuid(),
+          revision: z.string().min(1),
+          outcome: z.enum(["accept", "changes"]),
+          target: z.string().min(1),
+          feedback: z.string().trim().max(10000).default(""),
+          patch: z.record(z.string(), z.unknown()).default({}),
+          body: z.string().optional(),
+        })
+        .parse(input);
+      const fingerprint = hash(JSON.stringify({ action, actor }));
+      let current = this.get(id);
+      const receipt = current.meta.reviewOutcome as
+        | { requestId: string; fingerprint: string }
+        | undefined;
+      if (receipt?.requestId === action.requestId) {
+        if (receipt.fingerprint !== fingerprint)
+          throw new Problem(
+            409,
+            "This review request was already used with different content",
+          );
+      } else {
+        if (current.revision !== action.revision)
+          throw new Problem(
+            409,
+            "This record changed. Review the current version before deciding.",
+            { current },
+          );
+        const columns = this.config().columns;
+        if (
+          current.meta.kind !== "ticket" ||
+          columns.find((c) => c.id === current.meta.status)?.role !== "review"
+        )
+          throw new Problem(
+            422,
+            "Only a ticket in Review can receive a review outcome",
+          );
+        const role = action.outcome === "accept" ? "done" : "progress";
+        if (columns.find((c) => c.id === action.target)?.role !== role)
+          throw new Problem(422, `Choose a destination with the ${role} role`);
+        current = this.updateNow(
+          id,
+          action.revision,
+          {
+            ...action.patch,
+            status: action.target,
+            reviewOutcome: { requestId: action.requestId, fingerprint },
+          },
+          action.body,
+          actor,
+        );
+      }
+      const commentId = `comment-review-${hash(current.meta.id + action.requestId)}`;
+      if (!fs.existsSync(this.file(`records/comments/${commentId}.md`))) {
+        const title =
+          action.outcome === "accept"
+            ? "Accepted into Done"
+            : "Changes requested";
+        this.commentNow(
+          current.meta.id,
+          `## ${title}\n\n${action.feedback || "Review outcome recorded."}\n`,
+          actor,
+          "review",
+          commentId,
+        );
+      }
+      return current;
+    });
+  }
   private reviewSummary(meta: Meta) {
     const parts = [
       "## Work completed",
@@ -693,7 +789,7 @@ export class Store {
     if (meta.verification)
       parts.push(
         "",
-        `Recorded run: ${meta.verification.command} — exit ${meta.verification.exitCode} (${meta.verification.at}).`,
+        `${meta.reviewVerificationAt === meta.verification.at ? "Recorded run" : "Earlier run (not linked to this submission)"}: ${meta.verification.command} — exit ${meta.verification.exitCode} (${meta.verification.at}).`,
       );
     if (meta.pr) parts.push("", `Pull request: ${meta.pr}`);
     if (meta.branch) parts.push("", `Branch: ${meta.branch}`);
@@ -711,6 +807,7 @@ export class Store {
     body: string,
     actor: Actor,
     kind: Comment["kind"],
+    commentId?: string,
   ) {
     ticket = this.get(ticket).meta.id;
     actorSchema.parse(actor);
@@ -718,7 +815,7 @@ export class Store {
     if (!["comment", "question", "handoff", "review"].includes(kind))
       throw new Problem(422, "Unknown comment type");
     const meta = {
-      id: uid("comment"),
+      id: commentId ?? uid("comment"),
       ticket,
       actor,
       kind,
@@ -819,11 +916,26 @@ export class Store {
     const ticket = this.get(id),
       rules = this.applicableRules(ticket),
       scope = this.scope(ticket);
+    const comments = this.comments().filter((c) => c.ticket === ticket.meta.id);
+    const conversationImages = new Set(
+      comments.flatMap((c) =>
+        [...c.body.matchAll(/(?:#image=|\/api\/images\/)(image-[\w-]+)/g)].map(
+          (m) => m[1],
+        ),
+      ),
+    );
+    const attachmentIds = new Set([
+      ...(ticket.meta.attachments ?? []),
+      ...this.attachments()
+        .filter((a) => conversationImages.has(a.id))
+        .map((a) => a.id),
+    ]);
     return {
       ticket,
       workflow: this.config().columns,
       parent: ticket.meta.parent ? this.get(ticket.meta.parent) : null,
       approvedScope: scope ?? null,
+      decisionProtocol,
       decisions: this.list().filter(
         (r) =>
           r.meta.kind === "decision" &&
@@ -846,10 +958,8 @@ export class Store {
       ruleMatching:
         "Explicit links, global rules, and labels on the ticket or approved parent. Review for missing rules.",
       dependencies: (ticket.meta.dependencies ?? []).map((d) => this.get(d)),
-      comments: this.comments().filter((c) => c.ticket === ticket.meta.id),
-      attachments: (ticket.meta.attachments ?? []).map((a) =>
-        this.attachment(a),
-      ),
+      comments,
+      attachments: [...attachmentIds].map((a) => this.attachment(a)),
       claim: this.claims().find((c) => c.ticket === ticket.meta.id) ?? null,
     };
   }
@@ -866,6 +976,7 @@ export class Store {
       commits?: string[];
       verification?: Verification;
       reviewInstructions?: string;
+      manualReviewRequired?: boolean;
     } = {},
   ) {
     return this.write(() =>
@@ -877,6 +988,9 @@ export class Store {
           handoff,
           evidence,
           exceptions,
+          reviewVerificationAt: links.verification?.at ?? "",
+          reviewInstructions: links.reviewInstructions ?? "",
+          manualReviewRequired: links.manualReviewRequired ?? true,
           ...Object.fromEntries(
             Object.entries(links).filter(([, v]) => v !== undefined),
           ),
@@ -1046,7 +1160,9 @@ export class Store {
       "",
       "## Protocol",
       "",
-      `Claim before working: \`workboard claim ${t.meta.number ?? t.meta.id}\`. Record discoveries with \`workboard comment ${t.meta.number ?? t.meta.id} --body ...\` and questions with \`workboard ask\`. Submit with \`workboard review ${t.meta.number ?? t.meta.id} --etag ${t.revision} --handoff ... --review-notes "Human review steps and expected results" --evidence ... --run "test command"\`. Moving agent work into Review posts the handoff, review steps, and evidence to the conversation. A human moves work to Done.`,
+      decisionProtocol,
+      "",
+      `Claim before working: \`controlroom claim ${t.meta.number ?? t.meta.id}\`. Record discoveries with \`controlroom comment ${t.meta.number ?? t.meta.id} --body ...\` and questions with \`controlroom ask\`. Submit with \`controlroom review ${t.meta.number ?? t.meta.id} --etag ${t.revision} --handoff ... --review-notes "Human review steps and expected results" --evidence ... --run "test command"\`. Moving agent work into Review posts the handoff, review steps, and evidence to the conversation. A human moves work to Done.`,
     );
     const markdown = lines.join("\n") + "\n";
     return { markdown, tokens: Math.ceil(markdown.length / 4) };

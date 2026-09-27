@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { migrateProject, projectLauncher } from "./migrate.js";
 import { Store } from "./store.js";
 import { atomic, canonicalProject, now, read, uid } from "./files.js";
 import { buildServer, toolRoot } from "./server.js";
@@ -170,9 +171,15 @@ async function install(destination: string) {
   if (!fs.existsSync(path.join(toolRoot, "dist", "cli.js")))
     throw new Error("Run npm run build before installing a project copy");
   fs.mkdirSync(target, { recursive: true });
-  fs.cpSync(path.join(toolRoot, "dist"), path.join(target, "dist"), {
-    recursive: true,
-  });
+  // Copy current build artifacts only, not retired companion bundles left in dist.
+  fs.mkdirSync(path.join(target, "dist"), { recursive: true });
+  for (const artifact of ["cli.js", "web", "ControlRoomCapture.app"])
+    if (fs.existsSync(path.join(toolRoot, "dist", artifact)))
+      fs.cpSync(
+        path.join(toolRoot, "dist", artifact),
+        path.join(target, "dist", artifact),
+        { recursive: true },
+      );
   fs.copyFileSync(
     path.join(toolRoot, "package.json"),
     path.join(target, "package.json"),
@@ -210,25 +217,23 @@ async function install(destination: string) {
   }
   if (replacing) fs.rmSync(retired, { recursive: true, force: true });
   const wrapper = `#!/bin/sh\nHERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$HERE/tool/${version}/runtime/node" "$HERE/tool/${version}/dist/cli.js" --project "$HERE/.." "$@"\n`;
-  atomic(path.join(root, ".workboard", "workboard"), wrapper);
-  fs.chmodSync(path.join(root, ".workboard", "workboard"), 0o755);
+  atomic(store.file("controlroom"), wrapper, 0o755);
+  // Old automation keeps working during the explicit naming migration.
+  atomic(store.file("workboard"), wrapper, 0o755);
   // The launcher now points at this version; earlier versions are unused.
   for (const old of fs.readdirSync(store.file("tool")))
     if (old !== version && /^\d+\.\d+\.\d+$/.test(old))
       fs.rmSync(store.file(`tool/${old}`), { recursive: true, force: true });
-  atomic(
-    path.join(root, "Workboard.command"),
-    '#!/bin/sh\nHERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\nexec "$HERE/.workboard/workboard" serve --open\n',
-  );
-  fs.chmodSync(path.join(root, "Workboard.command"), 0o755);
+  if (!fs.existsSync(path.join(root, "ControlRoom.command")))
+    atomic(path.join(root, "ControlRoom.command"), projectLauncher, 0o755);
   const ignore = store.file(".gitignore");
   if (!read(ignore).includes("tool/")) atomic(ignore, read(ignore) + "tool/\n");
   atomic(
-    path.join(root, ".workboard", "AGENT_GUIDE.md"),
+    store.file("AGENT_GUIDE.md"),
     read(path.join(toolRoot, "AGENT_GUIDE.md")),
   );
   output(
-    `Installed Workboard ${version} in ${root}\nRun ./.workboard/workboard serve --open or double-click Workboard.command.\nProject records were preserved.`,
+    `Installed ControlRoom ${version} in ${root}\nRun ./${path.basename(store.dir)}/controlroom serve --open or double-click ControlRoom.command.\nProject records were preserved.`,
   );
 }
 const help = `Control Room — project-local tasks, decisions, and UI rules for humans and coding agents
@@ -254,8 +259,9 @@ Service and data
   export --output FILE | restore --file FILE
   import brief --file PATHS_JSON | import stage --file PROPOSALS_JSON
   install DESTINATION | upgrade DESTINATION
+  migrate                      rename stopped project .workboard to .controlroom
 
-Identity: set WORKBOARD_ACTOR (name) and WORKBOARD_ACTOR_KIND (human|agent) in the environment, or pass --actor NAME with --agent or --human. A known agent harness or a non-interactive terminal counts as an agent.
+Identity: set CONTROLROOM_ACTOR (name) and CONTROLROOM_ACTOR_KIND (human|agent) in the environment, or pass --actor NAME with --agent or --human. A known agent harness or a non-interactive terminal counts as an agent.
 All commands accept --project PATH and --json. --project selects the board; --worktree selects the execution checkout (defaults to the caller directory). IDs may be numbers, quoted '#numbers', or record IDs. Claims expire after 30 minutes; repeat claim to renew.
 `;
 async function main() {
@@ -267,6 +273,10 @@ async function main() {
   if (command === "install" || command === "upgrade") {
     if (!id) throw new Error("Provide a destination project");
     await install(id);
+    return;
+  }
+  if (command === "migrate") {
+    output(migrateProject(cwd));
     return;
   }
   const store = new Store(cwd).initialize();
@@ -309,7 +319,7 @@ async function main() {
   ].includes(command);
   if (mutation && identity.inferred && who.kind === "agent")
     console.error(
-      `Acting as agent "${who.name}". Set WORKBOARD_ACTOR to name this session, or pass --human if you are a person.`,
+      `Acting as agent "${who.name}". Set CONTROLROOM_ACTOR to name this session, or pass --human if you are a person.`,
     );
   // The record's content hash guards against lost updates. --latest opts into
   // writing over whatever is current, for fields nobody else is editing.
@@ -497,6 +507,7 @@ async function main() {
           revision: await etag(),
           handoff: option("handoff", ""),
           reviewInstructions: option("review-notes"),
+          manualReviewRequired: !has("no-manual-checks"),
           evidence,
           exceptions: option("exceptions", ""),
           branch: option("branch") ?? currentBranch(executionDirectory),
@@ -515,7 +526,7 @@ async function main() {
         headers: { Authorization: `Bearer ${store.token()}` },
       });
     if (!res.ok) throw new Error(await res.text());
-    const dest = path.resolve(option("output", "workboard-backup.json.gz")!);
+    const dest = path.resolve(option("output", "controlroom-backup.json.gz")!);
     fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()), {
       flag: "wx",
     });
@@ -547,7 +558,7 @@ async function main() {
     );
     return;
   }
-  throw new Error(`Unknown command: ${command}. Run workboard help.`);
+  throw new Error(`Unknown command: ${command}. Run controlroom help.`);
 }
 main().catch((e) => {
   console.error(

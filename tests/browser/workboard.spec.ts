@@ -130,7 +130,7 @@ test("external Markdown changes appear and document imports require review", asy
       },
     })
   ).json();
-  const file = path.join(state.canonical, ".workboard", record.path);
+  const file = path.join(state.canonical, ".controlroom", record.path);
   const source = fs.readFileSync(file, "utf8");
   fs.writeFileSync(
     file,
@@ -278,6 +278,7 @@ test("create a ticket, discuss it, and submit evidence for review", async ({
     .filter({ hasText: "Browser acceptance ticket" })
     .click();
   await page
+    .getByRole("dialog")
     .getByRole("button", { name: "Conversation", exact: false })
     .click();
   await page
@@ -286,9 +287,9 @@ test("create a ticket, discuss it, and submit evidence for review", async ({
   await page.getByLabel("Comment type").selectOption("question");
   await page.getByRole("button", { name: "Post comment" }).click();
   await expect(
-    page.getByText("Does the new workflow preserve the notes?"),
+    page.locator(".ticket-thread").getByText("Does the new workflow preserve the notes?"),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Resolve question" }).click();
+  await page.locator(".ticket-thread").getByRole("button", { name: "Resolve question" }).click();
   await page.getByRole("button", { name: "Details", exact: true }).click();
   await page
     .getByText("Agent handoff, review & dependencies", { exact: true })
@@ -480,11 +481,15 @@ test("draw, comment, undo, save, and reopen screenshot annotations", async ({
   await page
     .getByText("Attach to a ticket (optional)", { exact: true })
     .click();
-  await page.getByLabel("New ticket title").fill("Annotated search alignment");
   await page
     .getByRole("button", { name: "Save to ticket", exact: true })
     .click();
+  await page.getByLabel("New ticket title").fill("Annotated search alignment");
+  await page.getByRole("button", { name: "Create ticket", exact: true }).click();
   await expect(page.locator(".annotation-dialog")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Annotated search alignment");
+  await page.getByRole("button", { name: "Close ticket" }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   await page.getByLabel("Filter tickets").fill("Annotated search alignment");
   await page.locator(".ticket-card").click();
   await page.locator(".attachment").click();

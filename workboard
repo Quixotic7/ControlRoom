@@ -1,12 +1,4 @@
 #!/bin/sh
+# Compatibility alias; use controlroom for new integrations.
 HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-if [ -x "$HERE/.runtime/node_modules/node/bin/node" ]; then
-  WORKBOARD_NODE="$HERE/.runtime/node_modules/node/bin/node"
-else
-  WORKBOARD_NODE="$(command -v node)"
-fi
-if [ -z "$WORKBOARD_NODE" ] || [ "$("$WORKBOARD_NODE" -p 'process.versions.node.split(".")[0]')" != "24" ]; then
-  echo "Workboard requires Node 24. Run npm run setup:runtime to install it locally without changing your global Node." >&2
-  exit 1
-fi
-exec "$WORKBOARD_NODE" --import "$HERE/node_modules/tsx/dist/loader.mjs" "$HERE/src/cli.ts" "$@"
+exec "$HERE/controlroom" "$@"

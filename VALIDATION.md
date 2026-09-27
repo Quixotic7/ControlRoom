@@ -2,6 +2,34 @@
 
 Validated locally on macOS with the project's private Node 24.21.0 runtime.
 
+## Selected UI batch: #45, #47, #48, #49 (2026-09-27)
+
+Production build/typecheck and all **63 core/model/integration tests** passed. All **60 browser workflows** passed across the full run (57 passed) and focused rerun (9 passed, including one additional failure-recovery workflow). The two full-run failures were an older parent-picker test reopening before save-and-close completed, and an unscoped question selector matching both the new prominent controls and the original thread. Tests now await close and select the intended thread; assertions remain intact.
+
+Coverage includes archived-parent navigation, middle-click and draft save failures; prominent questions, persisted answer drafts, independent resolution and failed posts; current versus historical review verification; desktop alignment and narrow-screen wrapping; screenshot title focus, blank validation, Escape cancellation, exact created-ticket navigation, annotation/creation errors, double-submit prevention, and recovery after a lost creation response without another POST. Existing standalone screenshot, annotation geometry, existing-ticket attachment, conversation, review outcomes, and Markdown preservation workflows passed. Desktop and narrow-screen review controls and the question/review action area were visually inspected. Native capture behavior was not changed by this batch.
+
+## Latest review feedback and new tickets: #14, #30, #35, #39, #40, #42 (2026-09-26)
+
+Production build/typecheck and **56 core/model/integration tests** passed. All **50 browser workflows** passed across the full run and focused reruns. Test fixes wait for live autocomplete results and loaded fonts, scope Conversation selectors to the dialog, and use the new ticket URL after waiting for Save to close. The expanded desktop dialog was visually inspected; mobile bounds and footer visibility passed.
+
+New coverage verifies optional acceptance feedback (including accepting without a note), stale existing-child reparenting and cycle exclusions, screenshot comments and agent context, independent middle-click tabs and refresh, expanded dialog dimensions, retained drafts during connection failure, and recovery. Two separate project cookies coexist in a shared cookie jar, while one project's cookie cannot authenticate to the other. Screenshot-created records now embed their image in Markdown; existing attachment-only descriptions show thumbnails without rewriting prose.
+
+Both Control Room Dev (4173) and the installed JuiceLab tool (4280) were refreshed. The JuiceLab upgrade preserved record hashes and its custom launcher. A live read-only check authenticated both boards with both cookies present. The shared-cookie collision is reproduced and fixed; the historical network transport error in the screenshot cannot be attributed conclusively from that image alone. No native helper rebuild or permission changes were needed. Changes remain uncommitted.
+
+## Review outcomes, rapid children, and decision protocol: #30, #14, #31 (2026-09-26)
+
+Production build/typecheck, **54 core/model/integration tests**, and all **44 Chromium workflows** passed. After preserving review feedback across History/Conversation tab switches, the build and all five new browser workflows passed again. `git diff --check` passed. Review controls and child entry were visually inspected; the service at port 4173 was restarted with the new code. Changes remain local and uncommitted.
+
+Review coverage includes draft prose/evidence preservation, explicit parent acceptance without completing children, custom review/Done/progress columns, Failed Review preference, stale revision rejection, human-only outcomes, invalid destinations, feedback surviving tab switches, and lost-response retries without duplicate comments (including receipt recovery after a Store restart). Child-entry coverage includes repeated keyboard entry, numbered parent links, blank/double submission guards, input focus, retained titles on create failure, and saving a new parent before its child. Existing board/grouping and ticket editing regressions also pass.
+
+Decision checks cover shared guidance in the agent guide, JSON/Markdown context and MCP onboarding; CLI creation and MCP search/create/link workflows; successor decisions retaining predecessors and rationale; discovery after originating tickets are archived; and decisions conferring no scope approval. These tests use disposable projects. Agent compliance with the documentation protocol still depends on agents following the instructions.
+
+## Screenshot connection recovery #38 and draggable tabs #24 (2026-09-26)
+
+Production build/typecheck, **51 core/model/integration tests**, and all **39 Chromium workflows** passed. Fault-injection tests cover a dropped status read after an accepted capture request, bounded recovery after multiple read failures, a lost capture-command response without command replay, separate permission messaging, screenshot metadata recovery without page refresh, interrupted response bodies, and preservation of HTTP/validation errors. The persistent-failure recovery banner was visually inspected. The screenshot identifies a connection failure, but cannot establish what caused the original connection to drop; these checks reproduce and fix the UI recovery path rather than claim a verified historical transport cause. No native helper rebuild or permission changes were needed.
+
+Tab tests cover dragging left and right, persistence, retaining the active view and unsaved filter, stable widths, continued Move left/right menu support, no-op drops, and rejecting a configuration revision changed during the drag. #35 remains in Failed Review awaiting the user's missing review details; a question was recorded on that ticket.
+
 ## Screenshot workflow and review revisions: #35, #36, #37, #24, #34 (2026-09-26)
 
 Production build/typecheck, **47 core/model/integration tests**, and all **32 Chromium workflows** passed. New browser checks cover recent screenshot selection with draft preservation and duplicate/Trash exclusion, board and detail thumbnails, annotation destination autocomplete by title/number with keyboard/pointer selection and cancellation, actual hit-testing of view menus outside the scrolling tab strip, delete confirmation inside the editor, filtered multi-selection and stale-item partial failures, bulk restore, and incoming capture uploads appearing live without opening an editor or changing the page. The menu, autocomplete, and ticket images were visually inspected.
@@ -47,3 +75,14 @@ These require real desktop interaction and OS permission state; a successful nat
 5. Choose an occupied global shortcut and verify the conflict message and ability to select another shortcut.
 
 The native companion is a local development build, not a notarized distributable. Capture is macOS-only; paste/drop and the record format are portable. Direct Markdown editors do not participate in service locks. Branch reconciliation acknowledges the current checkout and does not merge divergent Git history.
+
+## Review follow-ups and ControlRoom naming (2026-09-27)
+
+Tickets #14, #42, #43, #50 and #51:
+
+- Production build/typecheck passed. All 62 core/model/integration tests passed, including migration byte preservation, live-service/dual-directory refusal, legacy export import, identity aliases, capture routing and completed-ticket attention semantics.
+- All 53 browser workflows passed across the full regression run (49 passed) and focused reruns (4 passed). Initial failures were two fixture paths still pointing at `.workboard`, geometry measured before fonts settled, and selection before incoming screenshots became visible. Fixtures now use current paths and explicit readiness checks; assertions were not weakened.
+- Ticket-only tab rendering, reload, logo navigation with save, review instructions and interaction-based capture activation passed focused browser checks. The standalone ticket screenshot was visually inspected.
+- Disposable installed-project trial passed: upgrade a legacy folder, explicit migration, bundled runtime startup/read/write, old command alias, asset and custom launcher preservation.
+- Renamed Swift capture companion compiled. Double-Option detector and temporary hotkey registration self-tests passed in the macOS session (registration status 0). This does not prove real capture routing or macOS permission recovery; test those interactively across the two project windows.
+- Existing live project folders remain `.workboard` until explicit migration. New installations use `.controlroom`. README includes backup, stop, upgrade, migrate, external-path changes and rollback instructions. No Git commits or pushes were made.

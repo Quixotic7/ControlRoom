@@ -1,7 +1,7 @@
 // A Model Context Protocol server over stdio, so coding agents call the
-// board as typed tools instead of shelling out. `workboard mcp` starts it;
+// board as typed tools instead of shelling out. `controlroom mcp` starts it;
 // register it with your agent (for Claude Code: `claude mcp add controlroom
-// -- ./workboard mcp`). Every call goes through the same local service as the
+// -- ./controlroom mcp`). Every call goes through the same local service as the
 // CLI, so revisions, authority, and claims behave identically.
 import readline from "node:readline";
 import path from "node:path";
@@ -16,6 +16,7 @@ import {
   waitForChange,
 } from "./client.js";
 import type { Actor } from "./types.js";
+import { decisionProtocol } from "./decision-protocol.js";
 
 type Tool = {
   name: string;
@@ -309,6 +310,7 @@ export async function startMcp(
           review_instructions: str(
             "Specific steps the human should take to review this work; published with the handoff and evidence in the conversation",
           ),
+          manual_review_required: { type: "boolean", description: "Set false only when no manual checks are requested; a passing recorded run is still required for a current verification pass summary." },
           evidence: str(
             "How it was verified (auto-filled from run when omitted)",
           ),
@@ -341,6 +343,7 @@ export async function startMcp(
             revision: a.etag,
             handoff: a.handoff,
             reviewInstructions: a.review_instructions,
+            manualReviewRequired: a.manual_review_required,
             evidence:
               a.evidence ??
               (verification
@@ -396,24 +399,97 @@ export async function startMcp(
       },
     },
     {
-      name: "list_knowledge",
+      name: "create_decision",
       description:
-        "Accepted decisions and active rules for the project, with titles and bodies.",
+        "Record a consequential project decision after searching list_knowledge. Include choice, context, rationale, alternatives, tradeoffs, scope, attribution and related references. Defaults to proposed; never invent human agreement. Link the returned ID from the ticket's decisions field using update_ticket. A decision grants no scope approval or Done authority.",
       inputSchema: {
         type: "object",
-        properties: { kind: { type: "string", enum: ["decision", "rule"] } },
+        properties: {
+          title: str("Short name for the choice"),
+          body: str(
+            "Markdown: choice, context, rationale, alternatives, tradeoffs and attribution",
+          ),
+          status: { type: "string", enum: ["proposed", "accepted"] },
+          scope: {
+            type: "array",
+            items: str("Applicable ticket label; empty means project-wide"),
+          },
+          references: {
+            type: "array",
+            items: str(
+              "Related ticket ID or implementation/document reference",
+            ),
+          },
+          supersedes: str(
+            "Predecessor decision ID; explain why the choice changed in the body",
+          ),
+        },
+        required: ["title", "body"],
+      },
+      run: (a) =>
+        api(store, "/api/records", "POST", {
+          kind: "decision",
+          meta: {
+            title: a.title,
+            status: a.status ?? "proposed",
+            scope: a.scope ?? [],
+            references: a.references ?? [],
+            ...(a.supersedes ? { supersedes: a.supersedes } : {}),
+          },
+          body: a.body,
+          actor: who,
+        }),
+    },
+    {
+      name: "list_knowledge",
+      description:
+        "Search project decisions and rules before creating new guidance. Defaults to current accepted decisions and active rules. include_inactive also returns proposals, rejected and superseded guidance. Independent of ticket archival; use get_ticket for full record/history references.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["decision", "rule"] },
+          query: str(
+            "Case-insensitive text in title, body, scope or references",
+          ),
+          include_inactive: {
+            type: "boolean",
+            description:
+              "Include proposals and predecessor history when checking for existing decisions",
+          },
+        },
       },
       run: async (a) => {
         const state = await api(store, "/api/state");
+        const replaced = new Set(
+          state.records
+            .filter(
+              (r: any) =>
+                r.meta.kind !== "ticket" &&
+                ["accepted", "active"].includes(r.meta.status),
+            )
+            .map((r: any) => r.meta.supersedes)
+            .filter(Boolean),
+        );
         return state.records
           .filter(
             (r: any) =>
               (a.kind ? r.meta.kind === a.kind : r.meta.kind !== "ticket") &&
-              ["accepted", "active"].includes(r.meta.status),
+              (a.include_inactive ||
+                (["accepted", "active"].includes(r.meta.status) &&
+                  !replaced.has(r.meta.id))) &&
+              (!a.query ||
+                `${r.meta.title}\n${r.body}\n${(r.meta.scope ?? []).join(" ")}\n${(r.meta.references ?? []).join(" ")}`
+                  .toLowerCase()
+                  .includes(a.query.toLowerCase())),
           )
           .map((r: any) => ({
             id: r.meta.id,
             kind: r.meta.kind,
+            status: r.meta.status,
+            etag: r.revision,
+            author: r.meta.author,
+            supersedes: r.meta.supersedes,
+            references: r.meta.references,
             title: r.meta.title,
             scope: r.meta.scope,
             strength: r.meta.strength,
@@ -456,8 +532,8 @@ export async function startMcp(
       reply({
         protocolVersion: msg.params?.protocolVersion ?? "2025-03-26",
         capabilities: { tools: {} },
-        serverInfo: { name: "control-room", version: "0.2.0" },
-        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human moves work to Done.`,
+        serverInfo: { name: "controlroom", version: "0.2.0" },
+        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human moves work to Done.\n\n${decisionProtocol}\n\nUse list_knowledge with include_inactive to check existing decisions, create_decision to record one, and update_ticket to link its ID in the ticket's decisions field (preserving existing links).`,
       });
     else if (msg.method === "notifications/cancelled") {
       pending.get(msg.params?.requestId)?.abort();

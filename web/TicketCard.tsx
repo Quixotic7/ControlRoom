@@ -1,3 +1,4 @@
+import { ticketNavigation } from "./ticketNavigation";
 import { useState } from "react";
 import { ImageThumbnail } from "./ImageThumbnail";
 import type { Claim, RecordFile } from "../src/types";
@@ -85,7 +86,7 @@ export function TicketCard({
           onDropCard(id, record);
         }
       }}
-      onClick={() => onOpen(m.id)}
+      {...ticketNavigation(m.id, onOpen)}
     >
       <span className="card-meta">
         <StageIcon role={role} />

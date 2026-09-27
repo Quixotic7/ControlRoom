@@ -1,6 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { Annotation, Attachment, ProjectState } from "../src/types";
-import { api, actor } from "./api";
+import type {
+  Annotation,
+  Attachment,
+  ProjectState,
+  RecordFile,
+} from "../src/types";
+import { api, actor, ApiError, ConnectionError } from "./api";
+import { imageMarkdown } from "./RecordMarkdown";
 import { useImageViewport } from "./useImageViewport";
 import { ParentInput } from "./ParentInput";
 
@@ -21,12 +27,14 @@ export function AnnotationEditor({
   onClose,
   reload,
   onError,
+  onCreated,
 }: {
   id: string;
   state: ProjectState;
   onClose: () => void;
   reload: () => Promise<void>;
   onError: (s: string) => void;
+  onCreated: (record: RecordFile) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     svg = useRef<SVGSVGElement>(null),
@@ -45,6 +53,26 @@ export function AnnotationEditor({
     [projects, setProjects] = useState<any[]>([]),
     [confirmClose, setConfirmClose] = useState(false);
   const dirty = !!asset && canonical(notes) !== canonical(asset.annotations);
+  const titleDialog = useRef<HTMLDialogElement>(null),
+    titleInput = useRef<HTMLInputElement>(null);
+  const saveToTicket = useRef<HTMLButtonElement>(null),
+    attaching = useRef(false);
+  const requestId = useRef(crypto.randomUUID());
+  const [titlePrompt, setTitlePrompt] = useState(false),
+    [uncertain, setUncertain] = useState(false);
+  function cancelTitle() {
+    if (attaching.current) return;
+    setTitlePrompt(false);
+    titleDialog.current?.close();
+    saveToTicket.current?.focus();
+  }
+  useEffect(() => {
+    if (titlePrompt) {
+      titleDialog.current?.showModal();
+      titleInput.current?.focus();
+      titleInput.current?.select();
+    } else titleDialog.current?.close();
+  }, [titlePrompt]);
   const viewport = useImageViewport(asset?.width ?? 1000, asset?.height ?? 700);
   function requestClose() {
     if (saving) return;
@@ -204,6 +232,7 @@ export function AnnotationEditor({
   }
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
+      if (titlePrompt) return;
       const typing = (e.target as HTMLElement)?.closest(
         "input, textarea, select, [contenteditable=true]",
       );
@@ -330,10 +359,24 @@ export function AnnotationEditor({
     }
   }
   async function attach() {
-    const saved = await save();
-    if (!saved) return;
-    setSaving(true);
+    if (attaching.current) return;
+    if (!split && !destination && !titlePrompt) {
+      setError("");
+      setTitlePrompt(true);
+      return;
+    }
+    if (uncertain) return;
+    if (!split && !destination && !newTitle.trim()) {
+      setError("Enter a ticket title.");
+      titleInput.current?.focus();
+      return;
+    }
+    attaching.current = true;
+    let creating = false;
     try {
+      const saved = await save();
+      if (!saved) return;
+      setSaving(true);
       if (split) {
         const chosen = selected
           ? notes.filter((n) => n.id === selected)
@@ -352,7 +395,7 @@ export function AnnotationEditor({
               annotationIds: [n.id],
               parent: destination || null,
             },
-            body: `## Requested change\n\n${n.text || "Describe the intended change."}\n\nScreenshot: ${id}\nAnnotation: ${n.id}\n`,
+            body: `## Requested change\n\n${n.text || "Describe the intended change."}\n\n${imageMarkdown(id)}\n\nScreenshot: ${id}\nAnnotation: ${n.id}\n`,
             actor,
           });
       } else if (destination) {
@@ -364,16 +407,20 @@ export function AnnotationEditor({
           },
           actor,
         });
-      } else
-        await api("/records", "POST", {
+      } else {
+        creating = true;
+        const created = await api<RecordFile>("/records", "POST", {
           kind: "ticket",
           meta: {
-            title: newTitle || "Screenshot feedback",
+            title: newTitle.trim(),
+            creationRequestId: requestId.current,
             attachments: [id],
             labels: ["visual-feedback"],
           },
           body:
             "## Visual feedback\n\n" +
+            imageMarkdown(id) +
+            "\n\n" +
             notes
               .map(
                 (n, i) =>
@@ -382,11 +429,45 @@ export function AnnotationEditor({
               .join("\n"),
           actor,
         });
+        titleDialog.current?.close();
+        onCreated(created);
+        return;
+      }
       await reload();
       onClose();
     } catch (e) {
+      if (
+        creating &&
+        (e instanceof ConnectionError ||
+          (e instanceof ApiError && e.status >= 200 && e.status < 300))
+      )
+        setUncertain(true);
       setError(String(e));
     } finally {
+      attaching.current = false;
+      setSaving(false);
+    }
+  }
+  async function findCreated() {
+    if (attaching.current) return;
+    attaching.current = true;
+    setSaving(true);
+    try {
+      const fresh = await api<ProjectState>("/state");
+      const record = fresh.records.find(
+        (r) => r.meta.creationRequestId === requestId.current,
+      );
+      if (record) {
+        titleDialog.current?.close();
+        onCreated(record);
+      } else
+        setError(
+          "No matching ticket found yet. Check again before creating another ticket; the earlier request has not been replayed.",
+        );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      attaching.current = false;
       setSaving(false);
     }
   }
@@ -426,6 +507,11 @@ export function AnnotationEditor({
       ref={dialog}
       onCancel={(e) => {
         e.preventDefault();
+        if (titlePrompt) {
+          e.stopPropagation();
+          cancelTitle();
+          return;
+        }
         requestClose();
       }}
     >
@@ -792,15 +878,6 @@ export function AnnotationEditor({
             value={destination || null}
             onChange={(id) => setDestination(id ?? "")}
           />
-          {!destination && !split && (
-            <label className="field">
-              New ticket title
-              <input
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-              />
-            </label>
-          )}
         </div>
         <label className="check-row">
           <input
@@ -873,9 +950,10 @@ export function AnnotationEditor({
             Save annotations
           </button>
           <button
+            ref={saveToTicket}
             className="button"
             disabled={saving || !asset || asset.missing || !!asset.trashedAt}
-            onClick={attach}
+            onClick={() => void attach()}
           >
             {saving
               ? "Saving…"
@@ -885,6 +963,69 @@ export function AnnotationEditor({
           </button>
         </div>
       </footer>
+      <dialog
+        ref={titleDialog}
+        className="ticket-title-dialog"
+        aria-labelledby="screenshot-ticket-title"
+        onCancel={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cancelTitle();
+        }}
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void attach();
+          }}
+        >
+          <h2 id="screenshot-ticket-title">Create ticket from screenshot</h2>
+          <label className="field">
+            New ticket title
+            <input
+              ref={titleInput}
+              value={newTitle}
+              maxLength={200}
+              disabled={saving || uncertain}
+              onChange={(e) => setNewTitle(e.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="banner error" role="alert">
+              {error}
+            </p>
+          )}
+          <p className="help">
+            Your screenshot and annotations will be included. Add more details
+            in the ticket afterward.
+          </p>
+          <div className="inline-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={saving}
+              onClick={cancelTitle}
+            >
+              Cancel
+            </button>
+            {uncertain ? (
+              <button
+                type="button"
+                className="button primary"
+                disabled={saving}
+                onClick={() => void findCreated()}
+              >
+                Check created ticket
+              </button>
+            ) : (
+              <button className="button primary" disabled={saving}>
+                {saving ? "Creating…" : "Create ticket"}
+              </button>
+            )}
+          </div>
+        </form>
+      </dialog>
     </dialog>
   );
 }

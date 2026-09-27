@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type {
   Claim,
   GroupBy,
@@ -70,10 +70,24 @@ export function ProjectPage({
     setDrafts((d) => ({ ...d, [savedView.id]: { ...view, ...patch } }));
   const discard = () => setDrafts(({ [savedView.id]: _, ...rest }) => rest);
 
-  async function saveViews(next: ProjectView[], activate?: string) {
+  const viewDrag = useRef<{
+    id: string;
+    views: ProjectView[];
+    revision: string;
+  } | null>(null);
+  const [dropView, setDropView] = useState<{
+    id: string;
+    after: boolean;
+  } | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+  async function saveViews(
+    next: ProjectView[],
+    activate?: string,
+    revision = state.configRevision,
+  ) {
     try {
       await api("/config", "PATCH", {
-        revision: state.configRevision,
+        revision,
         patch: { views: next },
       });
       await reload();
@@ -82,6 +96,24 @@ export function ProjectPage({
     } catch (e) {
       onError(String(e));
       return false;
+    }
+  }
+  async function dropTab(target: string, after: boolean) {
+    const drag = viewDrag.current;
+    viewDrag.current = null;
+    setDropView(null);
+    if (!drag || drag.id === target) return;
+    const item = drag.views.find((v) => v.id === drag.id)!;
+    const next = drag.views.filter((v) => v.id !== drag.id);
+    const index = next.findIndex((v) => v.id === target);
+    if (index < 0) return;
+    next.splice(index + Number(after), 0, item);
+    if (next.every((v, i) => v.id === drag.views[i].id)) return;
+    setSavingOrder(true);
+    try {
+      await saveViews(next, undefined, drag.revision);
+    } finally {
+      setSavingOrder(false);
     }
   }
   const replace = (v: ProjectView) => saved.map((s) => (s.id === v.id ? v : s));
@@ -244,7 +276,40 @@ export function ProjectPage({
         {saved.map((v) => {
           const active = v.id === savedView.id;
           return (
-            <div key={v.id} className={`view-tab ${active ? "active" : ""}`}>
+            <div
+              key={v.id}
+              data-view-id={v.id}
+              className={`view-tab ${active ? "active" : ""}${dropView?.id === v.id ? (dropView.after ? " drop-after" : " drop-before") : ""}`}
+              onDragOver={(e) => {
+                if (
+                  !viewDrag.current ||
+                  !e.dataTransfer.types.includes("text/controlroom-view")
+                )
+                  return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                const bounds = e.currentTarget.getBoundingClientRect();
+                setDropView({
+                  id: v.id,
+                  after: e.clientX > bounds.x + bounds.width / 2,
+                });
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                  setDropView(null);
+              }}
+              onDrop={(e) => {
+                if (
+                  !viewDrag.current ||
+                  !e.dataTransfer.types.includes("text/controlroom-view")
+                )
+                  return;
+                e.preventDefault();
+                e.stopPropagation();
+                const bounds = e.currentTarget.getBoundingClientRect();
+                void dropTab(v.id, e.clientX > bounds.x + bounds.width / 2);
+              }}
+            >
               {renaming === v.id ? (
                 <input
                   autoFocus
@@ -259,6 +324,21 @@ export function ProjectPage({
                 />
               ) : (
                 <button
+                  draggable={!savingOrder}
+                  title="Drag to reorder; use the options menu to move with the keyboard"
+                  onDragStart={(e) => {
+                    viewDrag.current = {
+                      id: v.id,
+                      views: saved,
+                      revision: state.configRevision,
+                    };
+                    e.dataTransfer.setData("text/controlroom-view", v.id);
+                    e.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragEnd={() => {
+                    viewDrag.current = null;
+                    setDropView(null);
+                  }}
                   aria-current={active ? "page" : undefined}
                   onClick={() => setViewId(v.id)}
                   onDoubleClick={() => setRenaming(v.id)}

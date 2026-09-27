@@ -9,11 +9,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
 });
 async function openTicket(page: Page, id: string) {
-  await page.goto("about:blank");
-  await page.request.patch("/api/preferences", {
-    data: { selected: id, page: "project" },
-  });
-  await page.goto("/");
+  await page.goto(`/#ticket=${id}`);
   await expect(page.locator(".record-dialog")).toBeVisible();
 }
 async function image(page: Page, name: string) {
@@ -72,6 +68,7 @@ test("existing descriptions preview by default while empty tickets stay editable
     .getByLabel("Markdown body")
     .fill(r.body + "\n\nAdditional detail.");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   await openTicket(page, r.meta.id);
   await expect(
     page.getByText("Additional detail.", { exact: true }),
@@ -81,6 +78,7 @@ test("existing descriptions preview by default while empty tickets stay editable
     .click();
   await page.getByLabel("Markdown body").fill(" ");
   await page.getByRole("button", { name: "Save changes", exact: true }).click();
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
   await openTicket(page, r.meta.id);
   await expect(page.getByLabel("Markdown body")).toBeVisible();
 });

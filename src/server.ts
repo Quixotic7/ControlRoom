@@ -8,7 +8,12 @@ import { spawn } from "node:child_process";
 import { ZodError } from "zod";
 import { Store } from "./store.js";
 import { atomic, Problem, read } from "./files.js";
-import { addImage, imageContext, saveAnnotations, trashImage } from "./media.js";
+import {
+  addImage,
+  imageContext,
+  saveAnnotations,
+  trashImage,
+} from "./media.js";
 import {
   applyImport,
   backup,
@@ -90,8 +95,8 @@ export async function buildServer(
       const cookie = req.headers.cookie
         ?.split(";")
         .map((s) => s.trim())
-        .find((s) => s.startsWith("workboard="))
-        ?.slice(10);
+        .find((s) => s.startsWith(`workboard_${projectId}=`))
+        ?.split("=")[1];
       const supplied = header ?? cookie ?? "";
       if (
         supplied.length !== token.length ||
@@ -106,7 +111,7 @@ export async function buildServer(
         throw new Problem(403, "Open Control Room from its launcher");
       reply.header(
         "Set-Cookie",
-        `workboard=${token}; HttpOnly; SameSite=Strict; Path=/`,
+        `workboard_${projectId}=${token}; HttpOnly; SameSite=Strict; Path=/`,
       );
       reply.header(
         "Content-Security-Policy",
@@ -193,6 +198,9 @@ export async function buildServer(
       !!req.body.release,
     ),
   );
+  app.post("/api/records/:id/review-outcome", async (req: any) =>
+    store.reviewOutcome(req.params.id, req.body, actor(req.body)),
+  );
   app.post("/api/records/:id/review", async (req: any) => {
     const b = req.body;
     return store.review(
@@ -208,6 +216,7 @@ export async function buildServer(
         commits: b.commits,
         verification: b.verification,
         reviewInstructions: b.reviewInstructions,
+        manualReviewRequired: b.manualReviewRequired,
       },
     );
   });
@@ -262,7 +271,7 @@ export async function buildServer(
       .type("application/gzip")
       .header(
         "Content-Disposition",
-        'attachment; filename="workboard-backup.json.gz"',
+        'attachment; filename="controlroom-backup.json.gz"',
       )
       .send(await backup(store)),
   );
@@ -294,7 +303,7 @@ export async function buildServer(
   const servicePort = () => Number(new URL(app.listeningOrigin).port);
   app.post("/api/active", async () => {
     activateCapture(store, servicePort());
-    if (options.native) startCompanion(toolRoot);
+    if (options.native && captureStatus().state === "not-running") startCompanion(toolRoot);
     return { ok: true };
   });
   app.get("/api/capture/status", async () => captureStatus());
@@ -324,7 +333,7 @@ export async function buildServer(
   app.post("/api/capture/reveal", async () => {
     if (process.platform !== "darwin")
       throw new Problem(400, "The capture companion is macOS only");
-    const bundle = path.join(toolRoot, "dist", "WorkboardCapture.app");
+    const bundle = path.join(toolRoot, "dist", "ControlRoomCapture.app");
     if (!fs.existsSync(bundle))
       throw new Problem(404, "Build the capture companion first");
     spawn("/usr/bin/open", ["-R", bundle], { stdio: "ignore" }).unref();

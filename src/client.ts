@@ -91,12 +91,15 @@ export function resolveActor(opts: {
   let kind: Actor["kind"] | undefined;
   if (opts.agent) kind = "agent";
   else if (opts.human) kind = "human";
-  else if (env.WORKBOARD_ACTOR_KIND === "agent") kind = "agent";
-  else if (env.WORKBOARD_ACTOR_KIND === "human") kind = "human";
+  else if ((env.CONTROLROOM_ACTOR_KIND ?? env.WORKBOARD_ACTOR_KIND) === "agent")
+    kind = "agent";
+  else if ((env.CONTROLROOM_ACTOR_KIND ?? env.WORKBOARD_ACTOR_KIND) === "human")
+    kind = "human";
   const inferred = kind === undefined;
   if (inferred) kind = harness || !process.stdin.isTTY ? "agent" : "human";
   const name =
     opts.name?.trim() ||
+    env.CONTROLROOM_ACTOR?.trim() ||
     env.WORKBOARD_ACTOR?.trim() ||
     (kind === "agent" ? (harness ?? "agent") : "You");
   return { actor: { name, kind: kind! }, inferred };
@@ -145,7 +148,9 @@ export async function service(store: Store): Promise<string> {
     url = await endpoint(store);
     if (url) return url;
   }
-  throw new Error("Service did not start. See .workboard/.local/service.log");
+  throw new Error(
+    `Service did not start. See ${store.file(".local/service.log")}`,
+  );
 }
 export class ApiError extends Error {
   constructor(

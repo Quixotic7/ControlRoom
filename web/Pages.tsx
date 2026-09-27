@@ -1,3 +1,4 @@
+import { ticketNavigation } from "./ticketNavigation";
 import React, { useState } from "react";
 import type { ProjectState, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
@@ -64,7 +65,7 @@ export function AttentionPage({
               className="list-row"
               key={r.meta.id}
               data-reason={reason}
-              onClick={() => onOpen(r.meta.id)}
+              {...ticketNavigation(r.meta.id, onOpen)}
             >
               <span className="row-icon" aria-hidden>
                 <Icon />
@@ -96,7 +97,7 @@ export function AttentionPage({
               <button
                 className="list-row"
                 key={r.meta.id}
-                onClick={() => onOpen(r.meta.id)}
+                {...ticketNavigation(r.meta.id, onOpen)}
               >
                 <span className="row-icon" aria-hidden>
                   <DecisionIcon />
@@ -178,7 +179,7 @@ export function KnowledgePage({
           <button
             className="knowledge-card"
             key={r.meta.id}
-            onClick={() => onOpen(r.meta.id)}
+            {...ticketNavigation(r.meta.id, onOpen)}
           >
             <span className="card-meta">
               <span className="tag">{r.meta.category ?? r.meta.kind}</span>

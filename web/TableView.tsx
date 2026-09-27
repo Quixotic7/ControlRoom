@@ -1,3 +1,4 @@
+import { ticketNavigation } from "./ticketNavigation";
 import { useEffect, useRef, useState } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
@@ -197,7 +198,7 @@ export function TableView({
                               r.meta.id,
                             )
                           }
-                          onClick={() => onOpen(r.meta.id)}
+                          {...ticketNavigation(r.meta.id, onOpen)}
                         >
                           <StageIcon role={role} />
                           <span className="ticket-title">{r.meta.title}</span>
@@ -267,7 +268,7 @@ export function TableView({
                           <button
                             className="text-button"
                             title={parent.meta.title}
-                            onClick={() => onOpen(parent.meta.id)}
+                            {...ticketNavigation(parent.meta.id, onOpen)}
                           >
                             {recordId(parent)} {parent.meta.title}
                           </button>

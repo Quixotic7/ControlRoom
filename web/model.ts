@@ -434,6 +434,9 @@ export function attentionReason(
   ctx: Context,
 ): AttentionReason | null {
   const role = roleOf(r, ctx);
+  // Completion ends active attention; retain historical blockers/questions
+  // on the record, so reopening work can surface them again.
+  if (role === "done" || r.meta.archived) return null;
   if (r.meta.blocked?.trim()) return "blocked";
   if (role === "review") return "review";
   if (
@@ -442,6 +445,6 @@ export function attentionReason(
     )
   )
     return "question";
-  if (role !== "done" && ruleChanged(r, state, ctx)) return "rules";
+  if (ruleChanged(r, state, ctx)) return "rules";
   return null;
 }

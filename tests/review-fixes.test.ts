@@ -24,7 +24,7 @@ function fixture(t: test.TestContext) {
     fs.mkdtempSync(path.join(os.tmpdir(), "controlroom-fix-")),
   );
   t.after(async () => {
-    const info = path.join(root, ".workboard/.local/service.json");
+    const info = path.join(root, ".controlroom/.local/service.json");
     if (fs.existsSync(info)) {
       const { pid } = JSON.parse(fs.readFileSync(info, "utf8"));
       if (pid !== process.pid) {
@@ -143,8 +143,8 @@ test("briefs retain ancestor approval boundaries and generate executable command
     assert.match(result, /Never change the renderer/);
     assert.match(result, /Keep output compatible/);
     assert.match(result, /Author: Fixture human/);
-    assert.match(result, /workboard claim 2`/);
-    assert.doesNotMatch(result, /workboard (claim|comment|review) #/);
+    assert.match(result, /controlroom claim 2`/);
+    assert.doesNotMatch(result, /controlroom (claim|comment|review) #/);
   }
   const direct = s.contextMarkdown(parent.meta.id, true).markdown;
   assert.equal(direct.split("Never change the renderer").length, 2);

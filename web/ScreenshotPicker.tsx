@@ -7,11 +7,13 @@ export function ScreenshotPicker({
   attached,
   onAttach,
   onClose,
+  helpText = "Most recent first. Choose a screenshot to attach it; save the ticket to keep the link.",
 }: {
   images: Attachment[];
   attached: string[];
   onAttach: (id: string) => void;
   onClose: () => void;
+  helpText?: string;
 }) {
   const [query, setQuery] = useState("");
   const matches = images
@@ -54,10 +56,7 @@ export function ScreenshotPicker({
           Close screenshot picker
         </button>
       </div>
-      <p className="help">
-        Most recent first. Choose a screenshot to attach it; save the ticket to
-        keep the link.
-      </p>
+      <p className="help">{helpText}</p>
       <div className="recent-screenshots">
         {matches.slice(0, 30).map((a) => (
           <button

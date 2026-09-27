@@ -11,6 +11,7 @@ import { Store } from "../src/store.js";
 import { read } from "../src/files.js";
 import { filterRecords, parseSet, resolveActor } from "../src/client.js";
 import type { Actor } from "../src/types.js";
+import { decisionProtocol } from "../src/decision-protocol.js";
 
 const human: Actor = { name: "Human", kind: "human" },
   agent: Actor = { name: "Agent A", kind: "agent" },
@@ -96,7 +97,7 @@ test("context Markdown is a prompt-ready brief with an etag and token estimate",
   assert.match(full.markdown, /One primary action \(required\)/);
   assert.match(full.markdown, /long rationale/);
   assert.match(full.markdown, /Agent A \(question/);
-  assert.match(full.markdown, /workboard claim 1/);
+  assert.match(full.markdown, /controlroom claim 1/);
   assert.equal(full.tokens, Math.ceil(full.markdown.length / 4));
   const brief = s.contextMarkdown(child.meta.id, true);
   assert.doesNotMatch(brief.markdown, /long rationale/);
@@ -416,6 +417,7 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
       },
     },
   );
+  t.after(() => mcp.kill());
   const lines: any[] = [];
   let buffer = "";
   mcp.stdout.on("data", (d) => {
@@ -465,8 +467,9 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
   });
   await until(4);
   lines.sort((a, b) => a.id - b.id);
-  assert.equal(lines[0].result.serverInfo.name, "control-room");
+  assert.equal(lines[0].result.serverInfo.name, "controlroom");
   assert.match(lines[0].result.instructions, /Agent MCP/);
+  assert.ok(lines[0].result.instructions.includes(decisionProtocol));
   const names = lines[1].result.tools.map((t: any) => t.name);
   assert.ok(
     names.includes("get_context") &&
@@ -478,6 +481,97 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
   assert.equal(listed[0].title, "Child work");
   assert.equal(lines[3].result.isError, true);
   assert.match(lines[3].result.content[0].text, /^409/);
+  // CLI and MCP share a durable decision workflow, including predecessor search.
+  const cliDecision = JSON.parse(
+    run(s.root, [
+      "create",
+      "decision",
+      "--title",
+      "Storage choice",
+      "--body",
+      "## Choice\n\nFiles\n\n## Rationale\n\nPortable",
+      "--set",
+      "status=accepted",
+      "--json",
+    ]).out,
+  );
+  send({
+    jsonrpc: "2.0",
+    id: 5,
+    method: "tools/call",
+    params: {
+      name: "create_decision",
+      arguments: {
+        title: "Storage choice refined",
+        body: "## Choice\n\nShared files\n\n## Rationale\n\nSerialize concurrent writes\n\n## Alternatives and tradeoffs\n\nDatabase adds setup",
+        status: "accepted",
+        supersedes: cliDecision.meta.id,
+        references: [child.meta.id],
+        scope: ["storage"],
+      },
+    },
+  });
+  await until(5);
+  const successor = JSON.parse(
+    lines.find((l) => l.id === 5).result.content[0].text,
+  );
+  assert.equal(successor.meta.author.name, "Agent MCP");
+  const freshChild = JSON.parse(run(s.root, ["show", "1", "--json"]).out);
+  send({
+    jsonrpc: "2.0",
+    id: 6,
+    method: "tools/call",
+    params: {
+      name: "update_ticket",
+      arguments: {
+        id: "1",
+        etag: freshChild.revision,
+        fields: { decisions: [successor.meta.id], archived: true },
+      },
+    },
+  });
+  await until(6);
+  assert.ok(!lines.find((l) => l.id === 6).result.isError);
+  send({
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: {
+      name: "list_knowledge",
+      arguments: { kind: "decision", query: "STORAGE CHOICE" },
+    },
+  });
+  send({
+    jsonrpc: "2.0",
+    id: 8,
+    method: "tools/call",
+    params: {
+      name: "list_knowledge",
+      arguments: {
+        kind: "decision",
+        query: "storage choice",
+        include_inactive: true,
+      },
+    },
+  });
+  await until(8);
+  const currentKnowledge = JSON.parse(
+    lines.find((l) => l.id === 7).result.content[0].text,
+  );
+  assert.deepEqual(
+    currentKnowledge.map((r: any) => r.id),
+    [successor.meta.id],
+  );
+  const allKnowledge = JSON.parse(
+    lines.find((l) => l.id === 8).result.content[0].text,
+  );
+  assert.equal(allKnowledge.length, 2);
+  assert.equal(currentKnowledge[0].supersedes, cliDecision.meta.id);
+  const decisionBrief = JSON.parse(
+    run(s.root, ["context", "1", "--brief", "--json"]).out,
+  );
+  assert.ok(decisionBrief.markdown.includes(decisionProtocol));
+  assert.match(decisionBrief.markdown, /Shared files/);
   mcp.stdin.end();
   await new Promise((resolve) => mcp.on("close", resolve));
 });

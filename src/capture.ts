@@ -7,6 +7,8 @@ import type { Store } from "./store.js";
 
 export const captureRoot = path.join(
   os.tmpdir(),
+  // Keep the shared rendezvous path during upgrades so old/new installations
+  // still coordinate one companion instead of competing for the shortcut.
   `workboard-capture-${process.getuid?.() ?? "user"}`,
 );
 export function registerCapture(store: Store, port: number) {
@@ -25,7 +27,7 @@ export function registerCapture(store: Store, port: number) {
       url: `http://127.0.0.1:${port}`,
       token: store.token(),
       draftDirectory: store.file(".local/capture-drafts"),
-      activeAt: prior.activeAt ?? now(),
+      activeAt: prior.activeAt ?? new Date(0).toISOString(),
       registeredAt: now(),
       shortcut: config.shortcut,
     }),
@@ -110,17 +112,17 @@ export function startCompanion(toolRoot: string) {
   const bin = path.join(
     toolRoot,
     "dist",
-    "WorkboardCapture.app",
+    "ControlRoomCapture.app",
     "Contents",
     "MacOS",
-    "WorkboardCapture",
+    "ControlRoomCapture",
   );
   if (!fs.existsSync(bin)) return;
   const child = spawn(
     "/usr/bin/open",
     [
       "-g",
-      path.join(toolRoot, "dist", "WorkboardCapture.app"),
+      path.join(toolRoot, "dist", "ControlRoomCapture.app"),
       "--args",
       captureRoot,
     ],

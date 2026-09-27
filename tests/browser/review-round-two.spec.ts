@@ -6,6 +6,8 @@ test.beforeEach(async ({ page }) => {
     data: { selected: null, page: "project", viewId: "board" },
   });
   await page.goto("/");
+  await page.locator(".view-tab").first().waitFor({ state: "visible" });
+  await page.evaluate(() => document.fonts.ready);
 });
 async function screenshot(page: Page, name: string) {
   const data = await page.evaluate(() => {
@@ -37,6 +39,8 @@ async function openTicket(page: Page, id: string) {
     data: { selected: id, page: "project" },
   });
   await page.goto("/");
+  await page.locator(".view-tab").first().waitFor({ state: "visible" });
+  await page.evaluate(() => document.fonts.ready);
   await expect(page.locator(".record-dialog")).toBeVisible();
 }
 async function library(page: Page, query: string) {
@@ -183,6 +187,7 @@ test("multi-screenshot deletion excludes filtered images and reports stale items
   const a = await screenshot(page, "Bulk picture one");
   const b = await screenshot(page, "Bulk picture two");
   await library(page, "Bulk picture");
+  await expect(page.locator(".screenshot-card")).toHaveCount(2);
   await expect(
     page.getByRole("button", { name: "Delete screenshot", exact: true }),
   ).toHaveCount(0);

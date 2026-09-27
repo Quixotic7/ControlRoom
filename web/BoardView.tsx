@@ -1,3 +1,4 @@
+import { ticketNavigation } from "./ticketNavigation";
 import React, { useState } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
 import { recordId } from "./api";
@@ -34,7 +35,10 @@ export function GroupHeader({
         {collapsed ? <ChevronRightIcon /> : <ChevronDownIcon />}
       </button>
       {goal ? (
-        <button className="group-goal" onClick={() => onOpen(goal.meta.id)}>
+        <button
+          className="group-goal"
+          {...ticketNavigation(goal.meta.id, onOpen)}
+        >
           <strong>{group.title}</strong>
           <span className="record-id">{recordId(goal)}</span>
         </button>

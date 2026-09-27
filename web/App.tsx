@@ -1,7 +1,9 @@
+import { ticketFromUrl, ticketUrl } from "./ticketNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Kind } from "../src/types";
+import type { Kind, RecordFile } from "../src/types";
 import { api, uploadImage } from "./api";
 import { AnnotationEditor } from "./AnnotationEditor";
+import { CaptureControl } from "./CaptureControl";
 import { Imports } from "./Imports";
 import { Insights } from "./Insights";
 import {
@@ -16,7 +18,7 @@ import { RecordDetail } from "./RecordDetail";
 import { Screenshots } from "./Screenshots";
 import { Settings } from "./Settings";
 import { Shortcuts } from "./Shortcuts";
-import { ImageIcon, Logo, PlusIcon } from "./Icons";
+import { Logo, PlusIcon } from "./Icons";
 import { pages, themes, TopNav, type Page, type Theme } from "./TopNav";
 import { useProjectState } from "./useProjectState";
 
@@ -42,6 +44,10 @@ function fromPreference(value: unknown): { page?: Page; viewId?: string } {
 }
 
 export function App() {
+  const [createdRecord, setCreatedRecord] = useState<RecordFile | null>(null);
+  const [standalone, setStandalone] = useState(
+    () => new URLSearchParams(location.search).get("ticketOnly") === "1",
+  );
   const [conversationOrder, setConversationOrder] = useState<
     "oldest" | "newest"
   >("oldest");
@@ -56,7 +62,7 @@ export function App() {
     const t = stored("wb-theme");
     return themes.includes(t as Theme) ? (t as Theme) : "system";
   });
-  const [selected, setSelected] = useState<string | null>(null),
+  const [selected, setSelectedState] = useState<string | null>(ticketFromUrl),
     [creating, setCreating] = useState<Kind | null>(null),
     [image, setImage] = useState<string | null>(null),
     [error, setError] = useState(""),
@@ -65,6 +71,24 @@ export function App() {
     [prefsReady, setPrefsReady] = useState(false),
     [knowledgeRead, setKnowledgeRead] = useState(0);
   const { state, reload, loadError } = useProjectState();
+  function setSelected(id: string | null) {
+    setSelectedState(id);
+    history.replaceState(
+      null,
+      "",
+      location.pathname + location.search + (id ? ticketUrl(id) : ""),
+    );
+  }
+  useEffect(() => {
+    const change = () => {
+      if (!location.hash.startsWith("#image=")) {
+        setSelectedState(ticketFromUrl());
+        setCreating(null);
+      }
+    };
+    window.addEventListener("hashchange", change);
+    return () => window.removeEventListener("hashchange", change);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -83,7 +107,8 @@ export function App() {
           p.conversationOrder === "newest"
         )
           setConversationOrder(p.conversationOrder);
-        if (p.selected) setSelected(p.selected);
+        if (!standalone && !ticketFromUrl() && !location.hash && p.selected)
+          setSelected(p.selected);
         setKnowledgeRead(p.knowledgeRead ?? 0);
       })
       .catch(() => {})
@@ -136,6 +161,7 @@ export function App() {
   upload.current = async (file: File) => {
     // Opening another image would replace the editor and its unsaved marks.
     if (document.querySelector(".annotation-dialog[open]")) return;
+    setError("");
     try {
       const a = await uploadImage(file);
       await reload();
@@ -211,7 +237,8 @@ export function App() {
       r.meta.kind !== "ticket" && Date.parse(r.meta.updatedAt) > knowledgeRead,
   );
   const active = selected
-    ? state.records.find((r) => r.meta.id === selected)
+    ? (state.records.find((r) => r.meta.id === selected) ??
+      (createdRecord?.meta.id === selected ? createdRecord : null))
     : null;
   const views = viewsOf(state);
   const currentViewId = views.some((v) => v.id === viewId)
@@ -223,7 +250,7 @@ export function App() {
   };
   return (
     <div
-      className={`app-shell ${density}`}
+      className={`app-shell ${density}${standalone ? " ticket-page" : ""}`}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes("Files")) e.preventDefault();
       }}
@@ -237,24 +264,32 @@ export function App() {
         }
       }}
     >
-      <TopNav
-        name={state.config.name}
-        branch={state.branch}
-        page={page}
-        attentionCount={attention.length + changedDocs.length}
-        density={density}
-        theme={theme}
-        setPage={go}
-        setDensity={setDensity}
-        setTheme={setTheme}
-        onCreate={setCreating}
-        onUpload={(file) => void upload.current(file)}
-        onShortcuts={() => setShortcuts(true)}
-      />
+      {!standalone && (
+        <TopNav
+          name={state.config.name}
+          branch={state.branch}
+          page={page}
+          attentionCount={attention.length + changedDocs.length}
+          density={density}
+          theme={theme}
+          setPage={go}
+          setDensity={setDensity}
+          setTheme={setTheme}
+          onCreate={setCreating}
+          onUpload={(file) => void upload.current(file)}
+          onShortcuts={() => setShortcuts(true)}
+        />
+      )}
       <main className="main-content">
         {loadError && (
           <div className="banner error" role="alert">
-            Lost contact with the local service: {loadError}. Retrying…
+            <span>
+              {loadError} Your displayed work is retained. Retrying
+              automatically…
+            </span>
+            <button className="button" onClick={() => void reload()}>
+              Reconnect now
+            </button>
           </div>
         )}
         {error && (
@@ -296,107 +331,91 @@ export function App() {
             </div>
           </div>
         )}
-        {page === "project" && (
-          <ProjectPage
-            state={state}
-            ctx={ctx}
-            viewId={currentViewId}
-            setViewId={setViewId}
-            onOpen={setSelected}
-            onNewTicket={() => setCreating("ticket")}
-            reload={reload}
-            onError={setError}
-            onNotice={setNotice}
-          />
+        {standalone && !active && (
+          <section className="list-panel">
+            <h1>Ticket unavailable</h1>
+            <p>This ticket could not be found in this project.</p>
+            <a href="/">Control Room · Back to board</a>
+          </section>
         )}
-        {page === "attention" && (
-          <AttentionPage
-            items={attention}
-            changedDocs={changedDocs}
-            onOpen={setSelected}
-            onMarkSeen={() => setKnowledgeRead(Date.now())}
-          />
-        )}
-        {(page === "decisions" || page === "rulebook") && (
-          <KnowledgePage
-            key={page}
-            kind={page === "decisions" ? "decision" : "rule"}
-            state={state}
-            onOpen={setSelected}
-            onCreate={() =>
-              setCreating(page === "decisions" ? "decision" : "rule")
-            }
-            onImport={() => go("imports")}
-          />
-        )}
-        {page === "screenshots" && (
+        {!standalone && (
           <>
-            <PageHeader
-              title="Screenshots"
-              description="Capture, annotate, and keep visual notes, with or without a ticket."
-            >
-              <button
-                className="button"
-                title="Select a region or window with the macOS companion"
-                onClick={() =>
-                  api("/capture/request", "POST", {})
-                    .then(
-                      () =>
-                        new Promise((r) =>
-                          setTimeout(r, 1500),
-                        ) as Promise<void>,
-                    )
-                    .then(() => api("/capture/status"))
-                    .then((s) => {
-                      // Surface a permission or availability problem here,
-                      // instead of leaving it on the Settings page.
-                      if (s?.state && !["ready", "capturing"].includes(s.state))
-                        setNotice(`${s.message} See Settings for permissions.`);
-                    })
-                    .catch((e) => setError(String(e)))
+            {page === "project" && (
+              <ProjectPage
+                state={state}
+                ctx={ctx}
+                viewId={currentViewId}
+                setViewId={setViewId}
+                onOpen={setSelected}
+                onNewTicket={() => setCreating("ticket")}
+                reload={reload}
+                onError={setError}
+                onNotice={setNotice}
+              />
+            )}
+            {page === "attention" && (
+              <AttentionPage
+                items={attention}
+                changedDocs={changedDocs}
+                onOpen={setSelected}
+                onMarkSeen={() => setKnowledgeRead(Date.now())}
+              />
+            )}
+            {(page === "decisions" || page === "rulebook") && (
+              <KnowledgePage
+                key={page}
+                kind={page === "decisions" ? "decision" : "rule"}
+                state={state}
+                onOpen={setSelected}
+                onCreate={() =>
+                  setCreating(page === "decisions" ? "decision" : "rule")
                 }
-              >
-                <ImageIcon />
-                Capture a region or window
-              </button>
-              <label className="button primary file-button">
-                <PlusIcon />
-                Add screenshot
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => {
-                    if (e.target.files?.[0])
-                      void upload.current(e.target.files[0]);
-                  }}
+                onImport={() => go("imports")}
+              />
+            )}
+            {page === "screenshots" && (
+              <>
+                <CaptureControl>
+                  <label className="button primary file-button">
+                    <PlusIcon />
+                    Add screenshot
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => {
+                        if (e.target.files?.[0])
+                          void upload.current(e.target.files[0]);
+                      }}
+                    />
+                  </label>
+                </CaptureControl>
+                <Screenshots state={state} open={setImage} reload={reload} />
+              </>
+            )}
+            {page === "insights" && <Insights state={state} ctx={ctx} />}
+            {page === "imports" && (
+              <>
+                <PageHeader
+                  title="Import project knowledge"
+                  description="Turn existing notes into connected, reviewable project knowledge."
                 />
-              </label>
-            </PageHeader>
-            <Screenshots state={state} open={setImage} reload={reload} />
-          </>
-        )}
-        {page === "insights" && <Insights state={state} ctx={ctx} />}
-        {page === "imports" && (
-          <>
-            <PageHeader
-              title="Import project knowledge"
-              description="Turn existing notes into connected, reviewable project knowledge."
-            />
-            <Imports reload={reload} onError={setError} />
-          </>
-        )}
-        {page === "settings" && (
-          <>
-            <PageHeader
-              title="Settings & backups"
-              description="Your project, its shared records, and local tools."
-            />
-            <Settings
-              state={state}
-              reload={reload}
-              onError={setError}
-              openImage={setImage}
-            />
+                <Imports reload={reload} onError={setError} />
+              </>
+            )}
+            {page === "settings" && (
+              <>
+                <PageHeader
+                  title="Settings & backups"
+                  description="Your project, its shared records, and local tools."
+                />
+                <Settings
+                  state={state}
+                  reload={reload}
+                  onError={setError}
+                  openImage={setImage}
+                />
+              </>
+            )}
           </>
         )}
       </main>
@@ -406,9 +425,15 @@ export function App() {
           record={active ?? undefined}
           kind={creating ?? active!.meta.kind}
           state={state}
+          standalone={standalone}
           conversationOrder={conversationOrder}
           onConversationOrder={setConversationOrder}
           onClose={() => {
+            if (standalone) {
+              setStandalone(false);
+              setPage("project");
+              history.replaceState(null, "", location.pathname);
+            }
             setSelected(null);
             setCreating(null);
           }}
@@ -433,6 +458,13 @@ export function App() {
           }}
           reload={reload}
           onError={setError}
+          onCreated={(record) => {
+            setCreatedRecord(record);
+            setImage(null);
+            setCreating(null);
+            setSelected(record.meta.id);
+            void reload();
+          }}
         />
       )}
       {shortcuts && (

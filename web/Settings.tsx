@@ -262,7 +262,7 @@ export function Settings({
           </div>
           <p className="help">
             If permissions are enabled but remain unconfirmed, use “Show current
-            capture app” to locate this build. Remove the old Workboard Capture
+            capture app” to locate this build. Remove the old ControlRoom Capture
             entry with the minus button in the relevant macOS privacy pane, add
             this exact app, enable it, then relaunch. A region capture can still
             be attempted when the preliminary Screen Recording check is
@@ -325,7 +325,7 @@ export function Settings({
           Capture a region or window
         </button>
         <p className="help">
-          If macOS requests screen recording access, grant it to Workboard
+          If macOS requests screen recording access, grant it to ControlRoom
           Capture. Escape cancels capture. Captures go to the most recently
           active project.
         </p>

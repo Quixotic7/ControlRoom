@@ -1,7 +1,13 @@
-import { ArrowUpIcon, CloseIcon, StageIcon } from "./Icons";
+import { ArrowUpIcon, CloseIcon, StageIcon, Logo } from "./Icons";
 import { ParentInput } from "./ParentInput";
 import { ScreenshotPicker } from "./ScreenshotPicker";
 import { ImageThumbnail } from "./ImageThumbnail";
+import { ReviewActions } from "./ReviewActions";
+import { OpenQuestions } from "./OpenQuestions";
+import { ReviewBrief } from "./ReviewBrief";
+import { QuickTicket } from "./QuickTicket";
+import { ExistingChild } from "./ExistingChild";
+import { ticketNavigation } from "./ticketNavigation";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TagInput } from "./TagInput";
 import { imageMarkdown, pasteImage, RecordMarkdown } from "./RecordMarkdown";
@@ -84,6 +90,7 @@ export function RecordDetail({
   openImage,
   conversationOrder,
   onConversationOrder,
+  standalone = false,
 }: {
   record?: RecordFile;
   kind: Kind;
@@ -95,6 +102,7 @@ export function RecordDetail({
   openImage: (s: string) => void;
   conversationOrder: "oldest" | "newest";
   onConversationOrder: (order: "oldest" | "newest") => void;
+  standalone?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const detailBody = useRef<HTMLDivElement>(null);
@@ -132,6 +140,7 @@ export function RecordDetail({
       kind === "ticket" && !!record?.body.trim(),
     ),
     [pickingScreenshot, setPickingScreenshot] = useState(false),
+    [pickingCommentScreenshot, setPickingCommentScreenshot] = useState(false),
     [error, setError] = useState(""),
     [saving, setSaving] = useState(false),
     [comment, setComment] = useState(""),
@@ -189,7 +198,8 @@ export function RecordDetail({
       body !== baseline.body
     : !!m.title.trim() || body !== template;
   useEffect(() => {
-    dialog.current?.showModal();
+    if (standalone) dialog.current?.show();
+    else dialog.current?.showModal();
     return () => dialog.current?.close();
   }, []);
   useEffect(() => {
@@ -206,6 +216,54 @@ export function RecordDetail({
   const set = (key: string, value: any) =>
     setM((v: any) => ({ ...v, [key]: value }));
   const pending = useRef(false);
+  const reviewAttempt = useRef<{ signature: string; requestId: string } | null>(
+    null,
+  );
+  async function decide(
+    outcome: "accept" | "changes",
+    target: string,
+    feedback: string,
+  ) {
+    if (!baseline || pending.current) return;
+    pending.current = true;
+    setSaving(true);
+    setError("");
+    const draft = {
+      revision: baseline.revision,
+      outcome,
+      target,
+      feedback,
+      patch: changedFields(baseline.meta, m),
+      body: body !== baseline.body ? body : undefined,
+      actor,
+    };
+    const signature = JSON.stringify(draft);
+    if (reviewAttempt.current?.signature !== signature)
+      reviewAttempt.current = { signature, requestId: crypto.randomUUID() };
+    try {
+      const r: RecordFile = await api(
+        `/records/${baseline.meta.id}/review-outcome`,
+        "POST",
+        {
+          ...draft,
+          requestId: reviewAttempt.current.requestId,
+        },
+      );
+      setBaseline(r);
+      setM(r.meta);
+      setBody(r.body);
+      setConflict(null);
+      await onSaved(r.meta.id);
+      onClose();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.detail?.current)
+        setConflict({ current: e.detail.current, fields: ["review outcome"] });
+      setError(String(e));
+    } finally {
+      pending.current = false;
+      setSaving(false);
+    }
+  }
   // `draft` lets a one-click change (archive) save without waiting for state.
   async function save(review = false, closeAfter = true, draft = m) {
     if (pending.current) return false;
@@ -243,7 +301,7 @@ export function RecordDetail({
       setBody(r.body);
       await onSaved(r.meta.id);
       if (closeAfter) onClose();
-      return true;
+      return r;
     } catch (e) {
       setError(String(e));
       return false;
@@ -543,6 +601,13 @@ export function RecordDetail({
         />
       </label>
       <div className="inline-actions">
+        <button
+          className="button subtle"
+          aria-expanded={pickingCommentScreenshot}
+          onClick={() => setPickingCommentScreenshot((v) => !v)}
+        >
+          Attach screenshot to comment
+        </button>
         <select
           aria-label="Comment type"
           value={commentKind}
@@ -561,12 +626,32 @@ export function RecordDetail({
           Post comment
         </button>
       </div>
+      {pickingCommentScreenshot && (
+        <ScreenshotPicker
+          images={state.attachments}
+          attached={[...comment.matchAll(/#image=([\w-]+)/g)].map((m) => m[1])}
+          helpText="Choose a screenshot to insert into your comment. Post comment to send it."
+          onAttach={(id) => {
+            setComment(
+              (c) =>
+                c +
+                (c.trim() ? "\n\n" : "") +
+                imageMarkdown(
+                  id,
+                  state.attachments.find((a) => a.id === id)?.name,
+                ),
+            );
+            setPickingCommentScreenshot(false);
+          }}
+          onClose={() => setPickingCommentScreenshot(false)}
+        />
+      )}
     </section>
   ) : null;
   return (
     <dialog
       ref={dialog}
-      className="record-dialog"
+      className={`record-dialog${standalone ? " standalone-record" : ""}`}
       onClick={(e) => {
         if (e.target !== e.currentTarget) return;
         const box = e.currentTarget.getBoundingClientRect();
@@ -584,6 +669,16 @@ export function RecordDetail({
       }}
     >
       <div className="dialog-top">
+        {standalone && (
+          <button
+            className="button"
+            onClick={() => void close()}
+            disabled={saving}
+            aria-label="Control Room: back to board"
+          >
+            <Logo /> Control Room
+          </button>
+        )}
         <span className="eyebrow">
           {baseline ? recordId(baseline) : "New"} ·{" "}
           {kind.charAt(0).toUpperCase() + kind.slice(1)}
@@ -636,6 +731,29 @@ export function RecordDetail({
           )}
         </div>
       </div>
+      {kind === "ticket" &&
+        m.parent &&
+        (() => {
+          const parent = state.records.find((r) => r.meta.id === m.parent);
+          return (
+            <div className="parent-navigation">
+              {parent ? (
+                <button
+                  className="text-button"
+                  disabled={saving}
+                  {...ticketNavigation(parent.meta.id, async (id) => {
+                    if (await save(false, false)) openRecord(id);
+                  })}
+                >
+                  Parent: {recordId(parent)} {parent.meta.title}
+                  {parent.meta.archived ? " (Archived)" : ""}
+                </button>
+              ) : (
+                <span className="muted">Parent unavailable: {m.parent}</span>
+              )}
+            </div>
+          );
+        })()}
       <nav className="detail-tabs" aria-label="Record sections">
         {[
           "details",
@@ -727,6 +845,46 @@ export function RecordDetail({
             </div>
           );
         })()}
+        {kind === "ticket" &&
+          baseline &&
+          (tab === "details" || tab === "conversation") && (
+            <OpenQuestions
+              projectId={state.config.projectId}
+              ticket={baseline.meta.id}
+              questions={state.comments.filter(
+                (c) =>
+                  c.ticket === baseline.meta.id &&
+                  c.kind === "question" &&
+                  !c.resolved,
+              )}
+              disabled={saving || state.branchChanged}
+              openImage={openImage}
+              reload={() => onSaved(baseline.meta.id)}
+              onThread={(id) =>
+                document
+                  .getElementById(`thread-${id}`)
+                  ?.scrollIntoView({ block: "start" })
+              }
+            />
+          )}
+        {kind === "ticket" &&
+          baseline &&
+          state.config.columns.find((c) => c.id === baseline.meta.status)
+            ?.role === "review" && (
+            <>
+              {(tab === "details" || tab === "conversation") && (
+                <ReviewBrief meta={baseline.meta} openImage={openImage} />
+              )}
+              <ReviewActions
+                hidden={tab !== "details" && tab !== "conversation"}
+                columns={state.config.columns}
+                disabled={saving || state.branchChanged}
+                onDecide={(outcome, target, feedback) =>
+                  void decide(outcome, target, feedback)
+                }
+              />
+            </>
+          )}
         {tab === "details" && (
           <div className="record-layout">
             <aside className="record-properties">
@@ -886,6 +1044,121 @@ export function RecordDetail({
                   spellCheck
                 />
               )}
+              {preview && !!m.attachments?.length && (
+                <div
+                  className="description-images"
+                  aria-label="Description screenshots"
+                >
+                  {(m.attachments as string[])
+                    .filter(
+                      (id) =>
+                        !body.includes(`#image=${id}`) &&
+                        !body.includes(`/api/images/${id}/`),
+                    )
+                    .map((id) => {
+                      const a = state.attachments.find((a) => a.id === id);
+                      return (
+                        <button
+                          className="screenshot-card"
+                          key={id}
+                          onClick={() => openImage(id)}
+                        >
+                          {a ? (
+                            <ImageThumbnail image={a} />
+                          ) : (
+                            <span>Image unavailable</span>
+                          )}
+                          <span>{a?.name ?? "Screenshot"}</span>
+                        </button>
+                      );
+                    })}
+                </div>
+              )}
+              {kind === "ticket" && (
+                <section aria-label="Child tickets">
+                  <h3>Child tickets</h3>
+                  {baseline &&
+                    state.records
+                      .filter(
+                        (r) =>
+                          r.meta.kind === "ticket" &&
+                          r.meta.parent === baseline.meta.id,
+                      )
+                      .map((r) => (
+                        <button
+                          key={r.meta.id}
+                          className="child-ticket"
+                          {...ticketNavigation(r.meta.id, async (id) => {
+                            if (await save(false, false)) openRecord(id);
+                          })}
+                        >
+                          <span>
+                            <span className="muted">{recordId(r)} </span>
+                            {r.meta.title}
+                          </span>
+                          <span className="tag">
+                            {state.config.columns.find(
+                              (c) => c.id === r.meta.status,
+                            )?.name ?? r.meta.status}
+                          </span>
+                        </button>
+                      ))}
+                  <p className="help">
+                    New children go to{" "}
+                    {
+                      state.config.columns.find((c) => c.role === "backlog")!
+                        .name
+                    }
+                    .{!baseline && " The parent will be saved first."}
+                  </p>
+                  <QuickTicket
+                    lane="child tickets"
+                    alwaysOpen
+                    status={
+                      state.config.columns.find((c) => c.role === "backlog")!.id
+                    }
+                    defaults={{}}
+                    createTicket={async (title) => {
+                      const parent =
+                        !baseline || dirty
+                          ? await save(false, false)
+                          : baseline;
+                      if (!parent)
+                        throw new Error(
+                          "Save the parent successfully before adding a child. Your child title is preserved.",
+                        );
+                      await api("/records", "POST", {
+                        kind: "ticket",
+                        meta: {
+                          title,
+                          parent: parent.meta.id,
+                          status: state.config.columns.find(
+                            (c) => c.role === "backlog",
+                          )!.id,
+                        },
+                        body: "",
+                        actor,
+                      });
+                    }}
+                    onCreated={async () => {
+                      await onSaved(baseline?.meta.id ?? "");
+                    }}
+                  />
+                  <p className="help">
+                    Parent acceptance remains explicit, even when every child is
+                    Done.
+                  </p>
+                  <ExistingChild
+                    state={state}
+                    parentId={baseline?.meta.id}
+                    draftParent={m.parent}
+                    saveParent={() => save(false, false)}
+                    onSaved={async () => {
+                      await onSaved(baseline?.meta.id ?? "");
+                    }}
+                  />
+                </section>
+              )}
               {kind === "ticket" && conversation}
               {kind === "ticket" ? (
                 <details className="disclosure">
@@ -973,32 +1246,6 @@ export function RecordDetail({
                       {linked("rules", "Explicit design rules", "rule")}
                     </div>
                   </details>
-                  {state.records.some(
-                    (r) => r.meta.parent === baseline?.meta.id,
-                  ) && (
-                    <section>
-                      <h3>Child tickets</h3>
-                      {state.records
-                        .filter((r) => r.meta.parent === baseline?.meta.id)
-                        .map((r) => (
-                          <button
-                            key={r.meta.id}
-                            className="child-ticket"
-                            onClick={async () => {
-                              if (await save(false, false))
-                                openRecord(r.meta.id);
-                            }}
-                          >
-                            <span>{r.meta.title}</span>
-                            <span className="tag">{r.meta.status}</span>
-                          </button>
-                        ))}
-                      <p className="help">
-                        Parent acceptance remains explicit, even when every
-                        child is Done.
-                      </p>
-                    </section>
-                  )}
                 </details>
               ) : (
                 <>
