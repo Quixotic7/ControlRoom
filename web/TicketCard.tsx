@@ -1,3 +1,6 @@
+import { useTicketDrag } from "./TicketDrag";
+import { ProgressReport } from "./ProgressReport";
+import { microtasks } from "../src/microtasks";
 import { ticketNavigation } from "./ticketNavigation";
 import { useState } from "react";
 import { ImageThumbnail } from "./ImageThumbnail";
@@ -51,7 +54,9 @@ export function TicketCard({
   // A ticket dragged onto this card: place it before this one.
   onDropCard?: (draggedId: string, target: RecordFile) => void;
 }) {
+  const drag = useTicketDrag(record);
   const m = record.meta;
+  const tasks = microtasks(record.body).items;
   const role = ctx.columns.find((c) => c.id === m.status)?.role;
   const parent = m.parent ? ctx.byId.get(m.parent) : undefined;
   const priority = priorityOf(record);
@@ -63,22 +68,26 @@ export function TicketCard({
     m.scopeApproved ||
     m.blocked ||
     m.verification ||
+    m.assignment ||
     claim;
   return (
     <button
-      className={`ticket-card${dragging ? " dragging" : ""}`}
+      className={`ticket-card${dragging ? " dragging" : ""}${drag.edge ? " insert-" + drag.edge : ""}`}
       data-stage={role}
       data-id={m.id}
       tabIndex={tabIndex}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData(dragType, m.id);
+        drag.start(e);
         e.dataTransfer.effectAllowed = "move";
         setDragging(true);
       }}
       onDragEnd={() => setDragging(false)}
-      onDragOver={(e) => onDropCard && e.preventDefault()}
+      onDragOver={drag.over}
+      onDragLeave={drag.leave}
+      onKeyDown={drag.key}
       onDrop={(e) => {
+        if (drag.drop(e)) return;
         const id = e.dataTransfer.getData(dragType);
         if (id && onDropCard) {
           e.preventDefault();
@@ -99,6 +108,12 @@ export function TicketCard({
         <Avatar name={m.owner} />
       </span>
       <span className="card-title">{m.title}</span>
+      <ProgressReport record={record} claim={claim} role={role} />
+      {!!tasks.length && (
+        <span className="tag">
+          Checklist {tasks.filter((t) => t.done).length}/{tasks.length}
+        </span>
+      )}
       {!!m.attachments?.length && (
         <span className="card-images" aria-label="Attached screenshots">
           {m.attachments.slice(0, 3).map((id) => {
@@ -143,11 +158,22 @@ export function TicketCard({
               <span className="tag green">Approved scope</span>
             )}
             <VerificationTag record={record} />
-            {claim && (
-              <span className={`tag ${live ? "claim" : "stale"}`}>
-                {live ? "Claimed" : "Stale claim"} · {ago(claim.reportedAt)}
+            {m.assignment && role !== "done" && (
+              <span className="tag">
+                {m.assignment.worker} · {m.assignment.state}
               </span>
             )}
+            {m.agentReview &&
+              role === "done" &&
+              (m.acceptedBy as { kind?: string } | undefined)?.kind ===
+                "agent" && (
+                <span
+                  className="tag green"
+                  title="Accepted by the orchestrator. Integration was not performed."
+                >
+                  Agent accepted · merge pending
+                </span>
+              )}
           </span>
         </span>
       )}

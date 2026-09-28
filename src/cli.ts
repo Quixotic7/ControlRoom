@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+import {
+  networkPreference,
+  saveNetworkPreference,
+  lanAddresses,
+} from "./network.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,8 +78,22 @@ function inputJson() {
     : JSON.parse(option("patch", "{}")!);
 }
 async function serve(store: Store) {
+  if (has("lan") && has("local"))
+    throw new Error("Choose --lan or --local, not both");
+  const desiredLan = has("lan")
+    ? true
+    : has("local")
+      ? false
+      : networkPreference(store);
+  if (desiredLan && has("dev"))
+    throw new Error("LAN mode requires a production build; omit --dev");
   const running = await endpoint(store);
   if (running) {
+    const current = await api(store, "/api/network");
+    if (current.enabled !== desiredLan || current.restartRequired)
+      throw new Error(
+        "Network mode changed. Stop the service, then run serve with --lan or --local to restart in the desired mode.",
+      );
     if (!has("headless")) {
       // Registration must belong to the persistent server, not this short-lived CLI.
       await api(store, "/api/active", "POST", {});
@@ -104,17 +123,25 @@ async function serve(store: Store) {
       if (fs.existsSync(f)) fs.unlinkSync(f);
   };
   try {
+    saveNetworkPreference(store, desiredLan);
     app = await buildServer(store, {
+      lan: desiredLan,
       dev: has("dev"),
       native: !has("headless"),
     });
-    const url = await app.listen({
-      host: "127.0.0.1",
+    const listening = await app.listen({
+      host: desiredLan ? "0.0.0.0" : "127.0.0.1",
       port: Number(option("port", "0")),
     });
+    const url = `http://127.0.0.1:${new URL(listening).port}`;
     atomic(
       store.file(".local/service.json"),
-      JSON.stringify({ url, pid: process.pid, startedAt: now() }),
+      JSON.stringify({
+        url,
+        pid: process.pid,
+        startedAt: now(),
+        lan: desiredLan,
+      }),
       0o600,
     );
     let captureFile: string | undefined;
@@ -123,6 +150,14 @@ async function serve(store: Store) {
       startCompanion(toolRoot);
     }
     console.log(`Control Room: ${url}\nProject: ${store.root}`);
+    if (desiredLan)
+      console.log(
+        `LAN: ${
+          lanAddresses()
+            .map((ip) => `http://${ip}:${new URL(url).port}`)
+            .join(", ") || "No private IPv4 interface available"
+        }\nPair devices in local Settings → Network access. HTTP traffic is not encrypted; use a trusted LAN.`,
+      );
     if (has("open") && process.platform === "darwin")
       spawn("open", [url], { stdio: "ignore" });
     const stop = async () => {
@@ -250,12 +285,19 @@ Writing (need --etag from show or context, or --latest to use the current one)
   update ID --etag HASH [--set key=value ...] [--patch JSON] [--body-file FILE]
   move ID STATUS --etag HASH
   handoff ID --etag HASH --body TEXT
+  questionnaire ID --file questions.json [--patch '{"id":"comment-id","revision":"HASH"}']
+  progress ID --etag HASH --body TEXT [--percent 0..100]
   comment ID --body TEXT | ask ID --body TEXT
   claim ID [--worktree PATH] | release ID
   review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
 
 Service and data
-  serve [--open] [--dev] | stop | mcp | init
+  agents status | agents log RUN
+  agents configure --file CONFIG_JSON --etag CONFIG_REVISION
+  agents queue --file ASSIGNMENT_JSON   {ticket, revision, kind: work|plan, worker} (worker required for work)
+  agents stop RUN | agents resume RUN
+  agents review-context RUN | agents review RUN --file REVIEW_JSON
+  serve [--open] [--port PORT] [--lan | --local] [--dev] | stop | mcp | init
   export --output FILE | restore --file FILE
   import brief --file PATHS_JSON | import stage --file PROPOSALS_JSON
   install DESTINATION | upgrade DESTINATION
@@ -292,6 +334,56 @@ async function main() {
     await startMcp(store, who, executionDirectory);
     return;
   }
+  if (command === "agents") {
+    if (!id || id === "status") output(await api(store, "/api/orchestration"));
+    else if (id === "configure") {
+      if (!option("etag"))
+        throw new Error(
+          "Provide --etag from agents status so a stale configuration cannot overwrite another edit",
+        );
+      output(
+        await api(store, "/api/orchestration/config", "PUT", {
+          config: inputJson(),
+          revision: option("etag"),
+          actor: who,
+        }),
+      );
+    } else if (id === "queue") {
+      const input = inputJson();
+      output(
+        await api(store, "/api/orchestration/queue", "POST", {
+          ...input,
+          actor: who,
+        }),
+      );
+    } else if (["review-context", "review"].includes(id)) {
+      const run = positional[2];
+      if (!run) throw new Error("Provide a run ID");
+      output(
+        await api(
+          store,
+          `/api/orchestration/${encodeURIComponent(run)}/${id}`,
+          "POST",
+          { ...(id === "review" ? inputJson() : {}), actor: who },
+        ),
+      );
+    } else if (["stop", "resume", "log"].includes(id)) {
+      const run = positional[2];
+      if (!run) throw new Error("Provide a run ID");
+      output(
+        await api(
+          store,
+          `/api/orchestration/${encodeURIComponent(run)}/${id}`,
+          id === "log" ? "GET" : "POST",
+          id === "log" ? undefined : { actor: who },
+        ),
+      );
+    } else
+      throw new Error(
+        "Use agents status|configure --file config.json|queue --file assignment.json|stop RUN|resume RUN|log RUN",
+      );
+    return;
+  }
   if (command === "stop") {
     const url = await endpoint(store);
     if (!url) {
@@ -313,6 +405,8 @@ async function main() {
     "handoff",
     "comment",
     "ask",
+    "questionnaire",
+    "progress",
     "claim",
     "release",
     "review",
@@ -444,6 +538,39 @@ async function main() {
         body:
           command === "update" && option("body-file") ? bodyFile() : undefined,
         actor: who,
+      }),
+    );
+    return;
+  }
+  if (command === "questionnaire") {
+    const questions = JSON.parse(read(option("file")!));
+    output(
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/questionnaires`,
+        "POST",
+        {
+          questions,
+          actor: who,
+          replacing: option("patch") ? JSON.parse(option("patch")!) : undefined,
+        },
+      ),
+    );
+    return;
+  }
+  if (command === "progress") {
+    output(
+      await api(store, `/api/records/${encodeURIComponent(id)}`, "PATCH", {
+        revision: await etag(),
+        actor: who,
+        patch: {
+          progress: {
+            note: bodyFile(),
+            ...(option("percent") === undefined
+              ? {}
+              : { percent: Number(option("percent")) }),
+          },
+        },
       }),
     );
     return;

@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from "react";
+import { TicketDragContext, type DragSession } from "./TicketDrag";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   Claim,
   GroupBy,
@@ -33,6 +34,12 @@ import {
   type Context,
 } from "./model";
 import { TableView } from "./TableView";
+import {
+  ArchiveTickets,
+  ArchivedTickets,
+  type ArchiveScope,
+} from "./ArchiveTickets";
+import { useColumnVisibility } from "./useColumnVisibility";
 
 const sameView = (a: ProjectView, b: ProjectView) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -61,6 +68,12 @@ export function ProjectPage({
 }) {
   const saved = viewsOf(state);
   const savedView = saved.find((v) => v.id === viewId) ?? saved[0];
+  const visibility = useColumnVisibility(state.config.projectId, savedView.id);
+  const [archiveView, setArchiveView] = useState(false);
+  const [archiveScope, setArchiveScope] = useState<ArchiveScope | null>(null);
+  const hiddenCount = ctx.columns.filter((c) =>
+    visibility.hidden.has(c.id),
+  ).length;
   // Unsaved edits per view, like GitHub's "Save changes" on a modified view.
   const [drafts, setDrafts] = useState<Record<string, ProjectView>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -199,6 +212,21 @@ export function ProjectPage({
     () => new Map<string, Claim>(state.claims.map((c) => [c.ticket, c])),
     [state.claims],
   );
+  const [ticketDrag, setTicketDrag] = useState<DragSession | null>(null);
+  useEffect(() => {
+    const end = () => setTicketDrag(null);
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") end();
+    };
+    document.addEventListener("dragend", end);
+    document.addEventListener("drop", end);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("dragend", end);
+      document.removeEventListener("drop", end);
+      document.removeEventListener("keydown", key);
+    };
+  }, []);
   const canReorder = view.sort === "manual" || view.sort === "priority";
 
   async function patch(r: RecordFile, fields: Record<string, unknown>) {
@@ -231,8 +259,8 @@ export function ProjectPage({
     const peers = peersOf(r);
     return peers[peers.findIndex((p) => p.meta.id === r.meta.id) - 1];
   };
-  function place(draggedId: string, target: RecordFile) {
-    const r = ctx.byId.get(draggedId);
+  function place(draggedId: string, target: RecordFile, insertAfter = false) {
+    const r = ticketDrag?.records.get(draggedId) ?? ctx.byId.get(draggedId);
     if (!r || r.meta.id === target.meta.id) return;
     const role = ctx.columns.find((c) => c.id === target.meta.status)?.role;
     if (
@@ -257,336 +285,450 @@ export function ProjectPage({
     }
     const peers = peersOf(target, r.meta.id);
     const index = peers.findIndex((p) => p.meta.id === target.meta.id);
-    const after = orderOf(target);
-    const before = index > 0 ? orderOf(peers[index - 1]) : after - 1024;
-    void patch(r, {
-      status: target.meta.status,
-      order: (before + after) / 2,
-      ...(view.sort === "priority" ? { priority: priorityOf(target) } : {}),
-    });
+    const slot = index + Number(insertAfter);
+    const before = slot > 0 ? orderOf(peers[slot - 1]) : orderOf(target) - 1024;
+    const after = slot < peers.length ? orderOf(peers[slot]) : before + 1024;
+    const expected = peers.map((p) => ({
+      id: p.meta.id,
+      revision: ticketDrag?.records.get(p.meta.id)?.revision ?? p.revision,
+    }));
+    if (
+      ticketDrag &&
+      peers.some(
+        (p) => ticketDrag.records.get(p.meta.id)?.revision !== p.revision,
+      )
+    ) {
+      onError(
+        "Ticket order changed during this drag. The move was cancelled; review the current board and try again.",
+      );
+      void reload();
+      return;
+    }
+    void api(`/records/${r.meta.id}/placement`, "POST", {
+      revision: r.revision,
+      expected,
+      actor,
+      patch: {
+        status: target.meta.status,
+        order: (before + after) / 2,
+        ...(view.sort === "priority" ? { priority: priorityOf(target) } : {}),
+      },
+    })
+      .then(reload)
+      .catch((e) => {
+        onError(String(e));
+        void reload();
+      });
   }
 
   const groupChoices = (Object.keys(groupByOptions) as GroupBy[]).filter(
     (g) => view.layout === "table" || g !== "status",
   );
+  if (archiveView)
+    return (
+      <ArchivedTickets
+        records={state.records}
+        onOpen={onOpen}
+        reload={reload}
+        onBack={() => setArchiveView(false)}
+      />
+    );
   return (
-    <div className="project-page">
-      <h1 className="sr-only">{state.config.name} views</h1>
-      <nav className="view-tabs" aria-label="Project views">
-        {saved.map((v) => {
-          const active = v.id === savedView.id;
-          return (
-            <div
-              key={v.id}
-              data-view-id={v.id}
-              className={`view-tab ${active ? "active" : ""}${dropView?.id === v.id ? (dropView.after ? " drop-after" : " drop-before") : ""}`}
-              onDragOver={(e) => {
-                if (
-                  !viewDrag.current ||
-                  !e.dataTransfer.types.includes("text/controlroom-view")
-                )
-                  return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                const bounds = e.currentTarget.getBoundingClientRect();
-                setDropView({
-                  id: v.id,
-                  after: e.clientX > bounds.x + bounds.width / 2,
-                });
-              }}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-                  setDropView(null);
-              }}
-              onDrop={(e) => {
-                if (
-                  !viewDrag.current ||
-                  !e.dataTransfer.types.includes("text/controlroom-view")
-                )
-                  return;
-                e.preventDefault();
-                e.stopPropagation();
-                const bounds = e.currentTarget.getBoundingClientRect();
-                void dropTab(v.id, e.clientX > bounds.x + bounds.width / 2);
-              }}
-            >
-              {renaming === v.id ? (
-                <input
-                  autoFocus
-                  aria-label="View name"
-                  defaultValue={v.name}
-                  maxLength={60}
-                  onBlur={(e) => void rename(v, e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                    if (e.key === "Escape") setRenaming(null);
-                  }}
-                />
-              ) : (
-                <button
-                  draggable={!savingOrder}
-                  title="Drag to reorder; use the options menu to move with the keyboard"
-                  onDragStart={(e) => {
-                    viewDrag.current = {
-                      id: v.id,
-                      views: saved,
-                      revision: state.configRevision,
-                    };
-                    e.dataTransfer.setData("text/controlroom-view", v.id);
-                    e.dataTransfer.effectAllowed = "move";
-                  }}
-                  onDragEnd={() => {
-                    viewDrag.current = null;
+    <TicketDragContext.Provider
+      value={{
+        end: () => setTicketDrag(null),
+        session: ticketDrag,
+        start: (r) =>
+          setTicketDrag({
+            source: r,
+            records: new Map(state.records.map((r) => [r.meta.id, r])),
+          }),
+        shift: (r, by) => {
+          if (!canReorder) return;
+          const peers = peersOf(r),
+            index = peers.findIndex((p) => p.meta.id === r.meta.id),
+            target = peers[index + by];
+          if (target) place(r.meta.id, target, by > 0);
+        },
+        place,
+        canPlace: (target) =>
+          !!ticketDrag &&
+          canReorder &&
+          target.meta.id !== ticketDrag.source.meta.id &&
+          (view.groupBy !== "parent" ||
+            (target.meta.parent ?? null) ===
+              (ticketDrag.source.meta.parent ?? null)) &&
+          !(
+            ctx.columns.find((c) => c.id === target.meta.status)?.role ===
+              "review" && ticketDrag.source.meta.status !== target.meta.status
+          ),
+      }}
+    >
+      <div className="project-page">
+        <h1 className="sr-only">{state.config.name} views</h1>
+        <nav className="view-tabs" aria-label="Project views">
+          {saved.map((v) => {
+            const active = v.id === savedView.id;
+            return (
+              <div
+                key={v.id}
+                data-view-id={v.id}
+                className={`view-tab ${active ? "active" : ""}${dropView?.id === v.id ? (dropView.after ? " drop-after" : " drop-before") : ""}`}
+                onDragOver={(e) => {
+                  if (
+                    !viewDrag.current ||
+                    !e.dataTransfer.types.includes("text/controlroom-view")
+                  )
+                    return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  const bounds = e.currentTarget.getBoundingClientRect();
+                  setDropView({
+                    id: v.id,
+                    after: e.clientX > bounds.x + bounds.width / 2,
+                  });
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node | null))
                     setDropView(null);
-                  }}
-                  aria-current={active ? "page" : undefined}
-                  onClick={() => setViewId(v.id)}
-                  onDoubleClick={() => setRenaming(v.id)}
-                >
-                  <span className="layout-icon" aria-hidden>
-                    {(drafts[v.id] ?? v).layout === "board" ? (
-                      <BoardIcon />
-                    ) : (
-                      <TableIcon />
-                    )}
-                  </span>
-                  {v.name}
-                  <span
-                    className={
-                      drafts[v.id] && !sameView(drafts[v.id], v)
-                        ? "unsaved-dot"
-                        : "unsaved-dot-placeholder"
-                    }
-                    style={{
-                      visibility:
-                        drafts[v.id] && !sameView(drafts[v.id], v)
-                          ? "visible"
-                          : "hidden",
+                }}
+                onDrop={(e) => {
+                  if (
+                    !viewDrag.current ||
+                    !e.dataTransfer.types.includes("text/controlroom-view")
+                  )
+                    return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const bounds = e.currentTarget.getBoundingClientRect();
+                  void dropTab(v.id, e.clientX > bounds.x + bounds.width / 2);
+                }}
+              >
+                {renaming === v.id ? (
+                  <input
+                    autoFocus
+                    aria-label="View name"
+                    defaultValue={v.name}
+                    maxLength={60}
+                    onBlur={(e) => void rename(v, e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") e.currentTarget.blur();
+                      if (e.key === "Escape") setRenaming(null);
                     }}
-                    title={
-                      drafts[v.id] && !sameView(drafts[v.id], v)
-                        ? "Unsaved changes"
-                        : undefined
-                    }
-                    aria-hidden="true"
                   />
-                </button>
-              )}
-              {active && renaming !== v.id ? (
-                <Menu
-                  label={<span aria-hidden="true">⋯</span>}
-                  escapeClipping
-                  ariaLabel={`Options for ${v.name} view`}
-                  className="tab-menu-button"
-                >
-                  {(close) => (
-                    <div className="menu-list">
-                      <button
-                        onClick={() => {
-                          close();
-                          setRenaming(v.id);
-                        }}
-                      >
-                        Rename
-                      </button>
-                      <button
-                        onClick={() => {
-                          close();
-                          void duplicate(v);
-                        }}
-                      >
-                        Duplicate
-                      </button>
-                      <button
-                        disabled={saved[0].id === v.id}
-                        onClick={() => {
-                          close();
-                          void shift(v, -1);
-                        }}
-                      >
-                        Move left
-                      </button>
-                      <button
-                        disabled={saved[saved.length - 1].id === v.id}
-                        onClick={() => {
-                          close();
-                          void shift(v, 1);
-                        }}
-                      >
-                        Move right
-                      </button>
-                      <button
-                        className="danger"
-                        disabled={saved.length < 2}
-                        onClick={() => {
-                          close();
-                          void remove(v);
-                        }}
-                      >
-                        Delete view
-                      </button>
-                    </div>
-                  )}
-                </Menu>
-              ) : (
-                <span className="tab-menu-placeholder" aria-hidden="true" />
-              )}
+                ) : (
+                  <button
+                    draggable={!savingOrder}
+                    title="Drag to reorder; use the options menu to move with the keyboard"
+                    onDragStart={(e) => {
+                      viewDrag.current = {
+                        id: v.id,
+                        views: saved,
+                        revision: state.configRevision,
+                      };
+                      e.dataTransfer.setData("text/controlroom-view", v.id);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragEnd={() => {
+                      viewDrag.current = null;
+                      setDropView(null);
+                    }}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setViewId(v.id)}
+                    onDoubleClick={() => setRenaming(v.id)}
+                  >
+                    <span className="layout-icon" aria-hidden>
+                      {(drafts[v.id] ?? v).layout === "board" ? (
+                        <BoardIcon />
+                      ) : (
+                        <TableIcon />
+                      )}
+                    </span>
+                    {v.name}
+                    <span
+                      className={
+                        drafts[v.id] && !sameView(drafts[v.id], v)
+                          ? "unsaved-dot"
+                          : "unsaved-dot-placeholder"
+                      }
+                      style={{
+                        visibility:
+                          drafts[v.id] && !sameView(drafts[v.id], v)
+                            ? "visible"
+                            : "hidden",
+                      }}
+                      title={
+                        drafts[v.id] && !sameView(drafts[v.id], v)
+                          ? "Unsaved changes"
+                          : undefined
+                      }
+                      aria-hidden="true"
+                    />
+                  </button>
+                )}
+                {active && renaming !== v.id ? (
+                  <Menu
+                    label={<span aria-hidden="true">⋯</span>}
+                    escapeClipping
+                    ariaLabel={`Options for ${v.name} view`}
+                    className="tab-menu-button"
+                  >
+                    {(close) => (
+                      <div className="menu-list">
+                        <button
+                          onClick={() => {
+                            close();
+                            setRenaming(v.id);
+                          }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => {
+                            close();
+                            void duplicate(v);
+                          }}
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          disabled={saved[0].id === v.id}
+                          onClick={() => {
+                            close();
+                            void shift(v, -1);
+                          }}
+                        >
+                          Move left
+                        </button>
+                        <button
+                          disabled={saved[saved.length - 1].id === v.id}
+                          onClick={() => {
+                            close();
+                            void shift(v, 1);
+                          }}
+                        >
+                          Move right
+                        </button>
+                        <button
+                          className="danger"
+                          disabled={saved.length < 2}
+                          onClick={() => {
+                            close();
+                            void remove(v);
+                          }}
+                        >
+                          Delete view
+                        </button>
+                      </div>
+                    )}
+                  </Menu>
+                ) : (
+                  <span className="tab-menu-placeholder" aria-hidden="true" />
+                )}
+              </div>
+            );
+          })}
+          <button className="new-view" onClick={() => void addView()}>
+            <PlusIcon />
+            New view
+          </button>
+        </nav>
+        <div className="filter-bar">
+          <label className="filter-input">
+            <span aria-hidden>
+              <SearchIcon />
+            </span>
+            <input
+              aria-label="Filter tickets"
+              placeholder="Filter by keyword or by field, e.g. label:ui is:blocked -status:done"
+              value={view.filter}
+              onChange={(e) => edit({ filter: e.target.value })}
+            />
+            {view.filter && (
+              <button
+                className="icon-button"
+                aria-label="Clear filter"
+                onClick={() => edit({ filter: "" })}
+              >
+                <CloseIcon />
+              </button>
+            )}
+          </label>
+          {dirty && (
+            <div className="inline-actions">
+              <button className="button subtle" onClick={discard}>
+                Discard
+              </button>
+              <button
+                className="button primary"
+                onClick={() => void saveDraft()}
+              >
+                Save view
+              </button>
             </div>
-          );
-        })}
-        <button className="new-view" onClick={() => void addView()}>
-          <PlusIcon />
-          New view
-        </button>
-      </nav>
-      <div className="filter-bar">
-        <label className="filter-input">
-          <span aria-hidden>
-            <SearchIcon />
-          </span>
-          <input
-            aria-label="Filter tickets"
-            placeholder="Filter by keyword or by field, e.g. label:ui is:blocked -status:done"
-            value={view.filter}
-            onChange={(e) => edit({ filter: e.target.value })}
-          />
-          {view.filter && (
-            <button
-              className="icon-button"
-              aria-label="Clear filter"
-              onClick={() => edit({ filter: "" })}
-            >
-              <CloseIcon />
-            </button>
           )}
-        </label>
-        {dirty && (
-          <div className="inline-actions">
-            <button className="button subtle" onClick={discard}>
-              Discard
-            </button>
-            <button className="button primary" onClick={() => void saveDraft()}>
-              Save view
+          <Menu
+            label={
+              <>
+                <SlidersIcon />
+                View
+              </>
+            }
+            ariaLabel="View options"
+            align="end"
+          >
+            <div className="view-options">
+              <span className="menu-label">Layout</span>
+              <div className="segmented">
+                {(["board", "table"] as const).map((layout) => (
+                  <button
+                    key={layout}
+                    aria-pressed={view.layout === layout}
+                    className={view.layout === layout ? "selected" : ""}
+                    onClick={() =>
+                      edit({
+                        layout,
+                        groupBy:
+                          layout === "board" && view.groupBy === "status"
+                            ? "none"
+                            : view.groupBy,
+                      })
+                    }
+                  >
+                    {layout === "board" ? <BoardIcon /> : <TableIcon />}
+                    {layout === "board" ? "Board" : "Table"}
+                  </button>
+                ))}
+              </div>
+              <label className="field">
+                Group by
+                <select
+                  value={view.groupBy}
+                  onChange={(e) => edit({ groupBy: e.target.value as GroupBy })}
+                >
+                  {groupChoices.map((g) => (
+                    <option key={g} value={g}>
+                      {groupByOptions[g]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Sort by
+                <select
+                  value={view.sort}
+                  onChange={(e) => edit({ sort: e.target.value as SortBy })}
+                >
+                  {(Object.keys(sortOptions) as SortBy[]).map((s) => (
+                    <option key={s} value={s}>
+                      {sortOptions[s]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="help">
+                Filter keys: status, label, owner, priority, parent, is:blocked,
+                is:claimed, is:open, is:archived, no:owner. Prefix with - to
+                exclude.
+              </p>
+            </div>
+          </Menu>
+          <button
+            className="button subtle"
+            onClick={() => setArchiveView(true)}
+          >
+            Archived tickets
+          </button>
+        </div>
+        {view.layout === "board" && hiddenCount > 0 && (
+          <div className="column-visibility-bar" role="status">
+            <span>
+              {hiddenCount}{" "}
+              {hiddenCount === 1 ? "column hidden" : "columns hidden"}. Header
+              counts include hidden tickets.
+            </span>
+            <button className="text-button" onClick={visibility.showAll}>
+              Show all columns
             </button>
           </div>
         )}
-        <Menu
-          label={
-            <>
-              <SlidersIcon />
-              View
-            </>
-          }
-          ariaLabel="View options"
-          align="end"
-        >
-          <div className="view-options">
-            <span className="menu-label">Layout</span>
-            <div className="segmented">
-              {(["board", "table"] as const).map((layout) => (
-                <button
-                  key={layout}
-                  aria-pressed={view.layout === layout}
-                  className={view.layout === layout ? "selected" : ""}
-                  onClick={() =>
-                    edit({
-                      layout,
-                      groupBy:
-                        layout === "board" && view.groupBy === "status"
-                          ? "none"
-                          : view.groupBy,
-                    })
-                  }
-                >
-                  {layout === "board" ? <BoardIcon /> : <TableIcon />}
-                  {layout === "board" ? "Board" : "Table"}
-                </button>
-              ))}
-            </div>
-            <label className="field">
-              Group by
-              <select
-                value={view.groupBy}
-                onChange={(e) => edit({ groupBy: e.target.value as GroupBy })}
-              >
-                {groupChoices.map((g) => (
-                  <option key={g} value={g}>
-                    {groupByOptions[g]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              Sort by
-              <select
-                value={view.sort}
-                onChange={(e) => edit({ sort: e.target.value as SortBy })}
-              >
-                {(Object.keys(sortOptions) as SortBy[]).map((s) => (
-                  <option key={s} value={s}>
-                    {sortOptions[s]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <p className="help">
-              Filter keys: status, label, owner, priority, parent, is:blocked,
-              is:claimed, is:open, is:archived, no:owner. Prefix with - to
-              exclude.
-            </p>
-          </div>
-        </Menu>
-      </div>
-      {!tickets.length ? (
-        <div className="empty-state">
-          <span className="empty-icon">
-            <ProjectIcon />
-          </span>
-          <h2>Your next chapter starts here</h2>
-          <p>
-            Use “Add item” under any column, or create a ticket with details.
+        {visibility.error && (
+          <p className="banner error" role="alert">
+            {visibility.error}
           </p>
-          <button className="button primary" onClick={onNewTicket}>
-            Create a ticket
-          </button>
-        </div>
-      ) : null}
-      {view.layout === "board" ? (
-        <BoardView
-          groups={groups}
-          groupBy={view.groupBy}
-          ctx={ctx}
-          claims={claims}
-          visible={visible}
-          onOpen={onOpen}
-          onMove={move}
-          onPlace={place}
-          reload={reload}
-        />
-      ) : (
-        <TableView
-          groups={groups}
-          groupBy={view.groupBy}
-          ctx={ctx}
-          claims={claims}
-          canReorder={canReorder}
-          previousPeer={previousPeer}
-          filter={view.filter}
-          onOpen={onOpen}
-          onMove={move}
-          onPriority={setPriority}
-          onPlace={place}
-          reload={reload}
-        />
-      )}
-      {!!tickets.length && !visible.length && (
-        <p className="empty-inline">
-          No tickets match “{view.filter}”.{" "}
-          <button className="text-button" onClick={() => edit({ filter: "" })}>
-            Clear filter
-          </button>
-        </p>
-      )}
-    </div>
+        )}
+        {!tickets.length ? (
+          <div className="empty-state">
+            <span className="empty-icon">
+              <ProjectIcon />
+            </span>
+            <h2>Your next chapter starts here</h2>
+            <p>
+              Use “Add item” under any column, or create a ticket with details.
+            </p>
+            <button className="button primary" onClick={onNewTicket}>
+              Create a ticket
+            </button>
+          </div>
+        ) : null}
+        {view.layout === "board" ? (
+          <BoardView
+            groups={groups}
+            groupBy={view.groupBy}
+            ctx={ctx}
+            claims={claims}
+            visible={visible}
+            onOpen={onOpen}
+            onMove={move}
+            onPlace={place}
+            reload={reload}
+            hidden={visibility.hidden}
+            onToggleColumn={visibility.toggle}
+            writesDisabled={state.branchChanged}
+            onArchive={(column, records) =>
+              setArchiveScope({
+                column: column.name,
+                filter: view.filter,
+                view: view.name,
+                records,
+              })
+            }
+          />
+        ) : (
+          <TableView
+            groups={groups}
+            groupBy={view.groupBy}
+            ctx={ctx}
+            claims={claims}
+            canReorder={canReorder}
+            previousPeer={previousPeer}
+            filter={view.filter}
+            onOpen={onOpen}
+            onMove={move}
+            onPriority={setPriority}
+            onPlace={place}
+            reload={reload}
+          />
+        )}
+        {!!tickets.length && !visible.length && (
+          <p className="empty-inline">
+            No tickets match “{view.filter}”.{" "}
+            <button
+              className="text-button"
+              onClick={() => edit({ filter: "" })}
+            >
+              Clear filter
+            </button>
+          </p>
+        )}
+        {archiveScope && (
+          <ArchiveTickets
+            scope={archiveScope}
+            onClose={() => setArchiveScope(null)}
+            reload={reload}
+          />
+        )}
+      </div>
+    </TicketDragContext.Provider>
   );
 }

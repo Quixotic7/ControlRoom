@@ -1,3 +1,4 @@
+import { isRemoteBrowser } from "./api";
 import React, { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import { api, actor } from "./api";
@@ -16,6 +17,7 @@ export function Imports({
     [search, setSearch] = useState(""),
     [message, setMessage] = useState("");
   const load = () => {
+    if (isRemoteBrowser()) return;
     api("/documents")
       .then(setFiles)
       .catch((e) => onError(String(e)));
@@ -36,6 +38,12 @@ export function Imports({
       onError(String(e));
     }
   }
+  if (isRemoteBrowser())
+    return (
+      <p className="banner">
+        Import project documents on the host at 127.0.0.1.
+      </p>
+    );
   return (
     <div className="import-layout">
       <section className="settings-card">

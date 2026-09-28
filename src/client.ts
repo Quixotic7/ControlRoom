@@ -23,6 +23,7 @@ export const valueOptions = new Set([
   "--parent",
   "--labels",
   "--priority",
+  "--percent",
   "--owner",
   "--status",
   "--label",
@@ -366,7 +367,11 @@ export async function waitForChange(
   };
   let first: Awaited<ReturnType<typeof snapshot>>;
   const changed = (next: typeof first) => {
-    if (next.comments.length > first.comments.length && waitFor !== "status")
+    if (
+      next.comments.map((c) => c.id + ":" + c.revision).join("|") !==
+        first.comments.map((c) => c.id + ":" + c.revision).join("|") &&
+      waitFor !== "status"
+    )
       return "comment";
     if (
       next.ticket.meta.status !== first.ticket.meta.status &&

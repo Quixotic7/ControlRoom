@@ -1,3 +1,8 @@
+import { randomUUID, copyText } from "./browserUtils";
+import { WindowMenu } from "./WindowMenu";
+import { Questionnaire } from "./Questionnaire";
+import { ProgressReport } from "./ProgressReport";
+import { Microtasks } from "./Microtasks";
 import { ArrowUpIcon, CloseIcon, StageIcon, Logo } from "./Icons";
 import { ParentInput } from "./ParentInput";
 import { ScreenshotPicker } from "./ScreenshotPicker";
@@ -239,7 +244,7 @@ export function RecordDetail({
     };
     const signature = JSON.stringify(draft);
     if (reviewAttempt.current?.signature !== signature)
-      reviewAttempt.current = { signature, requestId: crypto.randomUUID() };
+      reviewAttempt.current = { signature, requestId: randomUUID() };
     try {
       const r: RecordFile = await api(
         `/records/${baseline.meta.id}/review-outcome`,
@@ -547,6 +552,14 @@ export function RecordDetail({
               <div className="markdown">
                 <RecordMarkdown openImage={openImage}>{c.body}</RecordMarkdown>
               </div>
+              {c.questions && c.resolved && baseline && (
+                <Questionnaire
+                  question={c}
+                  projectId={state.config.projectId}
+                  disabled={saving || state.branchChanged}
+                  reload={() => onSaved(baseline.meta.id)}
+                />
+              )}
               {c.kind === "question" && (
                 <button
                   className="button subtle"
@@ -692,6 +705,26 @@ export function RecordDetail({
           <CloseIcon />
         </button>
       </div>
+      <WindowMenu
+        file={[
+          {
+            label: "Save",
+            run: () => void save(false, false),
+            disabled: saving,
+          },
+          { label: "Save and close", run: () => void save(), disabled: saving },
+          { label: "Close window", run: () => void close(), disabled: saving },
+        ]}
+        view={
+          baseline
+            ? [
+                { label: "Details", run: () => setTab("details") },
+                { label: "Conversation", run: () => setTab("conversation") },
+                { label: "History", run: () => setTab("history") },
+              ]
+            : undefined
+        }
+      />
       <div className="record-title">
         <input
           aria-label="Title"
@@ -1004,8 +1037,53 @@ export function RecordDetail({
                   </span>
                 </label>
               )}
+              {kind === "ticket" && (
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={!!m.humanReviewRequired}
+                    onChange={(e) =>
+                      set("humanReviewRequired", e.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>Require human acceptance</strong>
+                    <small>
+                      The orchestrator may review, but only you can accept this
+                      ticket.
+                    </small>
+                  </span>
+                </label>
+              )}
+              {record?.meta.assignment && (
+                <p className="muted">
+                  Assigned to {record.meta.assignment.worker} ·{" "}
+                  {record.meta.assignment.state}
+                </p>
+              )}
+              {record?.meta.agentReview && (
+                <p className="muted">
+                  Review by {record.meta.agentReview.reviewer}:{" "}
+                  {record.meta.agentReview.outcome}. Integration not performed.
+                  See the conversation for criteria and evidence.
+                </p>
+              )}
             </aside>
             <section className="record-content">
+              {record && (
+                <ProgressReport
+                  record={record}
+                  claim={state.claims.find((c) => c.ticket === record.meta.id)}
+                  role={
+                    state.config.columns.find(
+                      (c) => c.id === record.meta.status,
+                    )?.role
+                  }
+                />
+              )}
+              {kind === "ticket" && (
+                <Microtasks body={body} onChange={setBody} />
+              )}
               <div className="section-heading">
                 <h3>
                   {kind === "ticket"
@@ -1394,9 +1472,9 @@ export function RecordDetail({
             <button
               className="button"
               onClick={() =>
-                navigator.clipboard
-                  .writeText(JSON.stringify(context, null, 2))
-                  .catch((e) => setError(String(e)))
+                copyText(JSON.stringify(context, null, 2)).catch((e) =>
+                  setError(String(e)),
+                )
               }
             >
               Copy agent context

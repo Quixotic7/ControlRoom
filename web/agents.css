@@ -1,0 +1,148 @@
+.agents-page {
+  padding: 24px;
+  max-width: 1400px;
+  margin: auto;
+}
+.agents-page h1,
+.agents-page h2 {
+  margin: 0 0 10px;
+}
+.agents-heading,
+.agent-run header,
+.agent-log header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.agents-page p {
+  line-height: 1.5;
+}
+.agent-roster {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 20px 0;
+}
+.agent-roster article,
+.agent-settings,
+.agent-delegate,
+.agent-run,
+.agent-empty {
+  padding: 18px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 8px;
+}
+.agent-roster article {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 2px solid var(--accent);
+}
+.agent-settings,
+.agent-delegate {
+  margin-bottom: 24px;
+}
+.agent-settings summary,
+.agent-run summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.agent-settings form {
+  margin-top: 18px;
+}
+.agent-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin: 14px 0;
+}
+.agents-page label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.agents-page .agent-check {
+  flex-direction: row;
+  align-items: center;
+}
+.agents-page input,
+.agents-page select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+}
+.agents-page input[type="checkbox"] {
+  width: auto;
+}
+.agents-page fieldset {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 18px 0 8px;
+}
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+.agent-runs {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+.agent-run {
+  overflow-wrap: anywhere;
+}
+.agent-ticket {
+  font-size: 16px;
+  color: inherit;
+  text-align: left;
+  font-weight: 600;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.agent-run dl {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  font-size: 12px;
+}
+.agent-run dd {
+  margin: 0;
+  font-family: monospace;
+}
+.agent-error {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+}
+.agent-log {
+  position: fixed;
+  inset: 8vh 5vw;
+  width: min(1000px, 90vw);
+  height: 80vh;
+  z-index: 100;
+  margin: auto;
+  padding: 20px;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 0 0 100vmax #0009;
+}
+.agent-log pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  max-height: 90%;
+}
+@media (max-width: 700px) {
+  .agents-page {
+    padding: 14px;
+  }
+  .agents-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -1,6 +1,7 @@
+import { NetworkSettings } from "./NetworkSettings";
 import React, { useEffect, useState } from "react";
 import type { Column, ProjectState } from "../src/types";
-import { api } from "./api";
+import { api, isRemoteBrowser } from "./api";
 export function Settings({
   state,
   reload,
@@ -28,6 +29,7 @@ export function Settings({
       .catch(() => {});
   };
   useEffect(() => {
+    if (isRemoteBrowser()) return;
     loadCapture();
     const timer = setInterval(loadCapture, 3000);
     return () => clearInterval(timer);
@@ -60,8 +62,23 @@ export function Settings({
       onError(String(e));
     }
   }
+  if (isRemoteBrowser())
+    return (
+      <section className="settings-card">
+        <h2>Host settings</h2>
+        <p>
+          Network access, native capture, configuration, imports and restore are
+          managed on the host at 127.0.0.1. This remote browser can use the
+          board, discussions, project knowledge and screenshots.
+        </p>
+        <a className="button" href="/api/export">
+          Export project backup
+        </a>
+      </section>
+    );
   return (
     <div className="settings-grid">
+      <NetworkSettings />
       <section className="settings-card">
         <h2>Project & shared checkout</h2>
         <label className="field">
@@ -262,11 +279,11 @@ export function Settings({
           </div>
           <p className="help">
             If permissions are enabled but remain unconfirmed, use “Show current
-            capture app” to locate this build. Remove the old ControlRoom Capture
-            entry with the minus button in the relevant macOS privacy pane, add
-            this exact app, enable it, then relaunch. A region capture can still
-            be attempted when the preliminary Screen Recording check is
-            unconfirmed; macOS enforces access during capture.
+            capture app” to locate this build. Remove the old ControlRoom
+            Capture entry with the minus button in the relevant macOS privacy
+            pane, add this exact app, enable it, then relaunch. A region capture
+            can still be attempted when the preliminary Screen Recording check
+            is unconfirmed; macOS enforces access during capture.
           </p>
         </div>
         <label className="field">

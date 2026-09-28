@@ -33,6 +33,13 @@ export const SearchIcon = () => (
     <path d="m10.5 10.5 3 3" />
   </Svg>
 );
+export const EyeIcon = ({ hidden = false }: { hidden?: boolean }) => (
+  <Svg>
+    <path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8Z" />
+    <circle cx="8" cy="8" r="2" />
+    {hidden && <path d="m2 2 12 12" />}
+  </Svg>
+);
 export const PlusIcon = () => (
   <Svg>
     <path d="M8 3v10M3 8h10" />

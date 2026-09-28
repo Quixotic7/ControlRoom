@@ -331,6 +331,26 @@ test("CLI accepts hash IDs for reads, writes, relationships, and rejects interru
   await new Promise((resolve) => setTimeout(resolve, 150));
   await s.comment("1", "Wake hash waiter", human);
   assert.equal((await wait)?.change, "comment");
+  const questionnaire = await s.questionnaire(
+    "1",
+    [{ id: "answer", prompt: "Ready?", type: "text" }],
+    human,
+  );
+  const answerWait = waitForChange(s, "1", "comment", 3000);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await s.answerQuestionnaire(
+    questionnaire.id,
+    questionnaire.revision,
+    { answer: "Yes" },
+    human,
+  );
+  const answered = await answerWait;
+  assert.equal(answered?.change, "comment");
+  assert.equal(
+    answered?.comments.find((c) => c.id === questionnaire.id).answers[0].values
+      .answer,
+    "Yes",
+  );
   const start = Date.now();
   assert.equal(await waitForChange(s, "#1", "comment", 80), null);
   assert.ok(Date.now() - start < 1000);

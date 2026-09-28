@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, ConnectionError } from "./api";
+import { api, ConnectionError, isRemoteBrowser } from "./api";
 import { ImageIcon } from "./Icons";
 import { PageHeader } from "./Pages";
 
@@ -69,6 +69,16 @@ export function CaptureControl({ children }: { children: ReactNode }) {
       if (active.current) setBusy(false);
     }
   }
+  if (isRemoteBrowser())
+    return (
+      <>
+        <PageHeader
+          title="Screenshots"
+          description="Upload or paste images from this device. Native capture is available on the host Mac."
+        />
+        {children}
+      </>
+    );
   return (
     <>
       <PageHeader

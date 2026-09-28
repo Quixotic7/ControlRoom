@@ -1,3 +1,4 @@
+import { Questionnaire } from "./Questionnaire";
 import { useRef, useState } from "react";
 import type { Comment } from "../src/types";
 import { actor, ago, api } from "./api";
@@ -139,9 +140,19 @@ export function OpenQuestions({
       <h3>
         Open questions <span className="tag">{questions.length}</span>
       </h3>
-      {questions.map((q) => (
-        <Question key={q.id} question={q} {...props} />
-      ))}
+      {questions.map((q) =>
+        q.questions ? (
+          <Questionnaire
+            key={q.id}
+            question={q}
+            projectId={props.projectId}
+            disabled={props.disabled}
+            reload={props.reload}
+          />
+        ) : (
+          <Question key={q.id} question={q} {...props} />
+        ),
+      )}
     </section>
   );
 }

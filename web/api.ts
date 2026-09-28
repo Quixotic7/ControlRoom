@@ -64,6 +64,8 @@ export async function api<T = any>(
       res.ok ? "Invalid server response" : `Request failed (${res.status})`,
     );
   }
+  if (res.status === 401 && isRemoteBrowser())
+    window.dispatchEvent(new Event("controlroom:auth-required"));
   if (!res.ok)
     throw new ApiError(
       res.status,
@@ -114,4 +116,8 @@ export async function uploadImage(file: File) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+export function isRemoteBrowser() {
+  return typeof location !== "undefined" && location.hostname !== "127.0.0.1";
 }

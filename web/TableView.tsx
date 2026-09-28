@@ -1,3 +1,6 @@
+import { useTicketDrag } from "./TicketDrag";
+import type { ReactNode } from "react";
+import { ProgressReport } from "./ProgressReport";
 import { ticketNavigation } from "./ticketNavigation";
 import { useEffect, useRef, useState } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
@@ -7,6 +10,35 @@ import { ArrowUpIcon, BlockedIcon, Label, StageIcon } from "./Icons";
 import { priorities, priorityOf, type Context, type Group } from "./model";
 import { QuickTicket } from "./QuickTicket";
 import { Avatar, VerificationTag } from "./TicketCard";
+
+function DragRow({
+  record,
+  selected,
+  role,
+  children,
+}: {
+  record: RecordFile;
+  selected: boolean;
+  role?: string;
+  children: ReactNode;
+}) {
+  const drag = useTicketDrag(record);
+  return (
+    <tr
+      data-stage={role}
+      data-id={record.meta.id}
+      aria-selected={selected}
+      className={`${selected ? "selected " : ""}${drag.edge ? "insert-" + drag.edge : ""}`}
+      onKeyDown={drag.key}
+      onDragStart={drag.start}
+      onDragOver={drag.over}
+      onDragLeave={drag.leave}
+      onDrop={drag.drop}
+    >
+      {children}
+    </tr>
+  );
+}
 
 export function TableView({
   groups,
@@ -163,21 +195,11 @@ export function TableView({
                     (c) => c.id === r.meta.status,
                   )?.role;
                   return (
-                    <tr
+                    <DragRow
                       key={r.meta.id}
-                      data-stage={role}
-                      aria-selected={selected.has(r.meta.id)}
-                      className={selected.has(r.meta.id) ? "selected" : ""}
-                      onDragOver={(e) => canReorder && e.preventDefault()}
-                      onDrop={(e) => {
-                        const id = e.dataTransfer.getData(
-                          "text/workboard-ticket",
-                        );
-                        if (id && canReorder) {
-                          e.preventDefault();
-                          onPlace(id, r);
-                        }
-                      }}
+                      record={r}
+                      role={role}
+                      selected={selected.has(r.meta.id)}
                     >
                       <td className="row-check">
                         <input
@@ -210,7 +232,12 @@ export function TableView({
                             Blocked
                           </span>
                         )}
-                        {claim && <span className="tag claim">Claimed</span>}
+                        <ProgressReport
+                          record={r}
+                          claim={claim}
+                          role={role}
+                          checklist
+                        />
                         <VerificationTag record={r} />
                       </td>
                       <td>
@@ -292,7 +319,7 @@ export function TableView({
                           </button>
                         </td>
                       )}
-                    </tr>
+                    </DragRow>
                   );
                 })}
               {!isCollapsed && (

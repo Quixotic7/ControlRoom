@@ -1,8 +1,9 @@
+import { registerNetwork } from "./network.js";
+import { Orchestrator } from "./orchestration.js";
 import Fastify from "fastify";
 import staticFiles from "@fastify/static";
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { ZodError } from "zod";
@@ -40,13 +41,22 @@ export const toolRoot = path.resolve(
 );
 export async function buildServer(
   store: Store,
-  options: { webRoot?: string; dev?: boolean; native?: boolean } = {},
+  options: {
+    webRoot?: string;
+    dev?: boolean;
+    native?: boolean;
+    lan?: boolean;
+    addresses?: () => string[];
+  } = {},
 ) {
   store.initialize();
   if (!store.branchState().branchChanged) await store.migrateTicketNumbers();
   const projectId = store.config().projectId;
   const app = Fastify({ logger: false, bodyLimit: 50_000_000 });
-  const token = store.token();
+  const network = registerNetwork(app, store, options);
+  const orchestration = new Orchestrator(store);
+  orchestration.start();
+  app.addHook("onClose", () => orchestration.close());
   function actor(body: any): Actor {
     const a = body?.actor;
     if (
@@ -70,60 +80,50 @@ export async function buildServer(
     });
     if (status === 500) console.error(err);
   });
-  app.addHook("onRequest", async (req, reply) => {
-    const host = req.headers.host ?? "";
-    if (!/^127\.0\.0\.1(?::\d+)?$/.test(host))
-      throw new Problem(403, "Use the loopback address 127.0.0.1");
-    const origin = req.headers.origin;
-    if (origin && origin !== `http://${host}`)
-      throw new Problem(403, "Cross-origin access is not allowed");
-    reply
-      .header("X-Content-Type-Options", "nosniff")
-      .header("Referrer-Policy", "no-referrer");
-    // The router matches percent-decoded paths, so authorize by the matched route
-    // (or the decoded path for unmatched requests), never the raw URL.
-    const route = req.routeOptions.url;
-    if (route === "/health") return;
-    let pathname = req.url.split("?")[0];
-    try {
-      pathname = decodeURIComponent(pathname);
-    } catch {
-      /* Malformed escapes cannot match an API route. */
-    }
-    if (route?.startsWith("/api/") || /^\/+api(?:\/|$)/i.test(pathname)) {
-      const header = req.headers.authorization?.replace(/^Bearer /, "");
-      const cookie = req.headers.cookie
-        ?.split(";")
-        .map((s) => s.trim())
-        .find((s) => s.startsWith(`workboard_${projectId}=`))
-        ?.split("=")[1];
-      const supplied = header ?? cookie ?? "";
-      if (
-        supplied.length !== token.length ||
-        !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
-      )
-        throw new Problem(
-          401,
-          "Open Control Room locally or provide its project token",
-        );
-    } else {
-      if (req.headers["sec-fetch-site"] === "cross-site")
-        throw new Problem(403, "Open Control Room from its launcher");
-      reply.header(
-        "Set-Cookie",
-        `workboard_${projectId}=${token}; HttpOnly; SameSite=Strict; Path=/`,
-      );
-      reply.header(
-        "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://127.0.0.1:*; frame-ancestors 'none'; object-src 'none'",
-      );
-    }
-  });
   app.get("/health", async () => ({
     ok: true,
     project: store.config().projectId,
   }));
   app.get("/api/state", async () => store.state());
+  app.get("/api/orchestration", async () => orchestration.status());
+  app.get("/api/orchestration/:id/log", async (req: any) => ({
+    log: orchestration.log(req.params.id),
+  }));
+  app.put("/api/orchestration/config", async (req: any) =>
+    orchestration.configure(
+      req.body.config,
+      req.body.revision,
+      actor(req.body),
+    ),
+  );
+  app.post("/api/orchestration/queue", async (req: any) => {
+    if (!["plan", "work"].includes(req.body.kind))
+      throw new Problem(422, "Choose plan or work");
+    return orchestration.enqueue(
+      req.body.ticket,
+      req.body.kind,
+      req.body.worker,
+      actor(req.body),
+      req.body.revision,
+    );
+  });
+  app.post("/api/orchestration/:id/stop", async (req: any) =>
+    orchestration.stop(req.params.id, actor(req.body)),
+  );
+  app.post("/api/orchestration/:id/resume", async (req: any) =>
+    orchestration.resume(req.params.id, actor(req.body)),
+  );
+  app.post("/api/orchestration/:id/review-context", async (req: any) =>
+    orchestration.reviewContext(req.params.id, actor(req.body)),
+  );
+  app.post("/api/orchestration/:id/review", async (req: any) =>
+    orchestration.chatReview(
+      req.params.id,
+      req.body.token,
+      req.body.result,
+      actor(req.body),
+    ),
+  );
   app.post("/api/shutdown", async () => {
     setTimeout(() => process.kill(process.pid, "SIGTERM"), 100).unref();
     return { ok: true };
@@ -173,12 +173,36 @@ export async function buildServer(
       actor(b),
     );
   });
+  app.post("/api/records/:id/placement", async (req: any) =>
+    store.placement(
+      req.params.id,
+      req.body.revision,
+      req.body,
+      actor(req.body),
+    ),
+  );
   app.post("/api/records/:id/comments", async (req: any) =>
     store.comment(
       req.params.id,
       req.body.body ?? "",
       actor(req.body),
       req.body.kind,
+    ),
+  );
+  app.post("/api/records/:id/questionnaires", async (req: any) =>
+    store.questionnaire(
+      req.params.id,
+      req.body.questions,
+      actor(req.body),
+      req.body.replacing,
+    ),
+  );
+  app.post("/api/comments/:id/answers", async (req: any) =>
+    store.answerQuestionnaire(
+      req.params.id,
+      req.body.revision,
+      req.body.answers,
+      actor(req.body),
     ),
   );
   app.patch("/api/comments/:id", async (req: any) => {
@@ -220,9 +244,14 @@ export async function buildServer(
       },
     );
   });
-  app.patch("/api/config", async (req: any) =>
-    store.updateConfig(req.body.revision, req.body.patch),
-  );
+  app.patch("/api/config", async (req: any) => {
+    if ("orchestration" in (req.body.patch ?? {}))
+      throw new Problem(
+        403,
+        "Use the host Agents configuration controls to change orchestration authority",
+      );
+    return store.updateConfig(req.body.revision, req.body.patch);
+  });
   app.post("/api/reconcile", async (req: any) => {
     await store.reconcile(req.body.branch);
     return { ok: true };
@@ -303,7 +332,8 @@ export async function buildServer(
   const servicePort = () => Number(new URL(app.listeningOrigin).port);
   app.post("/api/active", async () => {
     activateCapture(store, servicePort());
-    if (options.native && captureStatus().state === "not-running") startCompanion(toolRoot);
+    if (options.native && captureStatus().state === "not-running")
+      startCompanion(toolRoot);
     return { ok: true };
   });
   app.get("/api/capture/status", async () => captureStatus());
@@ -439,7 +469,10 @@ export async function buildServer(
         return;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        for (const response of clients) response.write("data: changed\n\n");
+        for (const response of clients) {
+          if (eventAuth.get(response)?.()) response.write("data: changed\n\n");
+          else response.end();
+        }
       }, 100);
     });
     watcher.on("error", () => {
@@ -449,6 +482,10 @@ export async function buildServer(
   } catch {
     /* Periodic client refresh also supports systems without recursive watching. */
   }
+  const eventAuth = new WeakMap<object, () => boolean>();
+  const unsubscribeRevoke = network.onRevoke(() => {
+    for (const c of clients) if (!eventAuth.get(c)?.()) c.end();
+  });
   app.get("/api/events", async (req, reply) => {
     reply.hijack();
     reply.raw.writeHead(200, {
@@ -458,10 +495,14 @@ export async function buildServer(
     });
     reply.raw.write("data: connected\n\n");
     clients.add(reply.raw);
+    eventAuth.set(reply.raw, () => network.authorized(req));
     req.raw.on("close", () => clients.delete(reply.raw));
   });
   const heartbeat = setInterval(() => {
-    for (const response of clients) response.write(": ping\n\n");
+    for (const response of clients) {
+      if (eventAuth.get(response)?.()) response.write(": ping\n\n");
+      else response.end();
+    }
   }, 15000);
   heartbeat.unref();
   app.addHook("preClose", async () => {
@@ -472,6 +513,7 @@ export async function buildServer(
     const registration = path.join(captureRoot, `${projectId}.json`);
     if (fs.existsSync(registration)) fs.unlinkSync(registration);
     watcher?.close();
+    unsubscribeRevoke();
     clearInterval(heartbeat);
     clearTimeout(timer);
     for (const c of clients) c.end();

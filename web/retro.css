@@ -1,0 +1,639 @@
+/* Pixel fonts are bundled locally. Avoid fractional tracking and synthesized
+   weights, which soften the grid and make small control labels harder to read. */
+:root[data-pixel] {
+  -webkit-font-smoothing: auto;
+}
+:root[data-pixel] body {
+  font-size: 16px;
+}
+:root[data-pixel]
+  :is(
+    .button,
+    .eyebrow,
+    .nav-tab,
+    label,
+    .menu-label,
+    .view-tab,
+    .column-title,
+    .brand-name
+  ) {
+  letter-spacing: 0;
+}
+:root[data-pixel] :is(.button, .eyebrow, .menu-label) {
+  font-size: 12px;
+}
+:root[data-pixel] :is(input, textarea, select) {
+  font-family: var(--body);
+}
+:root:is([data-theme="gameboy"], [data-theme="elektron"]) body {
+  font-weight: 500;
+}
+:root:is([data-theme="gameboy"], [data-theme="elektron"])
+  :is(.card-title, .record-title input) {
+  font-family: var(--display);
+  font-weight: 400;
+}
+:root:is([data-theme="gameboy"], [data-theme="elektron"])
+  :is(.record-title input) {
+  font-size: 20px;
+}
+:root:is([data-theme="gameboy"], [data-theme="elektron"]) :is(.card-title) {
+  font-size: 12px;
+  line-height: 1.6;
+}
+:root:is([data-theme="gameboy"], [data-theme="elektron"])
+  :is(.button, .nav-tab) {
+  font-size: 11px;
+}
+
+.retro-window-menu {
+  display: none;
+}
+:root[data-window-chrome] .retro-window-menu {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+:root[data-window-chrome] .retro-window-menu > .menu > button {
+  border: 1px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  font-size: 15px;
+  padding: 2px 10px;
+  text-transform: none;
+  min-height: 26px;
+}
+:root[data-window-chrome] .retro-window-menu > .menu > button:hover,
+:root[data-window-chrome]
+  .retro-window-menu
+  > .menu
+  > button[aria-expanded="true"] {
+  background: var(--accent);
+  color: white;
+  border-color: var(--line);
+}
+:root[data-window-chrome]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 2px solid var(--line);
+  border-radius: 0;
+  box-shadow:
+    inset 1px 1px #fff,
+    inset -1px -1px #555,
+    5px 5px 0 #0007;
+}
+:root[data-window-chrome]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog)
+  > .dialog-top {
+  flex: 0 0 auto;
+  position: relative;
+  min-height: 34px;
+  margin: 3px;
+  padding: 3px 5px;
+  gap: 8px;
+  border-bottom: 0;
+  background: #000080;
+  color: #fff;
+}
+:root[data-window-chrome] .dialog-top :is(.eyebrow, h2) {
+  color: inherit;
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: 0;
+  margin: 0;
+}
+:root[data-window-chrome] .dialog-top > :not(button) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+:root[data-window-chrome] .annotation-dialog .dialog-top .eyebrow {
+  display: none;
+}
+:root[data-window-chrome] .dialog-top > .icon-button {
+  position: relative;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 4px;
+  border: 1px solid #333;
+  border-radius: 0;
+  color: #000;
+  background: #c0c0c0;
+  box-shadow:
+    inset 1px 1px #fff,
+    inset -1px -1px #555;
+  font-family: monospace;
+  font-size: 22px;
+  line-height: 1;
+}
+:root[data-window-chrome] .dialog-top > .icon-button:active {
+  box-shadow: inset 1px 1px #555;
+}
+:root[data-window-chrome] .dialog-top > .icon-button:focus-visible {
+  outline: 2px solid #ffdf00;
+  outline-offset: 2px;
+}
+:root[data-window-chrome] .record-title {
+  padding-top: 8px;
+}
+
+/* Windows 3.1: centered blue caption, system-menu close box on the left. */
+:root[data-window-chrome="win31"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog)
+  > .dialog-top {
+  border: 1px solid #000;
+  background: #0000a0;
+}
+:root[data-window-chrome="win31"] .dialog-top > :not(button) {
+  flex: 1;
+  text-align: center;
+  justify-content: center;
+}
+:root[data-window-chrome="win31"] .dialog-top > .icon-button {
+  order: -1;
+  font-size: 0;
+}
+:root[data-window-chrome="win31"] .dialog-top > .icon-button svg {
+  visibility: hidden;
+}
+:root[data-window-chrome="win31"] .dialog-top > .icon-button::after {
+  content: "";
+  position: absolute;
+  inset: 10px 4px;
+  background: #111;
+  border-top: 1px solid #fff;
+}
+
+/* System 7: horizontal grip stripes and a real close box to the left. */
+:root[data-window-chrome="mac7"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog)
+  > .dialog-top {
+  background: repeating-linear-gradient(to bottom, #eee 0 2px, #555 2px 3px);
+  color: #111;
+  border-top: 2px solid #eee;
+  border-bottom: 2px solid #eee;
+  justify-content: center;
+  min-height: 32px;
+  padding-left: 38px;
+  padding-right: 38px;
+}
+:root[data-window-chrome="mac7"] .dialog-top > :not(button) {
+  background: #eee;
+  padding: 0 10px;
+  text-align: center;
+  justify-content: center;
+  margin: 0 auto;
+}
+:root[data-window-chrome="mac7"] .dialog-top > .icon-button {
+  position: absolute;
+  left: 5px;
+  top: calc(50% - 11px);
+  order: -1;
+  flex-basis: 22px;
+  width: 22px;
+  height: 22px;
+  background: #eee;
+  border: 1px solid #111;
+  outline: 3px solid #eee;
+  font-size: 0;
+}
+:root[data-window-chrome="mac7"] .dialog-top > .icon-button svg {
+  visibility: hidden;
+}
+:root[data-window-chrome="mac7"] .dialog-top > .icon-button:focus-visible {
+  outline: 3px solid #006464;
+}
+
+/* Workbench: blue frame and broad, square close gadget. */
+:root[data-window-chrome="amiga"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 3px solid #174a96;
+}
+:root[data-window-chrome="amiga"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog)
+  > .dialog-top {
+  margin: 0;
+  background: #174a96;
+  box-shadow: inset 0 1px #87adff;
+}
+:root[data-window-chrome="amiga"] .dialog-top > .icon-button {
+  order: -1;
+  background: #e0e3e6;
+  border-color: #102038;
+  box-shadow:
+    inset 2px 2px #fff,
+    inset -2px -2px #697588;
+}
+:root[data-window-chrome="amiga"] .dialog-top > :not(button) {
+  flex: 1;
+}
+
+/* Screenshot-guided themes use original CSS shapes and textures. No game or
+   hardware artwork is shipped, and decorative layers never intercept input. */
+:root[data-theme="c64"] {
+  scrollbar-color: #aaa0eb #241c62;
+}
+:root[data-theme="c64"] .topnav {
+  background: #bfc0ce;
+  background-image: repeating-linear-gradient(to bottom, #eee9d8 0 2px, #625a85 2px 4px, #bfc0ce 4px 7px);
+  color: #211b42;
+  border-top: 6px solid transparent;
+  border-image: repeating-linear-gradient(
+      to bottom,
+      #f3f0da 0 2px,
+      #57517b 2px 4px,
+      #aaa2c9 4px 6px
+    )
+    6;
+  border-bottom: 3px solid #494071;
+}
+:root[data-theme="c64"] .topnav-row {
+  margin: 6px 0;
+  padding: 0 8px;
+  background: #bfc0ce;
+  border: 2px solid #e8e4dc;
+  border-radius: 18px;
+}
+:root[data-theme="c64"] .page-tabs button {
+  background: #bfc0ce;
+  border: 1px solid #635a99;
+}
+:root[data-theme="c64"] .topnav .icon-button {
+  background: #dbd6ed;
+}
+:root[data-theme="c64"]
+  .topnav
+  :is(
+    .brand,
+    .brandmark,
+    .project-name,
+    .crumb-sep,
+    .branch-chip,
+    .page-tabs button,
+    .icon-button
+  ) {
+  color: #211b42;
+}
+:root[data-theme="c64"] .brand-word::after {
+  content: "";
+  display: inline-block;
+  width: 30px;
+  height: 10px;
+  margin-left: 8px;
+  background: linear-gradient(
+    to bottom,
+    #c84c5c 0 20%,
+    #e69b49 20% 40%,
+    #e9dd67 40% 60%,
+    #81b965 60% 80%,
+    #6a8fbc 80%
+  );
+}
+:root[data-theme="c64"]
+  :is(
+    .brand-word,
+    .project-name,
+    .page-tabs button,
+    .view-tab > button,
+    .column-head strong,
+    .dialog-top .eyebrow,
+    .dialog-top h2
+  ) {
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+:root[data-theme="c64"] .page-tabs button[aria-current="page"],
+:root[data-theme="c64"] .view-tab.active {
+  background: #514693;
+  color: #fffdeb;
+  border-color: #ada4db;
+}
+:root[data-theme="c64"] .column-head,
+:root[data-theme="c64"] .group-header {
+  background: #bfc0ce;
+  color: #211b42;
+  border: 2px solid #635a99;
+  box-shadow: inset 1px 1px #f9f4df;
+}
+:root[data-theme="c64"]
+  :is(.column-head, .group-header)
+  :is(.icon-button, .count, .muted) {
+  color: #211b42;
+}
+:root[data-theme="c64"] .column-head {
+  border-top-color: var(--signal);
+}
+:root[data-theme="c64"] :is(.card-title, .record-title input) {
+  font-family: var(--display);
+  font-weight: 400;
+}
+:root[data-theme="c64"] .card-title {
+  font-size: 12px;
+  line-height: 1.6;
+}
+:root[data-theme="c64"] .record-title input {
+  font-size: 18px;
+}
+:root[data-theme="c64"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 4px solid #b2a9df;
+  box-shadow:
+    inset 2px 2px #f5f0de,
+    4px 4px 0 #161037;
+}
+:root[data-window-chrome="c64"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog)
+  > .dialog-top {
+  margin: 0;
+  padding: 4px 6px;
+  color: #211b42;
+  background: #bfc0ce;
+  border-bottom: 3px solid #635a99;
+}
+:root[data-window-chrome="c64"] .dialog-top > :not(button) {
+  flex: 1;
+}
+:root[data-window-chrome="c64"] .dialog-top > .icon-button {
+  order: -1;
+  flex-basis: 24px;
+  width: 24px;
+  height: 24px;
+  color: #211b42;
+  background: #dbd6ed;
+  border-color: #635a99;
+}
+:root[data-window-chrome="c64"] .retro-window-menu {
+  background: #40367c;
+  border-bottom: 2px solid #ada4db;
+}
+:root[data-window-chrome="c64"] .retro-window-menu > .menu > button {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 400;
+}
+:root[data-window-chrome="c64"]
+  .retro-window-menu
+  > .menu
+  > button:is(:hover, [aria-expanded="true"]) {
+  color: #211b42;
+}
+:root[data-theme="c64"] .menu-panel {
+  border: 3px solid #b2a9df;
+  border-radius: 0;
+  box-shadow: 3px 3px 0 #161037;
+}
+
+/* Header surfaces deliberately invert the surrounding theme; give nested
+   counters, parent links and approval tags matching local foreground tokens. */
+:root[data-theme="c64"] :is(.column-head, .group-header) {
+  --ink: #211b42;
+  --muted: #40367c;
+  --subtle: #dbd6ed;
+  --success: #2d541d;
+  --success-soft: #2d541d18;
+  --hover: #dbd6ed;
+}
+:root[data-theme="elektron"] .column-head {
+  --ink: #151907;
+  --muted: #303810;
+  --subtle: #e4f329;
+}
+:root[data-theme="snes"] :is(.column-head, .group-header) {
+  --ink: #f8f4c9;
+  --muted: #f8f4c9;
+  --subtle: #173b11;
+  --success: #d1f3b0;
+  --success-soft: #d1f3b018;
+  --hover: #173b11;
+}
+:root:is([data-theme="c64"], [data-theme="snes"]) .group-header .record-id {
+  color: var(--muted);
+}
+:root:is([data-theme="c64"], [data-theme="elektron"], [data-theme="snes"])
+  :is(.column-head, .group-header) .count {
+  color: var(--ink);
+  background: var(--subtle);
+}
+:root:is([data-theme="c64"], [data-theme="elektron"], [data-theme="snes"])
+  .column-head .stage-icon {
+  --signal: currentColor;
+}
+
+/* The Digitakt reference is a luminous yellow LCD set into black hardware. */
+:root[data-theme="elektron"] :is(.topnav, .filter-bar, .record-footer) {
+  background: #161715;
+}
+:root[data-theme="elektron"] .topnav {
+  border-bottom: 3px solid #080a07;
+}
+:root[data-theme="elektron"] :is(.brand-word, .project-name) {
+  color: #e4f329;
+}
+:root[data-theme="elektron"] .column-head {
+  background: #e4f329;
+  color: #151907;
+  border: 2px solid #080a07;
+}
+:root[data-theme="elektron"] .column-head :is(.icon-button, .count) {
+  color: #151907;
+}
+:root[data-theme="elektron"] .ticket-card {
+  background: #151a0c;
+  border: 1px solid #77882d;
+  border-left: 3px solid var(--signal);
+  box-shadow:
+    inset 0 0 12px #d9ec1710,
+    0 3px 0 #080a07;
+}
+:root[data-theme="elektron"] :is(.view-tab, .page-tabs button) {
+  color: #a5b8ff;
+  background: #24272a;
+  border: 1px solid #080a07;
+  box-shadow:
+    inset 0 1px #494e55,
+    0 2px #080a07;
+}
+:root[data-theme="elektron"] .view-tab.active,
+:root[data-theme="elektron"] .page-tabs button[aria-current="page"] {
+  background: #e4f329;
+  color: #151907;
+}
+:root[data-theme="elektron"] .view-tab.active :is(button, .layout-icon) {
+  color: #151907;
+}
+:root[data-theme="elektron"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 5px solid #30342a;
+  border-radius: 3px;
+  box-shadow:
+    0 0 0 2px #080a07,
+    0 12px 36px #000b;
+}
+:root[data-theme="elektron"] .dialog-top {
+  background: #e4f329;
+  color: #151907;
+}
+:root[data-theme="elektron"] .dialog-top :is(.eyebrow, h2, .icon-button) {
+  color: #151907;
+}
+
+/* SNES city-builder UI: gridded blue map space and raised stone toolbars. */
+:root[data-theme="snes"] .board-scroll {
+  background-color: #163d86;
+  background-image:
+    linear-gradient(#09295860 1px, transparent 1px),
+    linear-gradient(90deg, #09295860 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+:root[data-theme="snes"] .topnav {
+  border-bottom: 4px ridge #a9b3b0;
+}
+:root[data-theme="snes"] :is(.column-head, .group-header) {
+  background: #235619;
+  color: #f8f4c9;
+  border: 2px solid #112c0e;
+  box-shadow: inset 1px 1px #a2c884;
+}
+:root[data-theme="snes"]
+  :is(.column-head, .group-header)
+  :is(.count, .icon-button, .muted) {
+  color: #f8f4c9;
+}
+:root[data-theme="snes"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 4px ridge #a9b3b0;
+  border-radius: 0;
+  box-shadow:
+    0 0 0 2px #132953,
+    5px 5px 0 #102345;
+}
+:root[data-theme="snes"] .dialog-top {
+  background: #235619;
+  color: #f8f4c9;
+  border-bottom: 3px solid #122d0e;
+}
+:root[data-theme="snes"] .dialog-top :is(.eyebrow, h2, .icon-button) {
+  color: #f8f4c9;
+}
+:root[data-theme="snes"] :is(.card-title, .column-head strong) {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+/* Four-tone adventure screen: moss/grass surfaces and chunky terrain edges. */
+:root[data-theme="gameboy"] .board-scroll {
+  background-color: #65964a;
+  background-image:
+    repeating-linear-gradient(0deg, transparent 0 30px, #456b3326 30px 32px),
+    repeating-linear-gradient(90deg, transparent 0 30px, #456b3326 30px 32px);
+}
+:root[data-theme="gameboy"] .topnav {
+  border-bottom: 4px solid #556329;
+  box-shadow: 0 3px 0 #b9cf88;
+}
+:root[data-theme="gameboy"] :is(.column-head, .group-header) {
+  background: #b9cf88;
+  border: 2px solid #556329;
+  box-shadow:
+    inset 2px 2px #edf1be,
+    inset -2px -2px #7c9845;
+}
+:root[data-theme="gameboy"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 4px solid #556329;
+  border-radius: 0;
+  box-shadow:
+    0 0 0 3px #b9cf88,
+    0 0 0 6px #4a421f,
+    6px 6px 0 6px #4a421f;
+}
+:root[data-theme="gameboy"] .dialog-top {
+  background: #b9cf88;
+  border-bottom: 4px double #556329;
+}
+:root:is([data-theme="snes"], [data-theme="gameboy"])
+  .record-subtitle
+  .stage-pill {
+  color: #fff;
+}
+:root:is([data-theme="snes"], [data-theme="gameboy"])
+  .record-subtitle
+  .stage-pill
+  .stage-icon
+  :is(circle, path) {
+  stroke: #fff;
+}
+:root:is([data-theme="snes"], [data-theme="gameboy"])
+  .record-subtitle
+  .stage-pill
+  .stage-icon
+  [fill="var(--signal)"] {
+  fill: #fff;
+}
+
+/* Synthwave: neon framing and a horizon glow, leaving reading surfaces solid. */
+:root[data-theme="synthwave"] .board-scroll {
+  background-color: #150422;
+  background-image:
+    linear-gradient(#69d9ff1c 1px, transparent 1px),
+    linear-gradient(90deg, #69d9ff1c 1px, transparent 1px),
+    radial-gradient(ellipse at 70% 90%, #bd147866, transparent 65%);
+  background-size:
+    32px 32px,
+    32px 32px,
+    100% 100%;
+}
+:root[data-theme="synthwave"] .topnav {
+  background: linear-gradient(110deg, #230932, #3c0848, #170727);
+  border-bottom: 1px solid #ff45d4;
+  box-shadow: 0 2px 15px #ff17de40;
+}
+:root[data-theme="synthwave"] .brand-word {
+  font-style: italic;
+  color: #ff79ea;
+  text-shadow: 0 0 8px #f30dc1;
+}
+:root[data-theme="synthwave"] .view-tab.active,
+:root[data-theme="synthwave"] .page-tabs button[aria-current="page"] {
+  border-color: #ff45d4;
+  background: #63115c;
+  color: #fff0fc;
+  box-shadow: 0 0 10px #ed17d15c;
+}
+:root[data-theme="synthwave"] .column-head {
+  background: #24082f;
+  border-bottom: 1px solid #b62a97;
+}
+:root[data-theme="synthwave"] .ticket-card:hover {
+  box-shadow: 0 0 14px #ff25d54d;
+  border-color: #ff79ea;
+}
+:root[data-theme="synthwave"]
+  :is(.record-dialog, .annotation-dialog, .shortcuts-dialog) {
+  border: 1px solid #ff45d4;
+  box-shadow:
+    0 0 0 3px #4d0c53,
+    0 0 36px #f51ed04d;
+}
+:root[data-theme="synthwave"] .dialog-top {
+  background: linear-gradient(100deg, #3c0c4b, #24082f);
+  border-bottom: 1px solid #b62a97;
+}
+
+@media (max-width: 600px) {
+  :root[data-window-chrome] .dialog-top :is(.eyebrow, h2) {
+    font-size: 14px;
+  }
+  :root:is([data-theme="elektron"], [data-theme="gameboy"])
+    .record-title
+    input {
+    font-size: 16px;
+  }
+}

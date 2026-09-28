@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ProjectState } from "../src/types";
-import { api } from "./api";
+import { api, isRemoteBrowser } from "./api";
 
 // Loads project state and keeps it fresh from file-change events, a periodic
 // poll, and explicit reloads after mutations. Coalesce concurrent triggers,
@@ -37,7 +37,11 @@ export function useProjectState() {
     events.onmessage = () => void reload();
     const interval = setInterval(reload, 5000);
     const activate = () => {
-      if (document.visibilityState === "visible" && document.hasFocus())
+      if (
+        !isRemoteBrowser() &&
+        document.visibilityState === "visible" &&
+        document.hasFocus()
+      )
         api("/active", "POST", {}).catch(() => {});
     };
     const active = () => {

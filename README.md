@@ -56,6 +56,27 @@ cd /absolute/path/to/project
 
 To refresh an installation, build this checkout and run `./controlroom upgrade /absolute/path/to/project`. Project records and local images are preserved. Exit the running project service before upgrading it. The tool directory is Git-ignored; the command, metadata, and records remain portable. A fresh clone needs its tool installed again and an attachment backup restored if images are needed.
 
+## Access from another device on your LAN
+
+Local-only access is the default. To enable this project's trusted-LAN mode, stop its service and restart using its usual port:
+
+```sh
+./.controlroom/controlroom stop
+./.controlroom/controlroom serve --lan --port 4173
+```
+
+In the tool source checkout, use `./controlroom`; in a legacy installation, use `.workboard/controlroom`. **Settings & backups → Network access** also saves the mode and explains any required restart. The choice persists across normal launches. Local agents and native capture continue to connect through `127.0.0.1`.
+
+By default, open Settings on the host and generate a pairing code. Open the displayed LAN address on the other device and enter that code. Codes are single-use and expire after ten minutes; generating another replaces the previous code. **Paired access duration (hours)** sets how long new pairings last, from 0.25 (15 minutes) to 8760 (365 days), with an eight-hour default. Existing sessions keep their original expiry. **Revoke all remote sessions** disconnects them without changing local agent credentials.
+
+To open the board directly without a code, turn off **Require pairing code** in Network access. Devices on the permitted LAN can then read and edit the project without a session timer. Changing this option clears existing sessions and unused codes; turning it back on immediately requires fresh pairing. Disabling LAN blocks remote requests in either mode; restart with `--local` to return the listener to loopback only. Authentication settings persist across restarts and CLI mode changes.
+
+This mode uses **unencrypted HTTP on a trusted LAN**. It is not public hosting: there is no TLS, port forwarding, or automatic firewall change. Only current private IPv4 interface addresses are accepted; hostnames, public addresses, and IPv6 LAN access are not supported. If another device cannot connect, check the address in Settings, host firewall access, and Wi-Fi guest/client isolation. Reopen Settings after an interface address changes.
+
+Remote browsers can edit records, comments and screenshot annotations, upload images, and download backups after pairing, or directly when pairing is disabled. Network administration, native Mac capture, host-document imports, shared configuration, branch reconciliation, shutdown and backup restore remain available only on the host in both modes. Remote access permits project-wide editing; identity labels are attribution, not separate user permissions. Pairing after a session expires retains open ticket drafts. Do not share the local project token or put pairing credentials in URLs.
+
+LAN preferences and hashed sessions live in ignored `.local/` state. They are excluded from exports and Git; restoring or cloning a project starts with local-only defaults and requires fresh pairing.
+
 ## Daily workflow
 
 The interface is laid out like GitHub Projects and styled after Juice Machine Lab: a near-black dotted workspace (a light counterpart follows your system, or the **Theme** choice in the **⋯** menu), node-like cards with a thin border and a colored edge, small uppercase captions set in Rajdhani (bundled, no network needed), and a blue selection glow. Workflow stages carry status icons and colors: Backlog gray, Selected blue, In Progress cyan (half disc), Review orange (dot ring), and Done green (check). Labels take a stable color from their name. Shared appearance tokens live in `web/styles.css`, the project layout in `web/project.css`, and the icons and logo in `web/Icons.tsx`; Comfortable and Compact density sit beside Theme in the **⋯** menu, with screenshot upload, imports, and Settings.
@@ -64,6 +85,15 @@ The interface is laid out like GitHub Projects and styled after Juice Machine La
 - **Filters** use GitHub-style syntax: `label:ui`, `owner:"Agent A"`, `status:review`, `priority:high`, `parent:#0`, `is:blocked`, `is:claimed`, `is:open`, `no:owner`, `has:attachments`. Separate alternatives with commas (`label:ui,forms`) and prefix `-` to exclude (`-status:done`); other words match titles, descriptions, and numbers.
 - Create tickets and group related work beneath parent tickets. Grouped by parent goal, each goal heads its swimlane; click its header to open it. Use labels and priorities to organize tickets.
 - For quick entry, choose **＋ Add item** under any column (or at the end of a table group), type a title, and press Enter. The ticket lands in that column and group (parent, priority, owner, or label), the box stays open for another, and Escape closes it.
+- Ticket **Microtasks** are a Markdown checklist, separate from acceptance criteria and child tickets. Enter adds an item; arrow buttons reorder it. Save/close uses the ticket's revision protection. Completing the checklist never completes the ticket.
+- Agents can attach persistent **questionnaires** with choices and text answers. Drafts stay in this browser without a timeout. Only **Submit answers** records them; recommendations are not automatic answers. Replaced questions require explicit reconciliation, and previous answers remain in the conversation/history.
+- Cards, table rows and ticket details show attributed **progress estimates**, last reports and claim expiry. Elapsed time means the current In Progress session's wall-clock duration, not running-agent time. Moving back into In Progress begins a new session; old records without a start show **Start unknown**. Reports older than 30 minutes are marked stale.
+- Under **More actions → Theme**, choose System, Light, Dark, or ten retro/hardware presets with previews. Themes share the same controls, saved views and screenshot geometry.
+- Retro presets use locally bundled pixel typography. Elektron and Game Boy use chunkier display lettering. Windows 95, Windows 3.1, Commodore 64, Classic Mac System 7 and AmigaOS add period-inspired title bars and functional **File / View** menus to ticket, screenshot and shortcut windows. File actions use the existing save/close behavior; Escape closes an open menu before its window. These are inspired treatments rather than exact OS replicas. [Pixelify Sans](https://fontsource.org/fonts/pixelify-sans) and [Silkscreen](https://fontsource.org/fonts/silkscreen) are distributed with their original OFL notices in `web/public/licenses/` and the installed web assets.
+- Screenshot-guided presets include lavender tracker panels and silver rails (Commodore 64), acid-yellow LCD lettering on charcoal hardware (Elektron), ocean-blue map grids and green toolbars (SNES), neon-magenta frames and cyan grids (Synthwave), and moss/grass colors with stepped frames (Game Boy). These use original CSS and locally bundled fonts; reference screenshots, game sprites and hardware artwork are not shipped.
+- Drag the upper/lower half of a card or table row to preview insertion before/after it. The preview makes no writes; Escape cancels. Alt/Option + Up/Down moves a focused ticket with Manual or Priority sorting. Concurrent changes cancel stale moves.
+- Use a column's **eye button** to hide or show its tickets. The normal column width and header remain, and **Show all columns** restores every column. Visibility is remembered in this browser per project and saved view, separately from filters and group collapse; table views are unaffected.
+- A Done column's **⋯ → Archive completed tickets** previews the exact filtered set across expanded groups. Hidden columns and collapsed groups are excluded. Each ticket uses its previewed revision, with partial successes and conflicts reported. **Archived tickets** opens a searchable library with ticket details and Unarchive; restoring preserves its existing workflow stage. Children are never implicitly archived with a parent.
 - Inside a ticket, **Child tickets** has an always-ready title box. Enter creates a numbered child in the first configured Backlog/intake column, shown beside the input, and keeps the parent open for repeated entry. A new or edited parent saves first. Failed saves preserve the child title for retry; finishing children never automatically finishes their parent. **Attach existing ticket** searches by title or number, excludes ancestors and existing direct children, and shows when a ticket will move from another parent. Stale revisions are rejected.
 - Tickets display sequential numbers starting at **#0**. Numbers are durable Markdown metadata; existing internal identifiers remain intact so links and history survive upgrades. CLI commands accept a number such as `show 0`.
 - Ticket dialogs are centered and use 95% of the viewport height, with up to 1800px of width (clamped on smaller screens). Middle-click a ticket, or use Command/Ctrl-click, to open it in its own tab; its ticket URL survives refresh. Save, Close, Escape, and clicking the backdrop save changes and close the dialog. Saves send only the fields you changed: if someone else edited different fields meanwhile, your changes are applied on top of theirs. Overlapping edits or validation failures keep the draft open and let you keep your edits on top, reload theirs, or discard. **Discard changes** closes without saving. Add comments directly below the description; owner and label fields suggest existing values as you type.
@@ -204,3 +234,43 @@ The browser suite uses a sample project in an isolated temporary directory, sepa
 Native shortcut registration is testable without taking a screenshot. End-to-end desktop region selection and macOS permission dialogs require an interactive check on the user's desktop. The tool is local single-user software; hosted access, agent execution, automatic commits, and Windows/Linux native capture are not included.
 
 Local project sessions use separate authentication cookies so opening a second project on another loopback port does not invalidate the first. State refreshes coalesce concurrent triggers, retry read failures, and retain displayed work through an outage. **Reconnect now** retries explicitly; returning to the tab also refreshes. Writes are never automatically replayed.
+
+## Managed agents and orchestrator review
+
+Open **Agents** on the host (`127.0.0.1`). Orchestration is disabled on existing and new projects until a human enables it. Choose the code repository (which can differ from the board repository), a committed base branch/ref, a named reviewer, named workers, and an independent verification command. Unsaved changes in the main checkout are not copied into worker worktrees. Each profile supports Codex CLI or Claude Code, an executable path, and an optional model; leaving model blank uses that CLI's configured default. Install and authenticate the chosen CLI yourself first. Control Room does not install a global runtime, purchase a subscription, or store provider credentials.
+
+Delegate an approved ticket to a worker, or send an approved goal to the orchestrator for decomposition. Plans create child tickets with acceptance criteria and dependencies within that approved goal, then assign workers. A goal with existing children must have those children delegated explicitly; rerunning a plan never silently duplicates them. The parent stays open for a separate outcome review.
+
+Workers run in retained `.controlroom/.local/orchestration/worktrees/` Git worktrees, renew their execution claims, and produce structured handoffs. The controller runs the configured verification command independently and commits remaining implementation changes **in that worker checkout**. A separate, read-only reviewer examines the diff, criteria, decisions, rules and evidence. The controller verifies the reviewed code again before admitting an accept/changes/human outcome. A worker exit or green command alone never completes a ticket. Ordinary CLI/API writes cannot create review receipts, approve scope, or self-accept Done.
+
+Use **Require human acceptance** on a ticket for a mandatory human gate. The project policy can also require every parent goal or every ticket to be accepted by a human. Uncertainty, missing results, failed checks, revoked authority, changed context/code, overlap with another unmerged submission, and resource limits become explicit questions in **Needs you**. Questions have no expiry. Answer and resolve the question to resume with current context; for mandatory acceptance, accept or request changes on the ticket. A human can always override or reopen a ticket.
+
+Acceptance records the reviewer, worker, ticket revision, code identity, checked criteria, evidence and integration state in Markdown. It does **not** merge, push or deploy. Merge accepted worker branches into the configured base yourself; dependent managed work checks commit ancestry and waits until that integration occurs. Integration remains labeled “not performed” by Control Room, even after a manual merge. Automatic branch integration is intentionally not enabled in this version.
+
+The concurrency limit bounds all worker/planner/reviewer processes; a named profile runs at most one process at once. The time limit applies separately to the model and verification step, output is bounded, Claude also has a configurable turn limit, and corrective retries have a configured attempt cap. Codex uses noninteractive sandbox permissions; Claude uses `acceptEdits` for workers and `plan` mode for readers. Permission denials or unavailable credentials/tools require human attention; no unsafe permission-bypass flags are used. Profile names provide attribution, not a security boundary against other processes sharing your local account.
+
+The dashboard separates assignments, verified processes, last reported events, reviews and recovery states. Logs, prompts/results and process journals are local and excluded from backups/Git; logs may contain project content. Cancellation stops the owned process group and retains its checkout and branch. A service restart holds queued/in-flight runs for explicit recovery instead of launching duplicates. It never blindly kills a recovered PID. Inspect any surviving process, stop it in its original terminal, then resume. Configuration changes interrupt active runs and require an explicit retry. Worktrees are retained until you remove them with normal Git tools after reviewing/integrating the work.
+
+CLI examples (readable by default; add `--json`):
+
+```sh
+controlroom agents status
+controlroom agents configure --file agent-config.json --etag CONFIG_REVISION
+# assignment.json: {"ticket":"65","revision":"CURRENT_TICKET_ETAG","kind":"work","worker":"Worker 1"}
+controlroom agents queue --file assignment.json
+controlroom agents log RUN_ID
+controlroom agents stop RUN_ID
+controlroom agents resume RUN_ID
+```
+
+Configuration and recovery require a human actor. The designated orchestrator can delegate and stop runs through CLI or MCP `agent_runs`, `delegate_ticket`, and `stop_agent_run`. Managed acceptance is admitted only from the service's verified review pipeline, not from a tool caller's claimed reviewer name. The same host-only authentication and write serialization apply to the HTTP surface.
+
+Adapter references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) and [Claude Code programmatic use](https://code.claude.com/docs/en/headless). The regression trial uses executable fixture harnesses for both structured output formats; it does not spend provider usage. Validate your installed CLI/model with a small approved ticket before assigning substantial work.
+
+### Orchestrating from an existing chat
+
+Choose **Orchestration location → Existing chat orchestrator** and name that chat's agent identity. Worker profiles still use their configured CLI/model. Completed submissions wait in `awaiting_review`; no separate planner/reviewer model is launched. Decompose goals in the chat, create children within approved scope, and delegate each through the board. The chat is not automatically awakened or monitored by this setting.
+
+The named chat reviewer retrieves `agents review-context RUN` (MCP `agent_review_context`), inspects the returned worktree/base diff and ticket context, then sends `agents review RUN --file review.json` (MCP `review_agent_submission`). The JSON contains the returned `token` and `result: {outcome, summary, criteria, evidence, question}`. Outcome is accept, changes or human; use an empty question when none is needed. The service reruns verification, enforces mandatory human review and scope, and rejects stale context/code/configuration. Review tokens confer no scope or role authority. Reviewer identity is workflow attribution on the shared local account.
+
+Worker selection is deliberate: every work assignment requires an explicit configured worker. The orchestrator chooses based on task complexity, uncertainty, risk and observed model performance, recording the reason in the ticket. The UI shows each worker's model and leaves delegation disabled until one is selected. Managed planners receive the model roster and include their selection reasons in child descriptions. There is no round-robin or automatic substitute when a profile is removed; retries retain the selected worker.

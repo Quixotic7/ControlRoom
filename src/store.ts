@@ -1,3 +1,5 @@
+import { questionsSchema, questionText } from "./questionnaire.js";
+import type { AgentReviewReceipt, Assignment } from "./orchestration-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -98,8 +100,18 @@ const metaSchema = z
     evidence: z.string().optional(),
     reviewInstructions: z.string().max(10000).optional(),
     manualReviewRequired: z.boolean().optional(),
+    humanReviewRequired: z.boolean().optional(),
     reviewVerificationAt: z.string().optional(),
     question: z.string().optional(),
+    progressStartedAt: z.string().datetime().optional(),
+    progress: z
+      .object({
+        note: z.string().trim().min(1).max(5000),
+        percent: z.number().min(0).max(100).optional(),
+        at: z.string().datetime(),
+        actor: actorSchema,
+      })
+      .optional(),
     exceptions: z.string().optional(),
     scope: strings.optional(),
     strength: z.enum(["required", "recommended"]).optional(),
@@ -268,6 +280,8 @@ export class Store {
     return this.cached(file, (text) => {
       const p = parseMd(text);
       actorSchema.parse(p.meta.actor);
+      if (p.meta.questions)
+        p.meta.questions = questionsSchema.parse(p.meta.questions);
       return { ...p.meta, body: p.body, revision: hash(text) } as Comment;
     });
   }
@@ -477,13 +491,18 @@ export class Store {
     }
     return undefined;
   }
-  private authority(actor: Actor, next: Meta, old?: RecordFile) {
+  private authority(
+    actor: Actor,
+    next: Meta,
+    old?: RecordFile,
+    managed = false,
+  ) {
     actorSchema.parse(actor);
     if (actor.kind !== "agent" || next.kind !== "ticket") return;
     if (next.scopeApproved !== old?.meta.scopeApproved && next.scopeApproved)
       throw new Problem(403, "Only a human can approve task scope");
     const role = this.config().columns.find((c) => c.id === next.status)?.role;
-    if (role === "done" && old?.meta.status !== next.status)
+    if (!managed && role === "done" && old?.meta.status !== next.status)
       throw new Problem(
         403,
         "Agents submit work to Review; a human accepts Done",
@@ -558,6 +577,13 @@ export class Store {
     body: string,
     actor: Actor,
   ): RecordFile {
+    if (input.assignment || input.agentReview)
+      throw new Problem(
+        403,
+        "Managed assignments and review receipts are service-owned",
+      );
+    if (actor.kind === "agent" && input.humanReviewRequired)
+      throw new Problem(403, "Human review policy is set by a human");
     if (!["ticket", "decision", "rule"].includes(kind))
       throw new Problem(400, "Unknown record type");
     const stamp = now(),
@@ -577,9 +603,17 @@ export class Store {
       updatedAt: stamp,
       author: actor,
     } as Meta;
+    if (kind === "ticket" && meta.progress)
+      meta.progress = { ...meta.progress, at: stamp, actor };
     this.validate(meta);
     this.authority(actor, meta);
     if (kind === "ticket") meta.number = this.reserveTicketNumber();
+    if (
+      kind === "ticket" &&
+      this.config().columns.find((c) => c.id === meta.status)?.role ===
+        "progress"
+    )
+      meta.progressStartedAt = stamp;
     if (kind === "ticket" && meta.order === undefined) meta.order = Date.now();
     if (kind === "ticket")
       meta.reviewedRules = Object.fromEntries(
@@ -606,8 +640,37 @@ export class Store {
     patch: Record<string, unknown>,
     body: string | undefined,
     actor: Actor,
+    managed = false,
   ): RecordFile {
     const old = this.get(id);
+    for (const key of ["assignment", "agentReview"])
+      if (
+        !managed &&
+        key in patch &&
+        JSON.stringify(patch[key]) !== JSON.stringify(old.meta[key])
+      )
+        throw new Problem(
+          403,
+          "Managed assignments and review receipts are service-owned",
+        );
+    if (
+      actor.kind === "agent" &&
+      "humanReviewRequired" in patch &&
+      patch.humanReviewRequired !== old.meta.humanReviewRequired
+    )
+      throw new Problem(403, "Only a human can change mandatory human review");
+    const assignment = old.meta.assignment as Assignment | undefined;
+    if (
+      !managed &&
+      actor.kind === "agent" &&
+      assignment &&
+      assignment.state !== "released" &&
+      assignment.worker !== actor.name
+    )
+      throw new Problem(
+        409,
+        `Assigned to ${assignment.worker}; request reassignment instead of overwriting their work`,
+      );
     id = old.meta.id;
     if (old.revision !== revision)
       throw new Problem(
@@ -637,9 +700,29 @@ export class Store {
           (patch.verification as Verification | undefined)?.at ?? "",
       };
     }
+    if (old.meta.kind === "ticket") {
+      const role = (status: string) =>
+        this.config().columns.find((c) => c.id === status)?.role;
+      if (
+        role(String(patch.status ?? old.meta.status)) === "done" &&
+        role(old.meta.status) !== "done"
+      )
+        patch = { ...patch, acceptedBy: actor };
+      if (
+        role(String(patch.status ?? old.meta.status)) === "progress" &&
+        role(old.meta.status) !== "progress"
+      )
+        patch = { ...patch, progressStartedAt: now() };
+      // The service stamps reports; identity labels are attribution, not process supervision.
+      if (patch.progress)
+        patch = {
+          ...patch,
+          progress: { ...(patch.progress as object), at: now(), actor },
+        };
+    }
     const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
     this.validate(meta);
-    this.authority(actor, meta, old);
+    this.authority(actor, meta, old, managed);
     if (
       meta.kind === "ticket" &&
       actor.kind === "agent" &&
@@ -685,6 +768,88 @@ export class Store {
     actor: Actor,
   ) {
     return this.write(() => this.updateNow(id, revision, patch, body, actor));
+  }
+  // Internal controller entry point; never exposed as a generic HTTP/CLI patch.
+  // All admission checks run again inside the board's serialized writer.
+  managedUpdate(
+    id: string,
+    revision: string,
+    patch: Record<string, unknown>,
+    actor: Actor,
+    guard: () => void,
+    receipt?: AgentReviewReceipt,
+  ) {
+    return this.write(() => {
+      guard();
+      const old = this.get(id);
+      if (!this.scope(old))
+        throw new Problem(403, "Approved scope was revoked");
+      if (receipt) {
+        const config = this.config().orchestration as
+          | {
+              enabled?: boolean;
+              reviewer?: { name: string };
+              humanPolicy?: string;
+            }
+          | undefined;
+        const assignment = old.meta.assignment as Assignment | undefined;
+        if (
+          !config?.enabled ||
+          actor.kind !== "agent" ||
+          config.reviewer?.name !== actor.name ||
+          receipt.reviewer !== actor.name
+        )
+          throw new Problem(403, "Reviewer authority was revoked");
+        if (
+          receipt.worker === receipt.reviewer ||
+          assignment?.worker !== receipt.worker ||
+          assignment?.runId !== receipt.submission ||
+          assignment.state !== "submitted"
+        )
+          throw new Problem(
+            403,
+            "An independent reviewer and current submission are required",
+          );
+        if (
+          this.config().columns.find((c) => c.id === old.meta.status)?.role !==
+          "review"
+        )
+          throw new Problem(409, "Submission is no longer in Review");
+        if (
+          receipt.outcome === "accept" &&
+          (old.meta.humanReviewRequired ||
+            config.humanPolicy === "all" ||
+            (config.humanPolicy === "parents" &&
+              this.list().some((r) => r.meta.parent === id)))
+        )
+          throw new Problem(403, "This ticket requires human acceptance");
+        patch = { ...patch, agentReview: receipt };
+      }
+      return this.updateNow(id, revision, patch, undefined, actor, true);
+    });
+  }
+  placement(id: string, revision: string, input: unknown, actor: Actor) {
+    return this.write(() => {
+      const data = z
+        .object({
+          expected: z
+            .array(z.object({ id: z.string(), revision: z.string() }))
+            .max(10000),
+          patch: z.object({
+            status: z.string(),
+            order: z.number().finite(),
+            priority: z.number().int().min(0).max(3).optional(),
+          }),
+        })
+        .parse(input);
+      for (const r of data.expected)
+        if (this.get(r.id).revision !== r.revision)
+          throw new Problem(
+            409,
+            "Ticket order changed. Reload and retry your move.",
+          );
+      return this.updateNow(id, revision, data.patch, undefined, actor);
+    });
   }
   comment(
     ticket: string,
@@ -825,6 +990,119 @@ export class Store {
     atomic(this.file(`records/comments/${meta.id}.md`), markdown(meta, body));
     return meta;
   }
+  questionnaire(
+    ticket: string,
+    input: unknown,
+    actor: Actor,
+    replacing?: { id: string; revision: string },
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      const questions = questionsSchema.parse(input),
+        record = this.get(ticket);
+      if (record.meta.kind !== "ticket")
+        throw new Problem(422, "Questionnaires belong to tickets");
+      const id = replacing?.id ?? uid("comment");
+      if (!/^[A-Za-z0-9_-]+$/.test(id))
+        throw new Problem(400, "Invalid questionnaire ID");
+      const p = this.file(`records/comments/${id}.md`);
+      let original: Comment | undefined;
+      if (replacing) {
+        original = this.loadComment(p);
+        if (original.ticket !== record.meta.id || !original.questions)
+          throw new Problem(422, "Not this ticket's questionnaire");
+        if (original.revision !== replacing.revision)
+          throw new Problem(
+            409,
+            "Questionnaire changed. Reload before editing.",
+          );
+      }
+      const body =
+          questionText(questions) +
+          (original
+            ? "\n\n## Previous questionnaire and answers\n\n" + original.body
+            : ""),
+        stamp = now();
+      const meta = {
+        id,
+        ticket: record.meta.id,
+        actor: original?.actor ?? actor,
+        at: original?.at ?? stamp,
+        kind: "question",
+        resolved: false,
+        questions,
+        answers: original?.answers ?? [],
+        editedAt: stamp,
+        editedBy: actor,
+      };
+      if (original)
+        this.history(
+          record.meta.id,
+          actor,
+          "questionnaire replaced",
+          original,
+          { ...meta, body },
+        );
+      atomic(p, original ? patchMd(read(p), meta, body) : markdown(meta, body));
+      return this.loadComment(p);
+    });
+  }
+  answerQuestionnaire(
+    id: string,
+    revision: string,
+    input: unknown,
+    actor: Actor,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Questionnaire answers require a human");
+      if (!/^[A-Za-z0-9_-]+$/.test(id))
+        throw new Problem(400, "Invalid questionnaire ID");
+      const p = this.file(`records/comments/${id}.md`),
+        original = this.loadComment(p);
+      if (original.revision !== revision)
+        throw new Problem(
+          409,
+          "Questionnaire or answers changed. Reload and reconcile your draft.",
+        );
+      const questions = questionsSchema.parse(original.questions);
+      const values = z
+        .record(z.string(), z.string().trim().max(10000))
+        .parse(input);
+      if (Object.keys(values).some((k) => !questions.some((q) => q.id === k)))
+        throw new Problem(422, "Unknown question ID");
+      if (questions.some((q) => q.required && !values[q.id]?.trim()))
+        throw new Problem(
+          422,
+          "Answer all required questions before submitting",
+        );
+      if (!Object.values(values).some((v) => v.trim()))
+        throw new Problem(422, "Supply an answer before submitting");
+      const answer = { actor, at: now(), questions, values };
+      const body =
+        original.body +
+        `\n\n## Answers from ${actor.name} at ${answer.at}\n\n` +
+        questions
+          .map(
+            (q) =>
+              `### ${q.id}: ${q.prompt}\n\n${values[q.id] || "(No answer supplied)"}`,
+          )
+          .join("\n\n");
+      const patch = {
+        answers: [...(original.answers ?? []), answer],
+        resolved: true,
+        resolvedBy: actor,
+        resolvedAt: answer.at,
+      };
+      atomic(p, patchMd(read(p), patch, body));
+      this.history(original.ticket, actor, "questionnaire answered", original, {
+        ...patch,
+        body,
+      });
+      return this.loadComment(p);
+    });
+  }
   resolveComment(
     id: string,
     revision: string,
@@ -849,6 +1127,14 @@ export class Store {
   claim(ticket: string, actor: Actor, worktree: string, release = false) {
     return this.write(() => {
       const r = this.get(ticket);
+      const assignment = r.meta.assignment as Assignment | undefined;
+      if (
+        !release &&
+        assignment &&
+        assignment.state !== "released" &&
+        assignment.worker !== actor.name
+      )
+        throw new Problem(409, `Assigned to ${assignment.worker}`);
       ticket = r.meta.id;
       if (r.meta.kind !== "ticket")
         throw new Problem(422, "Only tickets can be claimed");
@@ -1011,6 +1297,13 @@ export class Store {
     const claims = this.claims();
     const stamp = now();
     const candidates = this.list().filter((r) => {
+      const assignment = r.meta.assignment as Assignment | undefined;
+      if (
+        assignment &&
+        assignment.state !== "released" &&
+        assignment.worker !== actor.name
+      )
+        return false;
       if (r.meta.kind !== "ticket" || r.meta.archived || r.meta.blocked)
         return false;
       const stage = role(r);
@@ -1070,11 +1363,27 @@ export class Store {
       `Record ID: ${t.meta.id} · Revision (use as --etag): ${t.revision}`,
     ];
     if (c.parent) lines.push(`Parent: ${ref(c.parent)} ${c.parent.meta.title}`);
+    if (t.meta.assignment)
+      lines.push(
+        `Managed assignment: ${t.meta.assignment.worker} · ${t.meta.assignment.state} · run ${t.meta.assignment.runId}. Follow the managed run prompt; the controller owns claims, verification and review writes.`,
+      );
+    if (t.meta.agentReview)
+      lines.push(
+        `Last orchestrator review: ${t.meta.agentReview.reviewer} reviewed ${t.meta.agentReview.worker}'s submission: ${t.meta.agentReview.outcome}. Code: ${t.meta.agentReview.code}. Integration: ${t.meta.agentReview.integration}. ${t.meta.agentReview.rationale}`,
+      );
     lines.push(
       c.approvedScope
         ? `Approved scope: ${ref(c.approvedScope)} ${c.approvedScope.meta.title}`
         : "Approved scope: none. Selecting or implementing this ticket needs a human to approve its scope first.",
     );
+    if (t.meta.progress)
+      lines.push(
+        `Last reported progress: ${t.meta.progress.note} (${t.meta.progress.percent === undefined ? "no estimate" : t.meta.progress.percent + "% estimate"}, ${t.meta.progress.at}, ${t.meta.progress.actor.name})`,
+      );
+    if (t.meta.progressStartedAt)
+      lines.push(
+        `Current In Progress session began: ${t.meta.progressStartedAt} (wall-clock, not active agent time)`,
+      );
     if (t.meta.blocked) lines.push(`Blocked: ${t.meta.blocked}`);
     if (t.meta.branch) lines.push(`Branch: ${t.meta.branch}`);
     if (t.meta.pr) lines.push(`Pull request: ${t.meta.pr}`);
@@ -1162,13 +1471,18 @@ export class Store {
       "",
       decisionProtocol,
       "",
-      `Claim before working: \`controlroom claim ${t.meta.number ?? t.meta.id}\`. Record discoveries with \`controlroom comment ${t.meta.number ?? t.meta.id} --body ...\` and questions with \`controlroom ask\`. Submit with \`controlroom review ${t.meta.number ?? t.meta.id} --etag ${t.revision} --handoff ... --review-notes "Human review steps and expected results" --evidence ... --run "test command"\`. Moving agent work into Review posts the handoff, review steps, and evidence to the conversation. A human moves work to Done.`,
+      `Claim before working: \`controlroom claim ${t.meta.number ?? t.meta.id}\`. Record discoveries with \`controlroom comment ${t.meta.number ?? t.meta.id} --body ...\` and questions with \`controlroom ask\`. Submit with \`controlroom review ${t.meta.number ?? t.meta.id} --etag ${t.revision} --handoff ... --review-notes "Human review steps and expected results" --evidence ... --run "test command"\`. Moving agent work into Review posts the handoff, review steps, and evidence to the conversation. A human accepts work into Done, or an explicitly enabled managed orchestrator records an independent review receipt. Ordinary worker commands cannot accept Done.`,
     );
     const markdown = lines.join("\n") + "\n";
     return { markdown, tokens: Math.ceil(markdown.length / 4) };
   }
-  updateConfig(revision: string, patch: Partial<Config>) {
+  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor) {
     return this.write(() => {
+      if ("orchestration" in patch && actor?.kind !== "human")
+        throw new Problem(
+          403,
+          "Only a human can configure orchestrator authority",
+        );
       const p = this.file("config.yml"),
         s = read(p);
       if (hash(s) !== revision) throw new Problem(409, "Configuration changed");
@@ -1202,7 +1516,16 @@ export class Store {
             422,
             `Move tickets out of ${r.meta.status} before removing it`,
           );
+      const before = this.config().orchestration;
       atomic(p, YAML.stringify(c));
+      if ("orchestration" in patch)
+        this.history(
+          "project",
+          actor!,
+          "orchestration configured",
+          before,
+          patch.orchestration,
+        );
       return c;
     });
   }

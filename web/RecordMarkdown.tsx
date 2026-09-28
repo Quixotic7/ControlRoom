@@ -1,5 +1,5 @@
-import React from "react";
-import Markdown from "react-markdown";
+import React, { createContext, useContext } from "react";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { uploadImage } from "./api";
 
@@ -10,6 +10,50 @@ const imageLink = /^#image=([\w-]+)$/;
 const baseImage = /^\/api\/images\/([\w-]+)\/base$/;
 export const imageMarkdown = (id: string, name = "Screenshot") =>
   `[![${name.replace(/[[\]]/g, "")}](/api/images/${id}/base)](#image=${id})`;
+
+// Keep renderer identities stable across editor keystrokes. Inline component
+// functions remount the Markdown subtree, restarting lazy image loads and
+// collapsing its height. Context supplies the current annotation callback
+// without changing the link component's identity.
+const OpenImage = createContext<((id: string) => void) | undefined>(undefined);
+const components: Components = {
+  a: function RecordLink({ href, children }) {
+    const openImage = useContext(OpenImage);
+    const id = href?.match(imageLink)?.[1];
+    if (id && openImage)
+      return (
+        <button
+          type="button"
+          className="inline-image"
+          title="Open to annotate"
+          onClick={() => openImage(id)}
+        >
+          {children}
+        </button>
+      );
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  },
+  img: function RecordImage({ src, alt }) {
+    const id = typeof src === "string" ? src.match(baseImage)?.[1] : null;
+    if (id)
+      return (
+        <img
+          src={`/api/images/${id}/preview`}
+          alt={alt ?? "Screenshot"}
+          loading="lazy"
+          onError={(e) => {
+            const img = e.currentTarget;
+            if (!img.src.endsWith("/base")) img.src = src as string;
+          }}
+        />
+      );
+    return <img src={src} alt={alt ?? ""} loading="lazy" />;
+  },
+};
 
 // Renders record Markdown; image links open the annotation editor in place.
 export function RecordMarkdown({
@@ -22,50 +66,15 @@ export function RecordMarkdown({
   gfm?: boolean;
 }) {
   return (
-    <Markdown
-      remarkPlugins={gfm ? [remarkGfm] : []}
-      skipHtml
-      components={{
-        a: ({ href, children: inner }) => {
-          const id = href?.match(imageLink)?.[1];
-          if (id && openImage)
-            return (
-              <button
-                type="button"
-                className="inline-image"
-                title="Open to annotate"
-                onClick={() => openImage(id)}
-              >
-                {inner}
-              </button>
-            );
-          return (
-            <a href={href} target="_blank" rel="noreferrer">
-              {inner}
-            </a>
-          );
-        },
-        img: ({ src, alt }) => {
-          const id = typeof src === "string" ? src.match(baseImage)?.[1] : null;
-          // Prefer the annotated preview; fall back to the base image.
-          if (id)
-            return (
-              <img
-                src={`/api/images/${id}/preview`}
-                alt={alt ?? "Screenshot"}
-                loading="lazy"
-                onError={(e) => {
-                  const img = e.currentTarget;
-                  if (!img.src.endsWith("/base")) img.src = src as string;
-                }}
-              />
-            );
-          return <img src={src} alt={alt ?? ""} loading="lazy" />;
-        },
-      }}
-    >
-      {children}
-    </Markdown>
+    <OpenImage.Provider value={openImage}>
+      <Markdown
+        remarkPlugins={gfm ? [remarkGfm] : []}
+        skipHtml
+        components={components}
+      >
+        {children}
+      </Markdown>
+    </OpenImage.Provider>
   );
 }
 

@@ -1,3 +1,6 @@
+import { randomUUID } from "./browserUtils";
+import { WindowMenu } from "./WindowMenu";
+import { isRemoteBrowser } from "./api";
 import React, { useEffect, useRef, useState } from "react";
 import type {
   Annotation,
@@ -57,7 +60,7 @@ export function AnnotationEditor({
     titleInput = useRef<HTMLInputElement>(null);
   const saveToTicket = useRef<HTMLButtonElement>(null),
     attaching = useRef(false);
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(randomUUID());
   const [titlePrompt, setTitlePrompt] = useState(false),
     [uncertain, setUncertain] = useState(false);
   function cancelTitle() {
@@ -104,9 +107,10 @@ export function AnnotationEditor({
         change(a.annotations);
       })
       .catch((e) => setError(String(e)));
-    api("/capture/projects")
-      .then(setProjects)
-      .catch(() => {});
+    if (!isRemoteBrowser())
+      api("/capture/projects")
+        .then(setProjects)
+        .catch(() => {});
     return () => dialog.current?.close();
   }, [id]);
   const point = (e: React.PointerEvent) => {
@@ -147,7 +151,7 @@ export function AnnotationEditor({
     }
     stash();
     const note: Annotation = {
-      id: "note-" + crypto.randomUUID(),
+      id: "note-" + randomUUID(),
       type: tool,
       ...p,
       x2: p.x,
@@ -528,6 +532,29 @@ export function AnnotationEditor({
           ×
         </button>
       </header>
+      <WindowMenu
+        file={[
+          {
+            label: "Save",
+            run: () => void save(),
+            disabled: saving || !asset || !!asset.trashedAt,
+          },
+          {
+            label: "Save and close",
+            run: () =>
+              void save().then((ok) => {
+                if (ok) onClose();
+              }),
+            disabled: saving || !asset || !!asset.trashedAt,
+          },
+          { label: "Close window", run: requestClose, disabled: saving },
+        ]}
+        view={[
+          { label: "Select / move", run: () => setTool("select") },
+          { label: "Draw", run: () => setTool("draw") },
+          { label: "Pin", run: () => setTool("pin") },
+        ]}
+      />
       {confirmClose && dirty && (
         <div className="banner" role="alert">
           You have unsaved annotation changes.

@@ -40,6 +40,101 @@ export async function startMcp(
     typeof v === "string" ? v : JSON.stringify(v, null, 2);
   const tools: Tool[] = [
     {
+      name: "agent_review_context",
+      description:
+        "The designated chat orchestrator retrieves a managed submission, exact worktree/base commit, criteria/guidance and a freshness token. Inspect the code before submitting a decision.",
+      inputSchema: {
+        type: "object",
+        properties: { run: str("Awaiting-review run ID") },
+        required: ["run"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/orchestration/${encodeURIComponent(a.run)}/review-context`,
+          "POST",
+          { actor: who },
+        ),
+    },
+    {
+      name: "review_agent_submission",
+      description:
+        "Submit an independently reasoned chat review. The service verifies code and evidence again, enforces human gates, and rejects changed context. No implicit Git integration.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          run: str("Review run ID"),
+          token: str("Token from agent_review_context"),
+          result: {
+            type: "object",
+            properties: {
+              outcome: { type: "string", enum: ["accept", "changes", "human"] },
+              summary: str("Review rationale"),
+              criteria: str("Acceptance criteria checked"),
+              evidence: str("Independent evidence inspected"),
+              question: str("Human question, or empty string"),
+            },
+            required: [
+              "outcome",
+              "summary",
+              "criteria",
+              "evidence",
+              "question",
+            ],
+          },
+        },
+        required: ["run", "token", "result"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/orchestration/${encodeURIComponent(a.run)}/review`,
+          "POST",
+          { token: a.token, result: a.result, actor: who },
+        ),
+    },
+    {
+      name: "agent_runs",
+      description:
+        "Inspect the configured orchestrator, worker roster, assignments and managed process states. A claim or last event is not proof of running. Configuration requires a human on the local host.",
+      inputSchema: { type: "object", properties: {} },
+      run: () => api(store, "/api/orchestration"),
+    },
+    {
+      name: "delegate_ticket",
+      description:
+        "The human-designated orchestrator can queue approved work or decompose an approved goal. The service launches an isolated worker, independently verifies and reviews results. Workers cannot self-accept. No implicit merge, push or deployment.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ticket: id,
+          revision: etag,
+          kind: { type: "string", enum: ["plan", "work"] },
+          worker: str("Required for work: explicitly choose the configured worker best suited to the task complexity, uncertainty and risk. Omit only for plan."),
+        },
+        required: ["ticket", "revision", "kind"],
+      },
+      run: (a) =>
+        api(store, "/api/orchestration/queue", "POST", { ...a, actor: who }),
+    },
+    {
+      name: "stop_agent_run",
+      description:
+        "The designated orchestrator or human can cancel a managed run. Its checkout and evidence remain available; a recovered unknown process is never blindly killed.",
+      inputSchema: {
+        type: "object",
+        properties: { run: str("Managed run ID") },
+        required: ["run"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/orchestration/${encodeURIComponent(a.run)}/stop`,
+          "POST",
+          { actor: who },
+        ),
+    },
+    {
       name: "list_tickets",
       description:
         "List tickets on the board, optionally filtered. Returns number, status, title, owner, labels, and etag for each.",
@@ -296,6 +391,71 @@ export async function startMcp(
         ),
     },
     {
+      name: "ask_questionnaire",
+      description:
+        "Attach persistent structured questions. Recommended choices are suggestions only; answers require explicit human submission. Supply replacing with the comment revision to replace questions while retaining history.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          questions: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                id: str("Stable question ID"),
+                prompt: str("Question wording"),
+                type: { enum: ["text", "choice"] },
+                required: { type: "boolean" },
+                choices: { type: "array", items: { type: "string" } },
+                recommended: { type: "string" },
+              },
+              required: ["id", "prompt", "type"],
+            },
+          },
+          replacing: {
+            type: "object",
+            properties: { id: str("Questionnaire comment ID"), revision: etag },
+            required: ["id", "revision"],
+          },
+        },
+        required: ["id", "questions"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/records/${encodeURIComponent(a.id)}/questionnaires`,
+          "POST",
+          { questions: a.questions, replacing: a.replacing, actor: who },
+        ),
+    },
+    {
+      name: "report_progress",
+      description:
+        "Report a progress note and optional 0–100 estimate. This is reported activity, not proof a process is running; 100% never completes the ticket.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          etag,
+          note: str("Concrete progress and remaining work"),
+          percent: { type: "number", minimum: 0, maximum: 100 },
+        },
+        required: ["id", "etag", "note"],
+      },
+      run: (a) =>
+        api(store, `/api/records/${encodeURIComponent(a.id)}`, "PATCH", {
+          revision: a.etag,
+          actor: who,
+          patch: {
+            progress: {
+              note: a.note,
+              ...(a.percent === undefined ? {} : { percent: a.percent }),
+            },
+          },
+        }),
+    },
+    {
       name: "submit_review",
       description:
         "Submit finished work for human review with a handoff and evidence. Optionally run the verification command here so the result is recorded as it happened; a failing run is refused unless allow_failure is set. Records branch, pull request, and commits on the ticket.",
@@ -310,7 +470,11 @@ export async function startMcp(
           review_instructions: str(
             "Specific steps the human should take to review this work; published with the handoff and evidence in the conversation",
           ),
-          manual_review_required: { type: "boolean", description: "Set false only when no manual checks are requested; a passing recorded run is still required for a current verification pass summary." },
+          manual_review_required: {
+            type: "boolean",
+            description:
+              "Set false only when no manual checks are requested; a passing recorded run is still required for a current verification pass summary.",
+          },
           evidence: str(
             "How it was verified (auto-filled from run when omitted)",
           ),
@@ -533,7 +697,7 @@ export async function startMcp(
         protocolVersion: msg.params?.protocolVersion ?? "2025-03-26",
         capabilities: { tools: {} },
         serverInfo: { name: "controlroom", version: "0.2.0" },
-        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human moves work to Done.\n\n${decisionProtocol}\n\nUse list_knowledge with include_inactive to check existing decisions, create_decision to record one, and update_ticket to link its ID in the ticket's decisions field (preserving existing links).`,
+        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human accepts Done unless the managed orchestration controller records an independent review receipt. Ordinary workers cannot accept Done.\n\n${decisionProtocol}\n\nUse list_knowledge with include_inactive to check existing decisions, create_decision to record one, and update_ticket to link its ID in the ticket's decisions field (preserving existing links).`,
       });
     else if (msg.method === "notifications/cancelled") {
       pending.get(msg.params?.requestId)?.abort();

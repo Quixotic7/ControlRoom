@@ -2050,3 +2050,142 @@ dialog::backdrop {
 .ticket-title-dialog .inline-actions {
   justify-content: flex-end;
 }
+
+.microtasks {
+  margin-bottom: 24px;
+}
+.microtasks ul {
+  list-style: none;
+  padding: 0;
+}
+.microtasks li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 6px 0;
+}
+.microtasks li input[type="text"],
+.microtasks li input:not([type]) {
+  flex: 1;
+  min-width: 0;
+}
+.microtasks > input {
+  width: 100%;
+}
+.microtasks input:checked + input {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+.questionnaire fieldset {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 16px 0;
+  min-width: 0;
+}
+.questionnaire legend {
+  font-weight: 600;
+}
+.question-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.question-choices [aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  background: var(--accent-soft);
+}
+.progress-report {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  margin: 6px 0;
+}
+.progress-meter {
+  height: 4px;
+  display: block;
+  background: var(--line);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-meter > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.theme-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.theme-preview-grid .theme-preview {
+  padding: 8px;
+  font-size: 11px;
+  border: 1px solid;
+  display: flex;
+  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.theme-preview[aria-pressed="true"] {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.theme-swatches {
+  display: flex;
+  gap: 3px;
+}
+.theme-swatches i {
+  width: 16px;
+  height: 8px;
+  display: block;
+  border: 1px solid currentColor;
+}
+:root[data-theme] :is(.ticket-card, .button, .view-tab, .open-question) {
+  box-shadow: var(--theme-edge, none);
+}
+.recent-report > span:first-child::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  margin-right: 5px;
+  animation: reported-pulse 3s ease-in-out infinite;
+}
+@keyframes reported-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recent-report > span:first-child::before {
+    animation: none;
+  }
+}
+:root[data-preset] main,
+:root[data-preset] .topnav {
+  background: var(--surface);
+}
+:root[data-preset] .board-scroll {
+  background: var(--bg);
+}
+:root[data-preset] .group-header {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+.pairing-page { display: grid; place-items: center; min-height: 100dvh; padding: 24px; }
+.pairing-page .settings-card { max-width: 540px; }
+.pairing-code { margin: 16px 0; }
+.pairing-code input { font-family: var(--mono); }
+.pairing-dialog { width: min(580px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; padding: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.pairing-dialog::backdrop { background: var(--bg); }

@@ -639,7 +639,7 @@ test("standalone screenshots reopen with annotations and support Delete and undo
     })
     .click();
   await expect(page.locator(".annotation-dialog")).toBeVisible();
-  await page.getByRole("button", { name: "Pin", exact: false }).click();
+  await page.locator(".annotation-dialog").getByRole("button", { name: "Pin", exact: false }).click();
   await page.locator(".image-canvas svg").click({ position: { x: 25, y: 25 } });
   await page
     .getByLabel("Instruction / text")
@@ -790,7 +790,7 @@ test("closing the annotation editor asks before discarding marks", async ({
   await page.keyboard.press("Escape");
   await expect(editor).toHaveCount(0);
   await card.click();
-  await page.getByRole("button", { name: "Pin", exact: false }).click();
+  await page.locator(".annotation-dialog").getByRole("button", { name: "Pin", exact: false }).click();
   await page.locator(".image-canvas svg").click({ position: { x: 30, y: 30 } });
   await page.getByLabel("Instruction / text").fill("Do not lose this.");
   await page.keyboard.press("Escape");

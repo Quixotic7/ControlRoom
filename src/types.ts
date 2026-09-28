@@ -1,3 +1,4 @@
+import type { Assignment, AgentReviewReceipt } from "./orchestration-types.js";
 export type Kind = "ticket" | "decision" | "rule";
 export type Actor = { name: string; kind: "human" | "agent" };
 export type Meta = {
@@ -25,8 +26,13 @@ export type Meta = {
   evidence?: string;
   reviewInstructions?: string;
   manualReviewRequired?: boolean;
+  humanReviewRequired?: boolean;
+  assignment?: Assignment;
+  agentReview?: AgentReviewReceipt;
   reviewVerificationAt?: string;
   question?: string;
+  progress?: { note: string; percent?: number; at: string; actor: Actor };
+  progressStartedAt?: string;
   exceptions?: string;
   scope?: string[];
   strength?: "required" | "recommended";
@@ -65,6 +71,14 @@ export type Comment = {
   kind: "comment" | "question" | "handoff" | "review";
   body: string;
   resolved?: boolean;
+  resolvedBy?: Actor;
+  questions?: import("./questionnaire.js").QuestionSpec;
+  answers?: {
+    actor: Actor;
+    at: string;
+    questions: import("./questionnaire.js").QuestionSpec;
+    values: Record<string, string>;
+  }[];
   revision: string;
 };
 export type Column = {

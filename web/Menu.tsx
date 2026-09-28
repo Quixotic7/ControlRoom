@@ -53,6 +53,9 @@ export function Menu({
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // A menu inside a native dialog handles Escape before the dialog's
+        // default cancel action. Closing the menu must not save/close its window.
+        e.preventDefault();
         e.stopPropagation();
         close();
       }

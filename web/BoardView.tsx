@@ -1,8 +1,15 @@
 import { ticketNavigation } from "./ticketNavigation";
 import React, { useState } from "react";
-import type { Claim, GroupBy, RecordFile } from "../src/types";
+import type { Claim, Column, GroupBy, RecordFile } from "../src/types";
 import { recordId } from "./api";
-import { ChevronDownIcon, ChevronRightIcon, StageIcon } from "./Icons";
+import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  EyeIcon,
+  KebabIcon,
+  StageIcon,
+} from "./Icons";
+import { Menu } from "./Menu";
 import type { Context, Group } from "./model";
 import { QuickTicket } from "./QuickTicket";
 import { dragType, TicketCard } from "./TicketCard";
@@ -57,6 +64,7 @@ export function GroupHeader({
       {goal?.meta.scopeApproved && (
         <span className="tag green">Approved scope</span>
       )}
+      {goal?.meta.archived && <span className="tag">Archived parent</span>}
     </div>
   );
 }
@@ -112,6 +120,10 @@ export function BoardView({
   onMove,
   onPlace,
   reload,
+  hidden,
+  onToggleColumn,
+  onArchive,
+  writesDisabled,
 }: {
   groups: Group[];
   groupBy: GroupBy;
@@ -123,6 +135,10 @@ export function BoardView({
   onMove: (record: RecordFile, status: string) => void;
   onPlace: (draggedId: string, target: RecordFile) => void;
   reload: () => Promise<void>;
+  hidden: Set<string>;
+  onToggleColumn: (id: string) => void;
+  onArchive: (column: Column, records: RecordFile[]) => void;
+  writesDisabled: boolean;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The cell a dragged card is currently over, for the drop highlight.
@@ -130,10 +146,32 @@ export function BoardView({
   // The one card in the Tab order (as "group/ticket", since label groups can
   // repeat a ticket); arrows move focus between the others.
   const [focused, setFocused] = useState<string | null>(null);
-  const columnIds = ctx.columns.map((c) => c.id);
+  const columnIds = ctx.columns
+    .filter((c) => !hidden.has(c.id))
+    .map((c) => c.id);
   const shown = groups
     .filter((g) => !collapsed.has(g.key))
-    .flatMap((g) => g.items.map((r) => `${g.key}/${r.meta.id}`));
+    .flatMap((g) =>
+      g.items
+        .filter((r) => !hidden.has(r.meta.status))
+        .map((r) => `${g.key}/${r.meta.id}`),
+    );
+  const archiveCandidates = (column: Column) => {
+    if (hidden.has(column.id)) return [];
+    const matching = new Set(visible.map((r) => r.meta.id));
+    return [
+      ...new Map(
+        groups
+          .filter((g) => !collapsed.has(g.key))
+          .flatMap((g) => [
+            ...g.items,
+            ...(g.record && matching.has(g.record.meta.id) ? [g.record] : []),
+          ])
+          .filter((r) => r.meta.status === column.id && !r.meta.archived)
+          .map((r) => [r.meta.id, r]),
+      ).values(),
+    ];
+  };
   const tabStop = focused && shown.includes(focused) ? focused : shown[0];
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const card = (e.target as HTMLElement).closest<HTMLElement>(cardSelector);
@@ -158,7 +196,13 @@ export function BoardView({
     <div className="board-scroll">
       <div
         className={`board${lanes ? " lanes" : ""}`}
-        style={{ "--columns": ctx.columns.length } as React.CSSProperties}
+        style={
+          {
+            "--column-tracks": ctx.columns
+              .map(() => "var(--column)")
+              .join(" "),
+          } as React.CSSProperties
+        }
         onKeyDown={onKeyDown}
         onFocus={(e) => {
           const card = (e.target as HTMLElement).closest<HTMLElement>(
@@ -171,12 +215,55 @@ export function BoardView({
       >
         <div className="board-head">
           {ctx.columns.map((c) => (
-            <div key={c.id} className="column-head" data-stage={c.role}>
+            <div
+              key={c.id}
+              className={`column-head${hidden.has(c.id) ? " hidden-column" : ""}`}
+              data-column={c.id}
+              data-stage={c.role}
+            >
               <StageIcon role={c.role} size={16} />
-              <strong>{c.name}</strong>
-              <span className="count">
+              <strong title={c.name}>{c.name}</strong>
+              <span
+                className="count"
+                title="Tickets matching this view, including collapsed groups"
+              >
                 {visible.filter((r) => r.meta.status === c.id).length}
               </span>
+              <button
+                className="icon-button"
+                aria-label={`${hidden.has(c.id) ? "Show" : "Hide"} ${c.name} column`}
+                aria-pressed={!hidden.has(c.id)}
+                title={hidden.has(c.id) ? "Show tickets" : "Hide tickets"}
+                onClick={() => onToggleColumn(c.id)}
+              >
+                <EyeIcon hidden={hidden.has(c.id)} />
+              </button>
+              {hidden.has(c.id) && (
+                <span className="column-hidden-label">Hidden</span>
+              )}
+              {c.role === "done" && !hidden.has(c.id) && (
+                <Menu
+                  label={<KebabIcon />}
+                  className="icon-button"
+                  ariaLabel={`Options for ${c.name} column`}
+                  escapeClipping
+                  align="end"
+                >
+                  {(close) => (
+                    <div className="menu-list">
+                      <button
+                        disabled={writesDisabled}
+                        onClick={() => {
+                          close();
+                          onArchive(c, archiveCandidates(c));
+                        }}
+                      >
+                        Archive completed tickets…
+                      </button>
+                    </div>
+                  )}
+                </Menu>
+              )}
             </div>
           ))}
         </div>
@@ -196,6 +283,14 @@ export function BoardView({
               <div className="board-row">
                 {ctx.columns.map((c) => {
                   const cell = `${g.key}/${c.id}`;
+                  if (hidden.has(c.id))
+                    return (
+                      <div
+                        key={c.id}
+                        className="hidden-column-space"
+                        aria-hidden="true"
+                      />
+                    );
                   return (
                     <div
                       className={`board-cell${over === cell ? " drop-target" : ""}`}

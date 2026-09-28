@@ -572,6 +572,73 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
   );
   assert.ok(decisionBrief.markdown.includes(decisionProtocol));
   assert.match(decisionBrief.markdown, /Shared files/);
+  const questionnaireFile = path.join(s.root, "questions.json");
+  fs.writeFileSync(
+    questionnaireFile,
+    JSON.stringify([
+      {
+        id: "pick",
+        prompt: "Which option?",
+        type: "choice",
+        choices: ["A", "B"],
+        recommended: "A",
+      },
+    ]),
+  );
+  const questionnaire = run(s.root, [
+    "questionnaire",
+    "1",
+    "--file",
+    questionnaireFile,
+    "--json",
+  ]);
+  assert.equal(questionnaire.code, 0, questionnaire.err);
+  const question = JSON.parse(questionnaire.out);
+  assert.equal(question.questions[0].id, "pick");
+  const progress = run(s.root, [
+    "progress",
+    "1",
+    "--latest",
+    "--body",
+    "Checking interfaces",
+    "--percent",
+    "70",
+    "--json",
+  ]);
+  assert.equal(progress.code, 0, progress.err);
+  assert.equal(JSON.parse(progress.out).meta.progress.percent, 70);
+  send({
+    jsonrpc: "2.0",
+    id: 9,
+    method: "tools/call",
+    params: {
+      name: "ask_questionnaire",
+      arguments: {
+        id: "1",
+        questions: [{ id: "why", prompt: "Why?", type: "text" }],
+      },
+    },
+  });
+  await until(9);
+  assert.ok(!lines.find((l) => l.id === 9).result.isError);
+  const current = s.get("1");
+  send({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "tools/call",
+    params: {
+      name: "report_progress",
+      arguments: {
+        id: "1",
+        etag: current.revision,
+        note: "MCP progress",
+        percent: 80,
+      },
+    },
+  });
+  await until(10);
+  assert.ok(!lines.find((l) => l.id === 10).result.isError);
+  assert.equal(s.get("1").meta.progress?.percent, 80);
   mcp.stdin.end();
   await new Promise((resolve) => mcp.on("close", resolve));
 });

@@ -1,3 +1,5 @@
+import { themes, themeNames, presets, type Theme } from "./themes";
+export { themes, type Theme } from "./themes";
 import type { Kind } from "../src/types";
 import {
   BookIcon,
@@ -21,6 +23,7 @@ export type Page =
   | "rulebook"
   | "screenshots"
   | "insights"
+  | "agents"
   | "imports"
   | "settings";
 export const pages: Page[] = [
@@ -30,11 +33,10 @@ export const pages: Page[] = [
   "rulebook",
   "screenshots",
   "insights",
+  "agents",
   "imports",
   "settings",
 ];
-export type Theme = "system" | "light" | "dark";
-export const themes: Theme[] = ["system", "light", "dark"];
 const tabs: [Page, string, () => React.JSX.Element][] = [
   ["project", "Project", ProjectIcon],
   ["attention", "Needs you", InboxIcon],
@@ -42,6 +44,7 @@ const tabs: [Page, string, () => React.JSX.Element][] = [
   ["rulebook", "Rulebook", BookIcon],
   ["screenshots", "Screenshots", ImageIcon],
   ["insights", "Insights", ChartIcon],
+  ["agents", "Agents", ProjectIcon],
 ];
 
 export function TopNav({
@@ -146,11 +149,38 @@ export function TopNav({
                   value={theme}
                   onChange={(e) => setTheme(e.target.value as Theme)}
                 >
-                  <option value="system">System</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
+                  {themes.map((t) => (
+                    <option key={t} value={t}>
+                      {themeNames[t]}
+                    </option>
+                  ))}
                 </select>
               </label>
+              <div className="theme-preview-grid" aria-label="Theme previews">
+                {Object.entries(presets).map(([id, p]) => (
+                  <button
+                    key={id}
+                    className="theme-preview"
+                    aria-pressed={theme === id}
+                    title={p.description}
+                    onClick={() => setTheme(id as Theme)}
+                    style={{
+                      background: p.surface,
+                      color: p.ink,
+                      borderColor: p.line,
+                      fontFamily: p.font,
+                      borderRadius: p.radius,
+                    }}
+                  >
+                    <span className="theme-swatches" aria-hidden="true">
+                      {[p.bg, p.accent, p.cyan, p.success].map((c) => (
+                        <i key={c} style={{ background: c }} />
+                      ))}
+                    </span>
+                    {themeNames[id as Theme]}
+                  </button>
+                ))}
+              </div>
               <label className="menu-field">
                 Density
                 <select

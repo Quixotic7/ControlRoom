@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { WindowMenu } from "./WindowMenu";
 export function Shortcuts({
   capture,
   onClose,
@@ -30,6 +31,7 @@ export function Shortcuts({
           ×
         </button>
       </header>
+      <WindowMenu file={[{ label: "Close window", run: onClose }]} />
       <dl className="shortcut-list">
         {[
           [capture, "Capture a screenshot (global, macOS companion)"],
@@ -41,6 +43,12 @@ export function Shortcuts({
             "← → ↑ ↓",
             "Move between board cards once one has focus; Enter opens it",
           ],
+          [
+            "Alt / Option + ↑ / ↓",
+            "Move focused ticket earlier / later (Manual or Priority sort)",
+          ],
+          ["Esc during drag", "Cancel ticket insertion preview"],
+          ["Enter in Add microtask", "Append checklist item and keep typing"],
           ["⌘ / Ctrl + Enter", "Post a comment"],
           ["⌘ / Ctrl + S", "Save and close ticket or screenshot"],
           ["Esc", "Save and close ticket"],

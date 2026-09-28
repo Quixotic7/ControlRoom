@@ -1,3 +1,5 @@
+import { applyTheme } from "./themes";
+import { Agents } from "./Agents";
 import { ticketFromUrl, ticketUrl } from "./ticketNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Kind, RecordFile } from "../src/types";
@@ -144,8 +146,7 @@ export function App() {
   ]);
   // "System" follows prefers-color-scheme; an explicit choice overrides it.
   useEffect(() => {
-    if (theme === "system") delete document.documentElement.dataset.theme;
-    else document.documentElement.dataset.theme = theme;
+    applyTheme(theme);
   }, [theme]);
 
   useEffect(() => {
@@ -393,6 +394,9 @@ export function App() {
               </>
             )}
             {page === "insights" && <Insights state={state} ctx={ctx} />}
+            {page === "agents" && (
+              <Agents state={state} onOpen={setSelected} reload={reload} />
+            )}
             {page === "imports" && (
               <>
                 <PageHeader
