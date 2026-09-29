@@ -2,7 +2,7 @@ import { useTicketDrag } from "./TicketDrag";
 import type { ReactNode } from "react";
 import { ProgressReport } from "./ProgressReport";
 import { ticketNavigation } from "./ticketNavigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
 import { GroupHeader } from "./BoardView";
@@ -47,7 +47,11 @@ export function TableView({
   claims,
   canReorder,
   previousPeer,
-  filter,
+  collapsed,
+  onToggleGroup,
+  selected,
+  onToggleSelected,
+  onSelectVisible,
   onOpen,
   onMove,
   onPriority,
@@ -60,76 +64,38 @@ export function TableView({
   claims: Map<string, Claim>;
   canReorder: boolean;
   previousPeer: (r: RecordFile) => RecordFile | undefined;
-  // The view's filter text; a change to it drops the row selection.
-  filter: string;
+  collapsed: Set<string>;
+  onToggleGroup: (key: string) => void;
+  selected: Set<string>;
+  onToggleSelected: (id: string, on: boolean) => void;
+  onSelectVisible: (on: boolean) => void;
   onOpen: (id: string) => void;
   onMove: (record: RecordFile, status: string) => void;
   onPriority: (record: RecordFile, priority: number) => void;
   onPlace: (draggedId: string, target: RecordFile) => void;
   reload: () => Promise<void>;
 }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const backlog = ctx.columns.find((c) => c.role === "backlog")!.id;
-  // Rows ticked for a bulk status change.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [bulkStatus, setBulkStatus] = useState(backlog);
   const allBox = useRef<HTMLInputElement>(null);
-  useEffect(() => setSelected(new Set()), [filter]);
-  const shown = groups
-    .filter((g) => !collapsed.has(g.key))
-    .flatMap((g) => g.items);
+  const shown = [
+    ...new Map(
+      groups
+        .filter((g) => !collapsed.has(g.key))
+        .flatMap((g) => g.items)
+        .map((r) => [r.meta.id, r]),
+    ).values(),
+  ];
   const chosen = shown.filter((r) => selected.has(r.meta.id));
   const allChosen = shown.length > 0 && chosen.length === shown.length;
   useEffect(() => {
     if (allBox.current)
       allBox.current.indeterminate = chosen.length > 0 && !allChosen;
   }, [chosen.length, allChosen]);
-  const toggle = (id: string, on: boolean) =>
-    setSelected((prev) => {
-      const next = new Set(prev);
-      on ? next.add(id) : next.delete(id);
-      return next;
-    });
   // Table columns: checkbox, row number, seven fields, and the order control.
   const columns = 9 + (canReorder ? 1 : 0);
   let row = 0;
   return (
     <div className="table-wrap">
-      {chosen.length > 0 && (
-        <div className="bulk-bar" role="toolbar" aria-label="Selected rows">
-          <span className="count">{chosen.length} selected</span>
-          <span className="bulk-sep" aria-hidden>
-            ·
-          </span>
-          <select
-            className="cell-select"
-            aria-label="Status for selected rows"
-            value={bulkStatus}
-            onChange={(e) => setBulkStatus(e.target.value)}
-          >
-            {ctx.columns.map((c) => (
-              <option value={c.id} key={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <button
-            className="button primary small"
-            onClick={() => {
-              for (const r of chosen) onMove(r, bulkStatus);
-              setSelected(new Set());
-            }}
-          >
-            Apply
-          </button>
-          <button
-            className="button subtle small"
-            onClick={() => setSelected(new Set())}
-          >
-            Clear
-          </button>
-        </div>
-      )}
       <table className="project-table">
         <thead>
           <tr>
@@ -137,15 +103,9 @@ export function TableView({
               <input
                 ref={allBox}
                 type="checkbox"
-                aria-label="Select all rows"
+                aria-label="Select all visible tickets"
                 checked={allChosen}
-                onChange={(e) =>
-                  setSelected(
-                    e.target.checked
-                      ? new Set(shown.map((r) => r.meta.id))
-                      : new Set(),
-                  )
-                }
+                onChange={(e) => onSelectVisible(e.target.checked)}
               />
             </th>
             <th className="row-number" aria-label="Row" />
@@ -171,15 +131,7 @@ export function TableView({
                       groupBy={groupBy}
                       ctx={ctx}
                       collapsed={isCollapsed}
-                      onToggle={() =>
-                        setCollapsed((prev) => {
-                          const next = new Set(prev);
-                          next.has(g.key)
-                            ? next.delete(g.key)
-                            : next.add(g.key);
-                          return next;
-                        })
-                      }
+                      onToggle={() => onToggleGroup(g.key)}
                       onOpen={onOpen}
                     />
                   </td>
@@ -206,7 +158,9 @@ export function TableView({
                           type="checkbox"
                           aria-label={`Select ${r.meta.title}`}
                           checked={selected.has(r.meta.id)}
-                          onChange={(e) => toggle(r.meta.id, e.target.checked)}
+                          onChange={(e) =>
+                            onToggleSelected(r.meta.id, e.target.checked)
+                          }
                         />
                       </td>
                       <td className="row-number">{++row}</td>

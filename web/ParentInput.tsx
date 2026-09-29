@@ -49,6 +49,7 @@ export function ParentInput({
   emptyLabel = "No parent",
   clearLabel = "Clear parent",
   above = false,
+  disabled = false,
 }: {
   records: RecordFile[];
   columns: Column[];
@@ -59,6 +60,7 @@ export function ParentInput({
   emptyLabel?: string;
   clearLabel?: string;
   above?: boolean;
+  disabled?: boolean;
 }) {
   const id = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -120,19 +122,23 @@ export function ParentInput({
           open && activeIndex >= 0 ? `${id}-option-${activeIndex}` : undefined
         }
         placeholder="Search by title or #number"
+        disabled={disabled}
         value={open ? query : label}
         onFocus={() => {
+          if (disabled) return;
           setOpen(true);
           setQuery("");
           setActive(0);
         }}
         onBlur={close}
         onChange={(e) => {
+          if (disabled) return;
           setQuery(e.target.value);
           setOpen(true);
           setActive(0);
         }}
         onKeyDown={(e) => {
+          if (disabled) return;
           if (e.key === "Escape" && open) {
             e.preventDefault();
             e.stopPropagation();
@@ -167,6 +173,7 @@ export function ParentInput({
           <button
             type="button"
             className="text-button"
+            disabled={disabled}
             onClick={() => choose(null)}
           >
             {clearLabel}

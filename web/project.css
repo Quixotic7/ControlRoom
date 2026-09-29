@@ -728,6 +728,30 @@ body,
   border-left: 1px dashed var(--line);
   padding-left: 6px;
 }
+.board-ticket {
+  position: relative;
+}
+.board-ticket .ticket-card {
+  padding-right: 38px;
+}
+.board-ticket.selected .ticket-card {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  border-left-color: var(--signal);
+}
+.board-check {
+  position: absolute;
+  z-index: 2;
+  top: 9px;
+  right: 11px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+.board-check input {
+  margin: 0;
+}
 
 /* ----------------------------------------------------------------- cards */
 
@@ -1015,14 +1039,114 @@ body,
 .project-table tbody tr.selected {
   background: var(--accent-soft);
 }
-/* Bulk actions for ticked rows: a compact strip above the table. */
+/* Shared board/table selection and bulk editing. */
+.bulk-editor {
+  flex: none;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
 .bulk-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
   background: var(--subtle);
+}
+.bulk-panel,
+.bulk-results {
+  border-top: 1px solid var(--line);
+  padding: 12px;
+}
+.bulk-fields {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.bulk-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.bulk-enable,
+.bulk-field-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  font-family: var(--display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.bulk-enable > span,
+.bulk-field-title > span {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--body);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.bulk-field > select,
+.bulk-field > input {
+  width: 100%;
+}
+.bulk-field .field {
+  margin: 0;
+}
+.bulk-label-field {
+  grid-template-columns: 1fr 1fr;
+}
+.bulk-label-field .bulk-field-title {
+  grid-column: 1 / -1;
+}
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.bulk-results {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+.bulk-results > ul {
+  flex-basis: 100%;
+  display: grid;
+  gap: 4px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.bulk-results li {
+  display: grid;
+  grid-template-columns: 76px minmax(180px, auto) 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.bulk-results li > strong {
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.bulk-results li[data-outcome="succeeded"] > strong {
+  color: var(--success);
+}
+.bulk-results li[data-outcome="failed"] > strong,
+.bulk-results li > small {
+  color: var(--danger);
+}
+.bulk-results > .help {
+  flex-basis: 100%;
+  margin: 2px 0 0;
 }
 .bulk-bar .count {
   color: var(--accent-ink);
@@ -1037,6 +1161,22 @@ body,
   border-color: var(--line);
   background: var(--surface);
   font-size: 13px;
+}
+@media (max-width: 1200px) {
+  .bulk-fields {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+}
+@media (max-width: 680px) {
+  .bulk-fields {
+    grid-template-columns: 1fr;
+  }
+  .bulk-results li {
+    grid-template-columns: 70px 1fr;
+  }
+  .bulk-results li > small {
+    grid-column: 2;
+  }
 }
 .group-row td {
   padding: 4px 12px;

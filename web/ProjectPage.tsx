@@ -40,6 +40,8 @@ import {
   type ArchiveScope,
 } from "./ArchiveTickets";
 import { useColumnVisibility } from "./useColumnVisibility";
+import { BulkEditBar } from "./BulkEditBar";
+import { reconcileSelection } from "./bulkEdit";
 
 const sameView = (a: ProjectView, b: ProjectView) =>
   JSON.stringify(a) === JSON.stringify(b);
@@ -208,6 +210,52 @@ export function ProjectPage({
       ),
     [visible, view.groupBy, ctx, filtering],
   );
+  const collapseScope = `${savedView.id}/${view.layout}/${view.groupBy}`;
+  const [collapseState, setCollapseState] = useState<{
+    scope: string;
+    keys: Set<string>;
+  }>({ scope: collapseScope, keys: new Set() });
+  const collapsed =
+    collapseState.scope === collapseScope
+      ? collapseState.keys
+      : new Set<string>();
+  const toggleGroup = (key: string) =>
+    setCollapseState((current) => {
+      const next = new Set(current.scope === collapseScope ? current.keys : []);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return { scope: collapseScope, keys: next };
+    });
+  const selectable = [
+    ...new Map(
+      groups
+        .filter((group) => !collapsed.has(group.key))
+        .flatMap((group) => group.items)
+        .filter(
+          (record) =>
+            view.layout !== "board" ||
+            !visibility.hidden.has(record.meta.status),
+        )
+        .map((record) => [record.meta.id, record]),
+    ).values(),
+  ];
+  const selectableIds = new Set(selectable.map((record) => record.meta.id));
+  const selectableKey = selectable.map((record) => record.meta.id).join("|");
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setBulkSelected((current) => {
+      const next = reconcileSelection(current, selectableIds);
+      return next.size === current.size ? current : next;
+    });
+  }, [selectableKey]);
+  const selectedRecords = selectable.filter((record) =>
+    bulkSelected.has(record.meta.id),
+  );
+  const toggleSelected = (id: string, on: boolean) =>
+    setBulkSelected((current) => {
+      const next = new Set(current);
+      on ? next.add(id) : next.delete(id);
+      return next;
+    });
   const claims = useMemo(
     () => new Map<string, Claim>(state.claims.map((c) => [c.ticket, c])),
     [state.claims],
@@ -657,6 +705,19 @@ export function ProjectPage({
             {visibility.error}
           </p>
         )}
+        {!!tickets.length && (
+          <BulkEditBar
+            selected={selectedRecords}
+            visibleCount={selectable.length}
+            records={state.records}
+            columns={ctx.columns}
+            disabled={state.branchChanged}
+            onSelectAll={() => setBulkSelected(new Set(selectableIds))}
+            onClear={() => setBulkSelected(new Set())}
+            onKeepSelected={setBulkSelected}
+            reload={reload}
+          />
+        )}
         {!tickets.length ? (
           <div className="empty-state">
             <span className="empty-icon">
@@ -685,6 +746,10 @@ export function ProjectPage({
             hidden={visibility.hidden}
             onToggleColumn={visibility.toggle}
             writesDisabled={state.branchChanged}
+            collapsed={collapsed}
+            onToggleGroup={toggleGroup}
+            selected={bulkSelected}
+            onToggleSelected={toggleSelected}
             onArchive={(column, records) =>
               setArchiveScope({
                 column: column.name,
@@ -702,7 +767,13 @@ export function ProjectPage({
             claims={claims}
             canReorder={canReorder}
             previousPeer={previousPeer}
-            filter={view.filter}
+            collapsed={collapsed}
+            onToggleGroup={toggleGroup}
+            selected={bulkSelected}
+            onToggleSelected={toggleSelected}
+            onSelectVisible={(on) =>
+              setBulkSelected(on ? new Set(selectableIds) : new Set())
+            }
             onOpen={onOpen}
             onMove={move}
             onPriority={setPriority}

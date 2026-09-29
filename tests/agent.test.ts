@@ -228,8 +228,44 @@ test("--set parses JSON, lists, and strings; list filters match ids, names, role
   assert.deepEqual(ids(filterRecords(records, { kind: "rule" })), ["d"]);
 });
 
-test("identity comes from the environment before flags, and agents never default to human", () => {
+const identityEnvironment = [
+  "CONTROLROOM_MANAGED",
+  "CONTROLROOM_ACTOR",
+  "CONTROLROOM_ACTOR_KIND",
+  "WORKBOARD_ACTOR",
+  "WORKBOARD_ACTOR_KIND",
+  "CLAUDECODE",
+  "CODEX_SANDBOX",
+  "CODEX_CI",
+  "CURSOR_TRACE_ID",
+  "GEMINI_CLI",
+  "AIDER_MODEL",
+] as const;
+
+function isolatedChildEnvironment(overrides: Record<string, string> = {}) {
   const env = { ...process.env };
+  for (const key of [
+    "CONTROLROOM_MANAGED",
+    "CONTROLROOM_ACTOR",
+    "CONTROLROOM_ACTOR_KIND",
+    "WORKBOARD_ACTOR",
+    "WORKBOARD_ACTOR_KIND",
+  ])
+    delete env[key];
+  return { ...env, ...overrides };
+}
+
+test("identity comes from the environment before flags, and agents never default to human", (t) => {
+  const before = Object.fromEntries(
+    identityEnvironment.map((key) => [key, process.env[key]]),
+  );
+  t.after(() => {
+    for (const key of identityEnvironment) {
+      const value = before[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
   t_env({ WORKBOARD_ACTOR: "Session 7", WORKBOARD_ACTOR_KIND: "agent" });
   assert.deepEqual(resolveActor({}), {
     actor: { name: "Session 7", kind: "agent" },
@@ -243,10 +279,17 @@ test("identity comes from the environment before flags, and agents never default
   assert.deepEqual(inferred.actor, { name: "Claude Code", kind: "agent" });
   assert.equal(inferred.inferred, true);
   assert.equal(resolveActor({ human: true }).actor.kind, "human");
-  process.env = env;
+  t_env({
+    CONTROLROOM_MANAGED: "1",
+    CONTROLROOM_ACTOR: "Managed Sol",
+    CONTROLROOM_ACTOR_KIND: "agent",
+  });
+  assert.deepEqual(resolveActor({}).actor, {
+    name: "Managed Sol",
+    kind: "agent",
+  });
   function t_env(vars: Record<string, string>) {
-    for (const k of ["WORKBOARD_ACTOR", "WORKBOARD_ACTOR_KIND", "CLAUDECODE"])
-      delete process.env[k];
+    for (const key of identityEnvironment) delete process.env[key];
     Object.assign(process.env, vars);
   }
 });
@@ -259,12 +302,11 @@ function run(root: string, args: string[], env: Record<string, string> = {}) {
     ["--import", "tsx", cli, "--project", root, ...args],
     {
       encoding: "utf8",
-      env: {
-        ...process.env,
+      env: isolatedChildEnvironment({
         WORKBOARD_ACTOR: "Agent CLI",
         WORKBOARD_ACTOR_KIND: "agent",
         ...env,
-      },
+      }),
       timeout: 60_000,
     },
   );
@@ -383,11 +425,10 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
       "--json",
     ],
     {
-      env: {
-        ...process.env,
+      env: isolatedChildEnvironment({
         WORKBOARD_ACTOR: "Agent CLI",
         WORKBOARD_ACTOR_KIND: "agent",
-      },
+      }),
     },
   );
   let waited = "";
@@ -410,11 +451,10 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
     node,
     ["--import", "tsx", cli, "--project", s.root, "mcp"],
     {
-      env: {
-        ...process.env,
+      env: isolatedChildEnvironment({
         WORKBOARD_ACTOR: "Agent MCP",
         WORKBOARD_ACTOR_KIND: "agent",
-      },
+      }),
     },
   );
   t.after(() => mcp.kill());

@@ -124,6 +124,10 @@ export function BoardView({
   onToggleColumn,
   onArchive,
   writesDisabled,
+  collapsed,
+  onToggleGroup,
+  selected,
+  onToggleSelected,
 }: {
   groups: Group[];
   groupBy: GroupBy;
@@ -139,8 +143,11 @@ export function BoardView({
   onToggleColumn: (id: string) => void;
   onArchive: (column: Column, records: RecordFile[]) => void;
   writesDisabled: boolean;
+  collapsed: Set<string>;
+  onToggleGroup: (key: string) => void;
+  selected: Set<string>;
+  onToggleSelected: (id: string, on: boolean) => void;
 }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The cell a dragged card is currently over, for the drop highlight.
   const [over, setOver] = useState<string | null>(null);
   // The one card in the Tab order (as "group/ticket", since label groups can
@@ -185,12 +192,6 @@ export function BoardView({
     next.focus();
     next.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
-  const toggle = (key: string) =>
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
   const lanes = groupBy === "none";
   return (
     <div className="board-scroll">
@@ -198,9 +199,7 @@ export function BoardView({
         className={`board${lanes ? " lanes" : ""}`}
         style={
           {
-            "--column-tracks": ctx.columns
-              .map(() => "var(--column)")
-              .join(" "),
+            "--column-tracks": ctx.columns.map(() => "var(--column)").join(" "),
           } as React.CSSProperties
         }
         onKeyDown={onKeyDown}
@@ -275,7 +274,7 @@ export function BoardView({
                 groupBy={groupBy}
                 ctx={ctx}
                 collapsed={collapsed.has(g.key)}
-                onToggle={() => toggle(g.key)}
+                onToggle={() => onToggleGroup(g.key)}
                 onOpen={onOpen}
               />
             )}
@@ -322,12 +321,22 @@ export function BoardView({
                         .map((r) => (
                           <div
                             key={r.meta.id}
-                            className={
+                            className={`board-ticket${selected.has(r.meta.id) ? " selected" : ""}${
                               g.record && r.meta.parent !== g.record.meta.id
-                                ? "nested-ticket"
-                                : undefined
-                            }
+                                ? " nested-ticket"
+                                : ""
+                            }`}
                           >
+                            <label className="board-check">
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${r.meta.title}`}
+                                checked={selected.has(r.meta.id)}
+                                onChange={(e) =>
+                                  onToggleSelected(r.meta.id, e.target.checked)
+                                }
+                              />
+                            </label>
                             <TicketCard
                               record={r}
                               ctx={ctx}

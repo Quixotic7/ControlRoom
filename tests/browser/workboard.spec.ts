@@ -287,9 +287,14 @@ test("create a ticket, discuss it, and submit evidence for review", async ({
   await page.getByLabel("Comment type").selectOption("question");
   await page.getByRole("button", { name: "Post comment" }).click();
   await expect(
-    page.locator(".ticket-thread").getByText("Does the new workflow preserve the notes?"),
+    page
+      .locator(".ticket-thread")
+      .getByText("Does the new workflow preserve the notes?"),
   ).toBeVisible();
-  await page.locator(".ticket-thread").getByRole("button", { name: "Resolve question" }).click();
+  await page
+    .locator(".ticket-thread")
+    .getByRole("button", { name: "Resolve question" })
+    .click();
   await page.getByRole("button", { name: "Details", exact: true }).click();
   await page
     .getByText("Agent handoff, review & dependencies", { exact: true })
@@ -485,9 +490,13 @@ test("draw, comment, undo, save, and reopen screenshot annotations", async ({
     .getByRole("button", { name: "Save to ticket", exact: true })
     .click();
   await page.getByLabel("New ticket title").fill("Annotated search alignment");
-  await page.getByRole("button", { name: "Create ticket", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Create ticket", exact: true })
+    .click();
   await expect(page.locator(".annotation-dialog")).toHaveCount(0);
-  await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Annotated search alignment");
+  await expect(
+    page.getByRole("textbox", { name: "Title", exact: true }),
+  ).toHaveValue("Annotated search alignment");
   await page.getByRole("button", { name: "Close ticket" }).click();
   await expect(page.locator(".record-dialog")).toHaveCount(0);
   await page.getByLabel("Filter tickets").fill("Annotated search alignment");
@@ -639,7 +648,10 @@ test("standalone screenshots reopen with annotations and support Delete and undo
     })
     .click();
   await expect(page.locator(".annotation-dialog")).toBeVisible();
-  await page.locator(".annotation-dialog").getByRole("button", { name: "Pin", exact: false }).click();
+  await page
+    .locator(".annotation-dialog")
+    .getByRole("button", { name: "Pin", exact: false })
+    .click();
   await page.locator(".image-canvas svg").click({ position: { x: 25, y: 25 } });
   await page
     .getByLabel("Instruction / text")
@@ -790,7 +802,10 @@ test("closing the annotation editor asks before discarding marks", async ({
   await page.keyboard.press("Escape");
   await expect(editor).toHaveCount(0);
   await card.click();
-  await page.locator(".annotation-dialog").getByRole("button", { name: "Pin", exact: false }).click();
+  await page
+    .locator(".annotation-dialog")
+    .getByRole("button", { name: "Pin", exact: false })
+    .click();
   await page.locator(".image-canvas svg").click({ position: { x: 30, y: 30 } });
   await page.getByLabel("Instruction / text").fill("Do not lose this.");
   await page.keyboard.press("Escape");
@@ -936,30 +951,34 @@ test("selected table rows change status together", async ({ page }) => {
   await page.getByRole("button", { name: "Table", exact: true }).click();
   await page.getByLabel("Filter tickets").fill("Bulk move");
   await expect(page.locator(".project-table tr[data-stage]")).toHaveCount(2);
-  await expect(page.locator(".bulk-bar")).toHaveCount(0);
-  await page.getByRole("checkbox", { name: "Select all rows" }).check();
+  await expect(page.locator(".bulk-bar")).toContainText("0 selected");
+  await page
+    .getByRole("checkbox", { name: "Select all visible tickets" })
+    .check();
   await expect(page.locator(".bulk-bar")).toContainText("2 selected");
   const second = page.getByRole("checkbox", { name: "Select Bulk move two" });
   await second.uncheck();
   await expect(page.locator(".bulk-bar")).toContainText("1 selected");
   await expect(
-    page.getByRole("checkbox", { name: "Select all rows" }),
+    page.getByRole("checkbox", { name: "Select all visible tickets" }),
   ).toHaveJSProperty("indeterminate", true);
   await second.check();
-  await page.getByLabel("Status for selected rows").selectOption("done");
-  await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.locator(".bulk-bar")).toHaveCount(0);
+  await page.getByLabel("Change status").check();
+  await page.getByLabel("New status").selectOption("done");
+  await page.getByRole("button", { name: "Apply to 2" }).click();
+  await expect(page.locator(".bulk-bar")).toContainText("0 selected");
+  await expect(page.locator(".bulk-results")).toContainText("2 succeeded");
   for (const title of ["Bulk move one", "Bulk move two"])
     await expect(
       page.getByLabel(`Status of ${title}`, { exact: true }),
     ).toHaveValue("done");
   for (const t of [one, two])
     expect((await record(page, t.meta.id)).meta.status).toBe("done");
-  // A filter change drops the selection.
+  // A filter change drops a selected ticket once it is no longer visible.
   await page.getByRole("checkbox", { name: "Select Bulk move one" }).check();
   await expect(page.locator(".bulk-bar")).toContainText("1 selected");
-  await page.getByLabel("Filter tickets").fill("Bulk move one");
-  await expect(page.locator(".bulk-bar")).toHaveCount(0);
+  await page.getByLabel("Filter tickets").fill("Bulk move two");
+  await expect(page.locator(".bulk-bar")).toContainText("0 selected");
   await page.getByRole("button", { name: "Clear filter" }).click();
 });
 
