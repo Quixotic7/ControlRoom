@@ -21,14 +21,17 @@ test("related tickets and duplicate preview retain provenance and reject stale m
   await page.request.patch("/api/preferences", {
     data: { selected: null, page: "project", viewId: "board" },
   });
-  const survivor = await create(page, "Relationship survivor", {
-    owner: "Ada",
-  });
+  const survivor = await create(
+    page,
+    "Relationship survivor",
+    { owner: "Ada" },
+    "Survivor instructions\n\n## Acceptance criteria\n\n- Keep survivor behavior.",
+  );
   const source = await create(
     page,
     "Relationship source",
     { owner: "Grace" },
-    "Original source instructions",
+    "Original source instructions\n\n## Acceptance criteria\n\n- Preserve source behavior.",
   );
   const child = await create(page, "Relationship child", {
     parent: source.meta.id,
@@ -72,8 +75,19 @@ test("related tickets and duplicate preview retain provenance and reject stale m
     name: "Merge and archive source",
     exact: true,
   });
-  await expect(merge).toBeDisabled();
-  await links.locator(".merge-conflict select").selectOption("survivor");
+  await expect(merge).toBeEnabled();
+  const ownerResolution = links
+    .locator(".merge-conflict")
+    .filter({ hasText: "Owner" })
+    .getByRole("combobox");
+  const criteriaResolution = links
+    .locator(".merge-conflict")
+    .filter({ hasText: "Acceptance criteria" })
+    .getByRole("combobox");
+  await expect(ownerResolution).toHaveValue("survivor");
+  await expect(criteriaResolution).toHaveValue("survivor");
+  await ownerResolution.selectOption("source");
+  await criteriaResolution.selectOption("both");
   const fresh = await get(page, source.meta.id);
   await page.request.patch(`/api/records/${source.meta.id}`, {
     data: {
@@ -88,7 +102,8 @@ test("related tickets and duplicate preview retain provenance and reject stale m
   expect((await get(page, source.meta.id)).meta.archived).toBeFalsy();
   await links.getByRole("button", { name: "Cancel", exact: true }).click();
   await preview();
-  await links.locator(".merge-conflict select").selectOption("survivor");
+  await expect(merge).toBeEnabled();
+  await links.locator(".merge-conflict select").selectOption("source");
   await merge.click();
   await expect
     .poll(async () => (await get(page, source.meta.id)).meta.duplicateOf)
