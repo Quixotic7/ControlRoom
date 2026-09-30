@@ -41,6 +41,10 @@ import type {
   Verification,
   MergeConflictField,
   MergeResolution,
+  FeedEntry,
+  FeedEventType,
+  FeedPage,
+  FeedRecordReference,
 } from "./types.js";
 
 const actorSchema = z.object({
@@ -2430,6 +2434,356 @@ export class Store {
         JSON.stringify({ branch: current }),
       );
     }, true);
+  }
+  // Reconstruct the activity feed from the durable record audit and comment
+  // files. This intentionally is a projection rather than another database:
+  // deleting a cache can never lose attribution or feed entries.
+  feed(
+    input: {
+      cursor?: string;
+      limit?: number;
+      actor?: string;
+      eventType?: string;
+      ticket?: string;
+    } = {},
+  ): FeedPage {
+    const options = z
+      .object({
+        cursor: z.string().max(200).optional(),
+        limit: z.coerce.number().int().min(1).max(100).default(30),
+        actor: z.string().max(220).optional(),
+        eventType: z
+          .enum([
+            "created",
+            "transition",
+            "edit",
+            "comment",
+            "question",
+            "review",
+            "handoff",
+            "decision",
+            "rule",
+            "archive",
+          ])
+          .optional(),
+        ticket: z.string().max(300).optional(),
+      })
+      .parse(input);
+    const records = this.list();
+    const byId = new Map(records.map((record) => [record.meta.id, record]));
+    const reference = (
+      id: string,
+      before?: any,
+      after?: any,
+    ): FeedRecordReference => {
+      const current = byId.get(id);
+      const snapshot = after?.meta ?? before?.meta ?? after ?? before;
+      const kind = ["ticket", "decision", "rule"].includes(snapshot?.kind)
+        ? snapshot.kind
+        : "ticket";
+      return current
+        ? {
+            id: current.meta.id,
+            kind: current.meta.kind,
+            number: current.meta.number,
+            title: current.meta.title,
+            archived: current.meta.archived,
+          }
+        : {
+            id,
+            kind,
+            number:
+              typeof snapshot?.number === "number"
+                ? snapshot.number
+                : undefined,
+            title:
+              typeof snapshot?.title === "string" && snapshot.title.trim()
+                ? snapshot.title
+                : `Unavailable record (${id})`,
+            archived: !!snapshot?.archived,
+            missing: true,
+          };
+    };
+    const friendly: Record<string, string> = {
+      title: "title",
+      owner: "owner",
+      priority: "priority",
+      labels: "labels",
+      parent: "parent",
+      blocked: "blocker",
+      scopeApproved: "scope approval",
+      archived: "archive state",
+      handoff: "handoff",
+      evidence: "evidence",
+      reviewInstructions: "review instructions",
+      assignment: "assignment",
+      agentReview: "review receipt",
+      decisions: "linked decisions",
+      rules: "linked rules",
+      relationships: "relationships",
+      progress: "progress",
+    };
+    const changedFields = (event: any) => {
+      const before = event.before?.meta ?? event.before ?? {};
+      const after = event.after?.meta ?? event.after ?? {};
+      const fields = new Set<string>();
+      for (const key of new Set([
+        ...Object.keys(before ?? {}),
+        ...Object.keys(after ?? {}),
+      ])) {
+        if (
+          ["updatedAt", "createdAt", "id", "schema", "kind", "number"].includes(
+            key,
+          )
+        )
+          continue;
+        if (JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key]))
+          fields.add(key);
+      }
+      if (
+        event.before?.body !== undefined &&
+        event.after?.body !== undefined &&
+        event.before.body !== event.after.body
+      )
+        fields.add("description");
+      return fields;
+    };
+    const statusName = (status: unknown) =>
+      this.config().columns.find((column) => column.id === status)?.name ??
+      String(status ?? "unknown");
+    const summarizeFields = (fields: Set<string>) => {
+      const labels = [...fields]
+        .filter((field) => field !== "status")
+        .map((field) => friendly[field] ?? field.replace(/([A-Z])/g, " $1"))
+        .map((field) => field.toLowerCase());
+      if (!labels.length) return "Updated record";
+      if (labels.length === 1) return `Changed ${labels[0]}`;
+      if (labels.length === 2) return `Changed ${labels[0]} and ${labels[1]}`;
+      return `Changed ${labels[0]}, ${labels[1]}, and ${labels.length - 2} more`;
+    };
+    const historyEntries: FeedEntry[] = [];
+    const addHistory = (event: any, fallbackId: string) => {
+      if (!event || typeof event !== "object") return;
+      const recordId = String(event.record ?? "");
+      const at = String(event.at ?? "");
+      const actor = event.actor;
+      const sourceId = String(event.id ?? fallbackId);
+      if (
+        !recordId ||
+        !sourceId ||
+        !Number.isFinite(Date.parse(at)) ||
+        !actor ||
+        typeof actor.name !== "string" ||
+        !["human", "agent"].includes(actor.kind)
+      )
+        return;
+      const action = String(event.action ?? "updated").toLowerCase();
+      // Watcher/SSE liveness is deliberately not audit activity. Also ignore
+      // legacy no-op rows whose only difference is the automatic timestamp.
+      if (/heartbeat|keepalive|ping/.test(action)) return;
+      const record = reference(recordId, event.before, event.after);
+      const fields = changedFields(event);
+      if (action === "updated" && !fields.size) return;
+      let eventType: FeedEventType = "edit";
+      let summary = action.charAt(0).toUpperCase() + action.slice(1);
+      if (action === "created") {
+        eventType =
+          record.kind === "ticket"
+            ? "created"
+            : (record.kind as "decision" | "rule");
+        summary = `Created ${record.kind}`;
+      } else if (record.kind === "decision" || record.kind === "rule") {
+        eventType = record.kind;
+        summary = summarizeFields(fields);
+      } else if (fields.has("archived")) {
+        eventType = "archive";
+        summary = (event.after?.meta ?? event.after)?.archived
+          ? "Archived ticket"
+          : "Restored ticket";
+      } else if (fields.has("status")) {
+        eventType = "transition";
+        const before = event.before?.meta ?? event.before;
+        const after = event.after?.meta ?? event.after;
+        summary = `Moved from ${statusName(before?.status)} to ${statusName(after?.status)}`;
+        const rest = new Set(fields);
+        rest.delete("status");
+        if (rest.size) summary += `; ${summarizeFields(rest).toLowerCase()}`;
+      } else if (action.includes("question")) {
+        eventType = "question";
+        summary = action.charAt(0).toUpperCase() + action.slice(1);
+      } else {
+        summary = fields.size ? summarizeFields(fields) : summary;
+      }
+      historyEntries.push({
+        id: `history:${sourceId}`,
+        sourceIds: [`history:${sourceId}`],
+        at,
+        actor,
+        eventType,
+        record,
+        summary,
+      });
+    };
+    const historyFile = this.file("records/history.jsonl");
+    if (fs.existsSync(historyFile))
+      read(historyFile)
+        .split("\n")
+        .forEach((line, index) => {
+          if (!line.trim()) return;
+          try {
+            addHistory(JSON.parse(line), `jsonl-${index}`);
+          } catch {
+            // Valid surrounding audit rows still make a useful, traceable
+            // feed when one legacy line is damaged.
+          }
+        });
+    for (const file of walk(this.file("records/history"), ".md")) {
+      try {
+        const parsed = parseMd(read(file));
+        addHistory(
+          { ...parsed.meta, body: parsed.body },
+          path.basename(file, ".md"),
+        );
+      } catch {
+        /* Preserve the rest of the feed when one legacy entry is malformed. */
+      }
+    }
+    const commentEntries: FeedEntry[] = [];
+    for (const file of walk(this.file("records/comments"), ".md")) {
+      try {
+        const comment = this.loadComment(file);
+        if (
+          !["comment", "question", "review", "handoff"].includes(
+            comment.kind,
+          ) ||
+          typeof comment.ticket !== "string" ||
+          !Number.isFinite(Date.parse(comment.at))
+        )
+          continue;
+        const eventType = comment.kind as Extract<
+          FeedEventType,
+          "comment" | "question" | "review" | "handoff"
+        >;
+        const plain = comment.body
+          .replace(/!\[[^\]]*\]\([^)]*\)/g, "attachment")
+          .replace(/[`#*_>\[\]]/g, "")
+          .replace(/\([^)]*\)/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        commentEntries.push({
+          id: `comment:${comment.id}`,
+          sourceIds: [`comment:${comment.id}`],
+          at: comment.at,
+          actor: comment.actor,
+          eventType,
+          record: reference(comment.ticket),
+          summary:
+            plain.slice(0, 180) + (plain.length > 180 ? "…" : "") ||
+            `Added ${comment.kind}`,
+          commentId: comment.id,
+        });
+      } catch {
+        /* State exposes malformed comment errors; the feed remains usable. */
+      }
+    }
+    const ordered = [
+      ...new Map(
+        [...historyEntries, ...commentEntries]
+          .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
+          .map((entry) => [entry.id, entry]),
+      ).values(),
+    ];
+    // Only ordinary edits are coalesced. Questions and review activity always
+    // remain individual, visible entries even amid a burst of record saves.
+    const grouped: FeedEntry[] = [];
+    for (const entry of ordered) {
+      const prior = grouped.at(-1);
+      if (
+        entry.eventType === "edit" &&
+        prior?.eventType === "edit" &&
+        entry.record.id === prior.record.id &&
+        entry.actor.name === prior.actor.name &&
+        entry.actor.kind === prior.actor.kind &&
+        Date.parse(prior.at) - Date.parse(entry.at) <= 5 * 60_000
+      ) {
+        prior.sourceIds.push(...entry.sourceIds);
+        prior.groupedCount = (prior.groupedCount ?? 1) + 1;
+        const summaries = new Set(
+          `${prior.summary}; ${entry.summary}`
+            .split(";")
+            .map((part) => part.trim())
+            .filter(Boolean),
+        );
+        prior.summary = [...summaries].join("; ");
+        if (prior.summary.length > 240)
+          prior.summary = prior.summary.slice(0, 239).trimEnd() + "…";
+      } else grouped.push({ ...entry });
+    }
+    const facets = {
+      actors: [
+        ...new Map(
+          grouped.map((entry) => [
+            `${entry.actor.kind}:${entry.actor.name}`,
+            entry.actor,
+          ]),
+        ).values(),
+      ].sort(
+        (a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind),
+      ),
+      eventTypes: [...new Set(grouped.map((entry) => entry.eventType))].sort(),
+      tickets: [
+        ...new Map(
+          grouped.map((entry) => [entry.record.id, entry.record]),
+        ).values(),
+      ].sort(
+        (a, b) =>
+          (a.number ?? Number.MAX_SAFE_INTEGER) -
+            (b.number ?? Number.MAX_SAFE_INTEGER) ||
+          a.title.localeCompare(b.title),
+      ),
+    };
+    let filtered = grouped.filter(
+      (entry) =>
+        (!options.actor ||
+          `${entry.actor.kind}:${entry.actor.name}` === options.actor) &&
+        (!options.eventType || entry.eventType === options.eventType) &&
+        (!options.ticket || entry.record.id === options.ticket),
+    );
+    if (options.cursor) {
+      let cursor: { at: string; id: string };
+      try {
+        cursor = JSON.parse(
+          Buffer.from(options.cursor, "base64url").toString("utf8"),
+        );
+      } catch {
+        throw new Problem(400, "Invalid feed cursor");
+      }
+      if (
+        !cursor ||
+        typeof cursor.at !== "string" ||
+        typeof cursor.id !== "string"
+      )
+        throw new Problem(400, "Invalid feed cursor");
+      filtered = filtered.filter(
+        (entry) =>
+          entry.at < cursor.at ||
+          (entry.at === cursor.at && entry.id < cursor.id),
+      );
+    }
+    const entries = filtered.slice(0, options.limit);
+    const hasMore = filtered.length > entries.length;
+    const last = entries.at(-1);
+    return {
+      entries,
+      hasMore,
+      nextCursor:
+        hasMore && last
+          ? Buffer.from(JSON.stringify({ at: last.at, id: last.id })).toString(
+              "base64url",
+            )
+          : undefined,
+      facets,
+    };
   }
   historyFor(id: string) {
     id = this.get(id).meta.id;

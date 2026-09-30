@@ -86,6 +86,15 @@ export async function buildServer(
     project: store.config().projectId,
   }));
   app.get("/api/state", async () => store.state());
+  app.get("/api/feed", async (req: any) =>
+    store.feed({
+      cursor: req.query?.cursor,
+      limit: req.query?.limit,
+      actor: req.query?.actor,
+      eventType: req.query?.type,
+      ticket: req.query?.ticket,
+    }),
+  );
   app.get("/api/orchestration", async () => orchestration.status());
   app.get("/api/orchestration/:id/log", async (req: any) => ({
     log: orchestration.log(req.params.id),

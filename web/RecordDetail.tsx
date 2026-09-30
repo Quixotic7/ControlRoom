@@ -196,6 +196,7 @@ export function RecordDetail({
   openImage,
   conversationOrder,
   onConversationOrder,
+  initialComment,
   standalone = false,
 }: {
   record?: RecordFile;
@@ -208,6 +209,7 @@ export function RecordDetail({
   openImage: (s: string) => void;
   conversationOrder: "oldest" | "newest";
   onConversationOrder: (order: "oldest" | "newest") => void;
+  initialComment?: string;
   standalone?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -242,7 +244,7 @@ export function RecordDetail({
         ? "## Context\n\n\n## Decision\n\n\n## Why\n\n\n## Alternatives and tradeoffs\n\n"
         : "## Rule\n\n\n## Why\n\n\n## Examples and implementation references\n\n";
   const [body, setBodyState] = useState(record?.body ?? template),
-    [tab, setTab] = useState("details"),
+    [tab, setTab] = useState(initialComment ? "conversation" : "details"),
     [preview, setPreview] = useState(
       kind === "ticket" && !!record?.body.trim(),
     ),
@@ -355,6 +357,15 @@ export function RecordDetail({
       }
     }
   }, [state.comments, tab, conversationOrder]);
+  useLayoutEffect(() => {
+    if (!initialComment || tab !== "conversation") return;
+    const frame = requestAnimationFrame(() => {
+      document
+        .getElementById(`thread-${initialComment}`)
+        ?.scrollIntoView({ block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [initialComment, tab]);
   const dirty = isDraftDirty();
   useEffect(() => {
     if (standalone) dialog.current?.show();
@@ -701,6 +712,7 @@ export function RecordDetail({
               key={c.id}
               id={`thread-${c.id}`}
               data-kind={c.kind}
+              data-focused={c.id === initialComment || undefined}
             >
               <div className="comment-type">
                 <strong>

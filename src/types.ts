@@ -103,6 +103,47 @@ export type Comment = {
   }[];
   revision: string;
 };
+export type FeedEventType =
+  | "created"
+  | "transition"
+  | "edit"
+  | "comment"
+  | "question"
+  | "review"
+  | "handoff"
+  | "decision"
+  | "rule"
+  | "archive";
+export type FeedRecordReference = {
+  id: string;
+  kind: Kind;
+  number?: number;
+  title: string;
+  archived?: boolean;
+  missing?: boolean;
+};
+export type FeedEntry = {
+  id: string;
+  sourceIds: string[];
+  at: string;
+  actor: Actor;
+  eventType: FeedEventType;
+  record: FeedRecordReference;
+  summary: string;
+  commentId?: string;
+  groupedCount?: number;
+};
+export type FeedFacetTicket = FeedRecordReference;
+export type FeedPage = {
+  entries: FeedEntry[];
+  nextCursor?: string;
+  hasMore: boolean;
+  facets: {
+    actors: Actor[];
+    eventTypes: FeedEventType[];
+    tickets: FeedFacetTicket[];
+  };
+};
 export type Column = {
   id: string;
   name: string;

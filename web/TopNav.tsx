@@ -4,6 +4,7 @@ import type { Kind } from "../src/types";
 import {
   BookIcon,
   ChartIcon,
+  CommentIcon,
   DecisionIcon,
   GitBranchIcon,
   ImageIcon,
@@ -18,6 +19,7 @@ import { Menu } from "./Menu";
 
 export type Page =
   | "project"
+  | "feed"
   | "attention"
   | "decisions"
   | "rulebook"
@@ -28,6 +30,7 @@ export type Page =
   | "settings";
 export const pages: Page[] = [
   "project",
+  "feed",
   "attention",
   "decisions",
   "rulebook",
@@ -39,6 +42,7 @@ export const pages: Page[] = [
 ];
 const tabs: [Page, string, () => React.JSX.Element][] = [
   ["project", "Project", ProjectIcon],
+  ["feed", "Feed", CommentIcon],
   ["attention", "Needs you", InboxIcon],
   ["decisions", "Decisions", DecisionIcon],
   ["rulebook", "Rulebook", BookIcon],
