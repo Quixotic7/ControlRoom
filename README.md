@@ -261,9 +261,10 @@ controlroom agents queue --file assignment.json
 controlroom agents log RUN_ID
 controlroom agents stop RUN_ID
 controlroom agents resume RUN_ID
+controlroom agents takeover RUN_ID --etag CURRENT_TICKET_ETAG
 ```
 
-Configuration and recovery require a human actor. The designated orchestrator can delegate and stop runs through CLI or MCP `agent_runs`, `delegate_ticket`, and `stop_agent_run`. Managed acceptance is admitted only from the service's verified review pipeline, not from a tool caller's claimed reviewer name. The same host-only authentication and write serialization apply to the HTTP surface.
+Configuration and recovery require a human actor. The designated orchestrator can delegate, stop runs, and explicitly take over a stopped worker ticket through CLI or MCP `agent_runs`, `delegate_ticket`, `stop_agent_run`, and `take_over_stopped_agent_run`. Takeover requires the current ticket etag and matching run assignment, and is refused while an owned process is active or its exit is uncertain. It retains the original run, checkout, logs, attempts, and assignment history; releases only the matching obsolete execution claim; and puts the new actor into the ordinary claim, progress, and human-review workflow under their own identity. It does not approve scope, reset attempts, accept work, merge, push, or deploy. Managed acceptance is admitted only from the service's verified review pipeline, not from a tool caller's claimed reviewer name. The same host-only authentication and write serialization apply to the HTTP surface.
 
 Adapter references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) and [Claude Code programmatic use](https://code.claude.com/docs/en/headless). The regression trial uses executable fixture harnesses for both structured output formats; it does not spend provider usage. Validate your installed CLI/model with a small approved ticket before assigning substantial work.
 

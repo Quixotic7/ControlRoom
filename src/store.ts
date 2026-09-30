@@ -828,6 +828,97 @@ export class Store {
       return this.updateNow(id, revision, patch, undefined, actor, true);
     });
   }
+  // Internal controller entry point for an explicit stopped-run takeover.
+  // Runtime/process checks are supplied by Orchestrator and rerun inside the
+  // same serialized writer as the revision and assignment identity checks.
+  takeoverManagedAssignment(
+    id: string,
+    revision: string,
+    expected: { runId: string; worker: string; worktree?: string },
+    actor: Actor,
+    guard: () => void,
+  ) {
+    return this.write(() => {
+      guard();
+      const old = this.get(id);
+      const config = this.config().orchestration as
+        | { enabled?: boolean; reviewer?: { name?: string } }
+        | undefined;
+      if (
+        actor.kind !== "human" &&
+        (!config?.enabled || config.reviewer?.name !== actor.name)
+      )
+        throw new Problem(
+          403,
+          "Only the designated orchestrator or a human can take over a stopped run",
+        );
+      if (old.revision !== revision)
+        throw new Problem(
+          409,
+          "This record changed. Reload it before taking over the assignment.",
+          { current: old },
+        );
+      const assignment = old.meta.assignment as Assignment | undefined;
+      if (
+        !assignment ||
+        assignment.runId !== expected.runId ||
+        assignment.worker !== expected.worker ||
+        !["assigned", "acknowledged"].includes(assignment.state)
+      )
+        throw new Problem(
+          409,
+          "Managed assignment changed; reload the run before taking it over",
+        );
+      if (!this.scope(old))
+        throw new Problem(403, "Approved scope was revoked");
+
+      const claims = this.claims();
+      const obsolete = (claim: Claim) =>
+        claim.ticket === old.meta.id &&
+        claim.actor.kind === "agent" &&
+        claim.actor.name === expected.worker &&
+        !!expected.worktree &&
+        claim.worktree === expected.worktree;
+      const conflicting = claims.find(
+        (claim) =>
+          claim.ticket === old.meta.id &&
+          claim.expiresAt > now() &&
+          !obsolete(claim),
+      );
+      if (conflicting)
+        throw new Problem(
+          409,
+          `Ticket has a different live claim by ${conflicting.actor.name}`,
+          conflicting,
+        );
+
+      const saved = this.updateNow(
+        old.meta.id,
+        revision,
+        {
+          owner: actor.name,
+          assignment: {
+            ...assignment,
+            worker: actor.name,
+            assignedBy: actor.name,
+            assignedAt: now(),
+            state: "acknowledged",
+            mode: "takeover",
+          } satisfies Assignment,
+        },
+        undefined,
+        actor,
+        true,
+      );
+      const retained = claims.filter((claim) => !obsolete(claim));
+      if (retained.length !== claims.length)
+        atomic(
+          this.file(".local/claims.json"),
+          JSON.stringify(retained, null, 2),
+        );
+      return saved;
+    });
+  }
   placement(id: string, revision: string, input: unknown, actor: Actor) {
     return this.write(() => {
       const data = z
@@ -1366,7 +1457,9 @@ export class Store {
     if (c.parent) lines.push(`Parent: ${ref(c.parent)} ${c.parent.meta.title}`);
     if (t.meta.assignment)
       lines.push(
-        `Managed assignment: ${t.meta.assignment.worker} · ${t.meta.assignment.state} · run ${t.meta.assignment.runId}. Follow the managed run prompt; the controller owns claims, verification and review writes.`,
+        t.meta.assignment.mode === "takeover"
+          ? `Explicit takeover: ${t.meta.assignment.worker} · ${t.meta.assignment.state} · stopped managed run ${t.meta.assignment.runId}. Work under your own identity and use the ordinary claim, progress and human-review workflow.`
+          : `Managed assignment: ${t.meta.assignment.worker} · ${t.meta.assignment.state} · run ${t.meta.assignment.runId}. Follow the managed run prompt; the controller owns claims, verification and review writes.`,
       );
     if (t.meta.agentReview)
       lines.push(

@@ -9,6 +9,7 @@ import {
   git,
   processStart,
   processAlive,
+  processGroupAlive,
   runAgent,
   type Execute,
 } from "./agent-runner.js";
@@ -172,6 +173,31 @@ export class Orchestrator {
     const start = processStart(run.pid);
     return !start || !run.processStartedAt || start === run.processStartedAt;
   }
+  private stoppedProcessState(run: ManagedRun) {
+    if (this.active.has(run.id)) return "active" as const;
+    const processes = [
+      run.pid ? { pid: run.pid, startedAt: run.processStartedAt } : undefined,
+      run.lastProcess,
+    ].filter(
+      (value, index, all): value is { pid: number; startedAt?: string } =>
+        !!value && all.findIndex((other) => other?.pid === value.pid) === index,
+    );
+    for (const owned of processes) {
+      const leaderAlive = processAlive(owned.pid);
+      if (!leaderAlive && !processGroupAlive(owned.pid)) continue;
+      // The detached adapter owns the whole process group. If the leader has
+      // exited but a descendant remains, ownership cannot be verified safely.
+      if (!leaderAlive) return "uncertain" as const;
+      const currentStart = processStart(owned.pid);
+      if (!owned.startedAt || !currentStart) return "uncertain" as const;
+      if (currentStart === owned.startedAt) return "active" as const;
+      // A different start time means the recorded PID was reused only after
+      // the owned process exited; do not treat the unrelated process as ours.
+    }
+    if (!processes.length && (run.sessionId || run.lastEvent))
+      return "uncertain" as const;
+    return "exited" as const;
+  }
   private human(actor: Actor) {
     if (actor.kind !== "human")
       throw new Problem(
@@ -309,6 +335,14 @@ export class Orchestrator {
         "Choose an open ticket inside human-approved scope",
       );
     if (
+      ticket.meta.assignment?.mode === "takeover" &&
+      ticket.meta.assignment.state !== "released"
+    )
+      throw new Problem(
+        409,
+        "This ticket already has an active takeover assignment",
+      );
+    if (
       this.runs.some(
         (r) => r.ticket === ticket.meta.id && activeStates.has(r.state),
       )
@@ -428,6 +462,7 @@ export class Orchestrator {
               assignedBy: this.config().reviewer.name,
               assignedAt: now(),
               state: "assigned",
+              mode: "managed",
             },
             status: this.column("selected"),
           },
@@ -1113,6 +1148,53 @@ export class Orchestrator {
       return run;
     });
   }
+  async takeover(id: string, revision: string, actor: Actor) {
+    return this.serial(async () => {
+      const config = this.config();
+      if (
+        actor.kind !== "human" &&
+        (!config.enabled || actor.name !== config.reviewer.name)
+      )
+        throw new Problem(
+          403,
+          "Only the designated orchestrator or a human can take over a stopped run",
+        );
+      const run = this.run(id);
+      const stopped = () => {
+        if (run.kind !== "work" || run.state !== "interrupted")
+          throw new Problem(
+            409,
+            "Only an interrupted worker run can be taken over",
+          );
+        const processState = this.stoppedProcessState(run);
+        if (processState === "active")
+          throw new Problem(
+            409,
+            "Wait for every owned worker process to exit before taking over",
+          );
+        if (processState === "uncertain")
+          throw new Problem(
+            409,
+            "Worker process exit cannot be verified; inspect and stop the original process before taking over",
+          );
+      };
+      stopped();
+      const ticket = await this.store.takeoverManagedAssignment(
+        run.ticket,
+        revision,
+        { runId: run.id, worker: run.agent.name, worktree: run.worktree },
+        actor,
+        stopped,
+      );
+      this.save(run, {
+        state: "taken_over",
+        error: `Taken over explicitly by ${actor.name}; original checkout, logs and run retained for history`,
+        pid: undefined,
+        processStartedAt: undefined,
+      });
+      return { run, ticket };
+    });
+  }
   async resume(id: string, actor: Actor) {
     return this.serial(() => this.resumeNow(this.run(id), actor));
   }
@@ -1121,6 +1203,11 @@ export class Orchestrator {
     this.enabled();
     if (this.active.has(run.id))
       throw new Problem(409, "Wait for the current process to exit");
+    if (run.state === "taken_over")
+      throw new Problem(
+        409,
+        "Managed assignment changed; this stopped run can no longer resume",
+      );
     if (
       !["waiting_input", "interrupted", "recovery", "failed"].includes(
         run.state,
@@ -1133,6 +1220,18 @@ export class Orchestrator {
         "Original process is still alive; inspect and stop it before resuming",
       );
     const ticket = this.store.get(run.ticket);
+    if (run.kind === "work") {
+      const assignment = ticket.meta.assignment;
+      if (
+        assignment?.runId !== run.id ||
+        assignment.worker !== run.agent.name ||
+        assignment.mode === "takeover"
+      )
+        throw new Problem(
+          409,
+          "Managed assignment changed; this stopped run can no longer resume",
+        );
+    }
     if (this.role(ticket) === "done") {
       this.save(run, { state: "completed", error: "Ticket accepted by human" });
       return run;

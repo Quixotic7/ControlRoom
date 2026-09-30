@@ -29,6 +29,7 @@ export type RunState =
   | "completed"
   | "failed"
   | "interrupted"
+  | "taken_over"
   | "recovery";
 export type ManagedRun = {
   id: string;
@@ -70,6 +71,7 @@ export type Assignment = {
   assignedBy: string;
   assignedAt: string;
   state: "assigned" | "acknowledged" | "submitted" | "released";
+  mode?: "managed" | "takeover";
 };
 export type AgentReviewReceipt = {
   runId: string;

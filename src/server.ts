@@ -110,6 +110,9 @@ export async function buildServer(
   app.post("/api/orchestration/:id/stop", async (req: any) =>
     orchestration.stop(req.params.id, actor(req.body)),
   );
+  app.post("/api/orchestration/:id/takeover", async (req: any) =>
+    orchestration.takeover(req.params.id, req.body.revision, actor(req.body)),
+  );
   app.post("/api/orchestration/:id/resume", async (req: any) =>
     orchestration.resume(req.params.id, actor(req.body)),
   );
