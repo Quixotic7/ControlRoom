@@ -1,6 +1,6 @@
 import { useTicketDrag } from "./TicketDrag";
 import { ProgressReport } from "./ProgressReport";
-import { microtasks } from "../src/microtasks";
+import { TicketProgress } from "./TicketProgress";
 import { ticketNavigation } from "./ticketNavigation";
 import { useState } from "react";
 import { ImageThumbnail } from "./ImageThumbnail";
@@ -56,7 +56,6 @@ export function TicketCard({
 }) {
   const drag = useTicketDrag(record);
   const m = record.meta;
-  const tasks = microtasks(record.body).items;
   const role = ctx.columns.find((c) => c.id === m.status)?.role;
   const parent = m.parent ? ctx.byId.get(m.parent) : undefined;
   const priority = priorityOf(record);
@@ -109,11 +108,7 @@ export function TicketCard({
       </span>
       <span className="card-title">{m.title}</span>
       <ProgressReport record={record} claim={claim} role={role} />
-      {!!tasks.length && (
-        <span className="tag">
-          Checklist {tasks.filter((t) => t.done).length}/{tasks.length}
-        </span>
-      )}
+      <TicketProgress record={record} ctx={ctx} compact />
       {!!m.attachments?.length && (
         <span className="card-images" aria-label="Attached screenshots">
           {m.attachments.slice(0, 3).map((id) => {
