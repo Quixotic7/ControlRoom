@@ -34,6 +34,8 @@ export type Meta = {
   order?: number;
   owner?: string;
   scopeApproved?: boolean;
+  scopeApprovedAt?: string;
+  scopeApprovedBy?: Actor;
   blocked?: string;
   dependencies?: string[];
   related?: string[];

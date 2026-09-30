@@ -11,6 +11,7 @@ import { ArrowUpIcon, BlockedIcon, Label, StageIcon } from "./Icons";
 import { priorities, priorityOf, type Context, type Group } from "./model";
 import { QuickTicket } from "./QuickTicket";
 import { Avatar, VerificationTag } from "./TicketCard";
+import { QuickApprovalActions } from "./ApprovalActions";
 
 const tableSlot = (group: string, id: string) => `table/${group}/${id}`;
 
@@ -101,6 +102,7 @@ export function TableView({
   onPriority,
   onPlace,
   reload,
+  writesDisabled,
 }: {
   groups: Group[];
   groupBy: GroupBy;
@@ -118,6 +120,7 @@ export function TableView({
   onPriority: (record: RecordFile, priority: number) => void;
   onPlace: (draggedId: string, target: RecordFile) => void;
   reload: () => Promise<void>;
+  writesDisabled: boolean;
 }) {
   const ticketDrag = useTicketDragContext();
   const backlog = ctx.columns.find((c) => c.role === "backlog")!.id;
@@ -151,8 +154,8 @@ export function TableView({
     if (allBox.current)
       allBox.current.indeterminate = chosen.length > 0 && !allChosen;
   }, [chosen.length, allChosen]);
-  // Table columns: checkbox, row number, seven fields, and the order control.
-  const columns = 9 + (canReorder ? 1 : 0);
+  // Table columns: checkbox, row number, eight fields, and the order control.
+  const columns = 10 + (canReorder ? 1 : 0);
   const tableRef = useRef<HTMLDivElement>(null);
   const [cellSelection, setCellSelection] = useState<CellSelection | null>(
     null,
@@ -409,6 +412,7 @@ export function TableView({
             <th>Labels</th>
             <th>Parent</th>
             <th>Updated</th>
+            <th>Approval</th>
             {canReorder && <th aria-label="Order" />}
           </tr>
         </thead>
@@ -667,6 +671,15 @@ export function TableView({
                         </td>
                         <td className="muted nowrap">
                           {ago(r.meta.updatedAt)}
+                        </td>
+                        <td className="approval-cell">
+                          <QuickApprovalActions
+                            record={r}
+                            ctx={ctx}
+                            columns={ctx.columns}
+                            disabled={writesDisabled}
+                            reload={reload}
+                          />
                         </td>
                         {canReorder && (
                           <td>

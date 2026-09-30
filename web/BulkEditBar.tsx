@@ -5,12 +5,25 @@ import { bulkPatch, commonValue, type BulkChanges } from "./bulkEdit";
 import { priorities, priorityOf } from "./model";
 import { ParentInput } from "./ParentInput";
 import { TagInput } from "./TagInput";
+import {
+  applyApprovalAction,
+  approvedScope,
+  type ApprovalAction,
+} from "./ApprovalActions";
 
 type Result = {
   id: string;
   displayId: string;
   title: string;
   outcome: "succeeded" | "failed" | "unchanged";
+  error?: string;
+};
+
+type ApprovalDisplayResult = {
+  id: string;
+  displayId: string;
+  title: string;
+  outcome: "succeeded" | "ineligible" | "failed";
   error?: string;
 };
 
@@ -50,6 +63,24 @@ export function BulkEditBar({
   const [removeLabels, setRemoveLabels] = useState<string[]>([]);
   const [applying, setApplying] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState<ApprovalAction | null>(null);
+  const [approvalResults, setApprovalResults] = useState<
+    ApprovalDisplayResult[]
+  >([]);
+  const done = columns.filter((column) => column.role === "done");
+  const [doneId, setDoneId] = useState(done.length === 1 ? done[0].id : "");
+  const byId = useMemo(
+    () => new Map(records.map((record) => [record.meta.id, record])),
+    [records],
+  );
+  const scopeEligible = selected.filter(
+    (record) => !approvedScope(record, byId),
+  );
+  const reviewEligible = selected.filter(
+    (record) =>
+      columns.find((column) => column.id === record.meta.status)?.role ===
+      "review",
+  );
 
   const sharedStatus = commonValue(selected.map((r) => r.meta.status));
   const sharedPriority = commonValue(selected.map(priorityOf));
@@ -166,6 +197,51 @@ export function BulkEditBar({
     }
   }
 
+  async function applySelectedApproval(action: ApprovalAction) {
+    if (!selected.length || approvalBusy) return;
+    const snapshot = [...selected];
+    setApprovalBusy(action);
+    setApprovalResults([]);
+    try {
+      const response = await applyApprovalAction(
+        snapshot,
+        action,
+        action === "accept-review" ? doneId : undefined,
+      );
+      const display = response.results.map((result) => {
+        const record = snapshot.find((item) => item.meta.id === result.id)!;
+        return {
+          id: result.id,
+          displayId: recordId(record),
+          title: record.meta.title,
+          outcome: result.outcome,
+          error: result.error,
+        };
+      });
+      setApprovalResults(display);
+      onKeepSelected(
+        new Set(
+          display
+            .filter((result) => result.outcome === "failed")
+            .map((result) => result.id),
+        ),
+      );
+      await reload();
+    } catch (error) {
+      setApprovalResults(
+        snapshot.map((record) => ({
+          id: record.meta.id,
+          displayId: recordId(record),
+          title: record.meta.title,
+          outcome: "failed",
+          error: messageOf(error),
+        })),
+      );
+    } finally {
+      setApprovalBusy(null);
+    }
+  }
+
   const counts = {
     succeeded: results.filter((r) => r.outcome === "succeeded").length,
     failed: results.filter((r) => r.outcome === "failed").length,
@@ -191,6 +267,71 @@ export function BulkEditBar({
         >
           Clear selection
         </button>
+        <span className="bulk-sep" aria-hidden="true">
+          |
+        </span>
+        <button
+          className="button small"
+          disabled={disabled || !!approvalBusy || !scopeEligible.length}
+          onClick={() => void applySelectedApproval("approve-scope")}
+        >
+          {approvalBusy === "approve-scope"
+            ? "Approving…"
+            : `Approve scope (${scopeEligible.length} eligible)`}
+        </button>
+        <details className="bulk-review-action">
+          <summary
+            className="button small"
+            aria-disabled={disabled || !!approvalBusy || !reviewEligible.length}
+          >
+            Accept Review ({reviewEligible.length} eligible)…
+          </summary>
+          <div className="bulk-review-panel">
+            <strong>Review summaries and evidence</strong>
+            <ul>
+              {reviewEligible.map((record) => (
+                <li key={record.meta.id}>
+                  <strong>
+                    {recordId(record)} {record.meta.title}
+                  </strong>
+                  <span>
+                    Summary: {record.meta.handoff?.trim() || "Not submitted"}
+                  </span>
+                  <span>
+                    Evidence: {record.meta.evidence?.trim() || "Not submitted"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {done.length > 1 && (
+              <label className="field">
+                Done destination
+                <select
+                  value={doneId}
+                  onChange={(event) => setDoneId(event.target.value)}
+                >
+                  <option value="">Choose Done column</option>
+                  {done.map((column) => (
+                    <option value={column.id} key={column.id}>
+                      {column.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <button
+              className="button primary small"
+              disabled={
+                disabled || !!approvalBusy || !reviewEligible.length || !doneId
+              }
+              onClick={() => void applySelectedApproval("accept-review")}
+            >
+              {approvalBusy === "accept-review"
+                ? "Accepting…"
+                : `Accept ${reviewEligible.length} into Done`}
+            </button>
+          </div>
+        </details>
       </div>
       {!!selected.length && (
         <div className="bulk-panel">
@@ -385,6 +526,54 @@ export function BulkEditBar({
               to retry only those tickets.
             </p>
           )}
+        </div>
+      )}
+      {!!approvalResults.length && (
+        <div
+          className="bulk-results approval-results"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>Approval action result</strong>
+          <span className="tag green">
+            {
+              approvalResults.filter((result) => result.outcome === "succeeded")
+                .length
+            }{" "}
+            succeeded
+          </span>
+          <span className="tag">
+            {
+              approvalResults.filter(
+                (result) => result.outcome === "ineligible",
+              ).length
+            }{" "}
+            ineligible
+          </span>
+          <span
+            className={
+              approvalResults.some((result) => result.outcome === "failed")
+                ? "tag danger"
+                : "tag"
+            }
+          >
+            {
+              approvalResults.filter((result) => result.outcome === "failed")
+                .length
+            }{" "}
+            failed
+          </span>
+          <ul>
+            {approvalResults.map((result) => (
+              <li key={result.id} data-outcome={result.outcome}>
+                <strong>{result.outcome}</strong>
+                <span>
+                  {result.displayId} {result.title}
+                </span>
+                {result.error && <small>{result.error}</small>}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>

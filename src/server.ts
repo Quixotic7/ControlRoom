@@ -239,6 +239,9 @@ export async function buildServer(
   app.post("/api/records/:id/review-outcome", async (req: any) =>
     store.reviewOutcome(req.params.id, req.body, actor(req.body)),
   );
+  app.post("/api/approval-actions", async (req: any) =>
+    store.approvalActions(req.body, actor(req.body)),
+  );
   app.post("/api/records/:id/review", async (req: any) => {
     const b = req.body;
     return store.review(

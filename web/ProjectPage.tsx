@@ -801,6 +801,7 @@ export function ProjectPage({
             onPriority={setPriority}
             onPlace={place}
             reload={reload}
+            writesDisabled={state.branchChanged}
           />
         )}
         {!!tickets.length && !visible.length && (

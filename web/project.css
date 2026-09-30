@@ -815,6 +815,17 @@ body,
   border-color: var(--accent);
   border-left-color: var(--signal);
 }
+.board-ticket > .quick-approval-actions {
+  margin-top: -1px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-top-style: dashed;
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: var(--subtle);
+}
+.board-ticket:has(> .quick-approval-actions) .ticket-card {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
 
 /* ----------------------------------------------------------------- cards */
 
@@ -1057,6 +1068,9 @@ body,
   border-bottom: 1px solid var(--line-soft);
   vertical-align: middle;
   height: 40px;
+}
+.approval-cell {
+  min-width: 190px;
 }
 .project-table th + th,
 .project-table td + td {
@@ -1357,6 +1371,94 @@ body,
 }
 .bulk-sep {
   color: var(--faint);
+}
+.bulk-review-action,
+.quick-review {
+  position: relative;
+}
+.bulk-review-action > summary,
+.quick-review > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.bulk-review-action > summary::-webkit-details-marker,
+.quick-review > summary::-webkit-details-marker {
+  display: none;
+}
+.bulk-review-action > summary[aria-disabled="true"] {
+  opacity: 0.5;
+}
+.bulk-review-panel,
+.quick-review-panel {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+  gap: 8px;
+  width: min(520px, 80vw);
+  max-height: 440px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.bulk-review-panel {
+  left: 0;
+}
+.bulk-review-panel > ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.bulk-review-panel li {
+  display: grid;
+  gap: 3px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.quick-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.quick-review-panel {
+  right: 0;
+  width: min(380px, 80vw);
+}
+.approval-cell .quick-review-panel {
+  position: static;
+  width: min(380px, 60vw);
+}
+.quick-review-panel p {
+  margin: 0 0 4px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+.quick-action-result {
+  flex-basis: 100%;
+  color: var(--success);
+}
+.quick-action-result.failed,
+.quick-action-result.ineligible {
+  color: var(--danger);
+}
+.tag.inherited-scope {
+  border-style: dashed;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--accent-ink);
+}
+.bulk-results li[data-outcome="ineligible"] > strong {
+  color: var(--attention);
 }
 .bulk-bar .cell-select {
   margin-left: 0;

@@ -15,6 +15,7 @@ import { QuickTicket } from "./QuickTicket";
 import { dragType, TicketCard } from "./TicketCard";
 import { TicketProgress } from "./TicketProgress";
 import { useTicketDragContext } from "./TicketDrag";
+import { QuickApprovalActions } from "./ApprovalActions";
 
 const boardSlot = (group: string, column: string, id: string) =>
   `board/${group}/${column}/${id}`;
@@ -466,6 +467,14 @@ export function BoardView({
                                   }
                                   onOpen={onOpen}
                                   onShiftSelect={() => shiftSelect(r.meta.id)}
+                                />
+                                <QuickApprovalActions
+                                  record={r}
+                                  ctx={ctx}
+                                  columns={ctx.columns}
+                                  disabled={writesDisabled}
+                                  reload={reload}
+                                  showScopeState={false}
                                 />
                               </div>
                             </React.Fragment>

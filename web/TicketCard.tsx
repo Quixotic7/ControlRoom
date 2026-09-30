@@ -8,6 +8,7 @@ import type { Claim, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
 import { BlockedIcon, Label, StageIcon } from "./Icons";
 import { priorityName, priorityOf, type Context } from "./model";
+import { approvedScope, ScopeState } from "./ApprovalActions";
 
 export const dragType = "text/workboard-ticket";
 
@@ -64,7 +65,7 @@ export function TicketCard({
   const details =
     !!m.labels?.length ||
     priority !== 2 ||
-    m.scopeApproved ||
+    !!approvedScope(record, ctx.byId) ||
     m.blocked ||
     m.verification ||
     m.assignment ||
@@ -152,9 +153,7 @@ export function TicketCard({
             {m.labels?.slice(0, 4).map((l) => (
               <Label name={l} key={l} />
             ))}
-            {m.scopeApproved && (
-              <span className="tag green">Approved scope</span>
-            )}
+            <ScopeState record={record} ctx={ctx} />
             <VerificationTag record={record} />
             {m.assignment && role !== "done" && (
               <span className="tag">
