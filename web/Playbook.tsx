@@ -106,15 +106,15 @@ export function Playbook({
         {copied ? "Prompt copied successfully." : copyError}
       </p>
       {playbookGroups.map((group) => {
-        const recipes = shown.filter((recipe) => recipe.group === group);
+        const recipes = shown.filter((recipe) => recipe.group === group.label);
         if (!recipes.length) return null;
         return (
           <section
             className="playbook-group"
-            key={group}
-            aria-labelledby={`playbook-${group}`}
+            key={group.id}
+            aria-labelledby={`playbook-${group.id}`}
           >
-            <h2 id={`playbook-${group}`}>{group}</h2>
+            <h2 id={`playbook-${group.id}`}>{group.label}</h2>
             <div className="playbook-grid">
               {recipes.map((recipe) => {
                 const prompt = recipe.prompt(context);
