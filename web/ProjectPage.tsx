@@ -690,11 +690,6 @@ export function ProjectPage({
         </div>
         {view.layout === "board" && hiddenCount > 0 && (
           <div className="column-visibility-bar" role="status">
-            <span>
-              {hiddenCount}{" "}
-              {hiddenCount === 1 ? "column hidden" : "columns hidden"}. Header
-              counts include hidden tickets.
-            </span>
             <button className="text-button" onClick={visibility.showAll}>
               Show all columns
             </button>
