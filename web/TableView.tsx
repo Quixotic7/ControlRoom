@@ -1,6 +1,7 @@
 import { useTicketDrag } from "./TicketDrag";
 import type { ReactNode } from "react";
 import { ProgressReport } from "./ProgressReport";
+import { TicketProgress } from "./TicketProgress";
 import { ticketNavigation } from "./ticketNavigation";
 import { useEffect, useRef } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
@@ -186,12 +187,8 @@ export function TableView({
                             Blocked
                           </span>
                         )}
-                        <ProgressReport
-                          record={r}
-                          claim={claim}
-                          role={role}
-                          checklist
-                        />
+                        <ProgressReport record={r} claim={claim} role={role} />
+                        <TicketProgress record={r} ctx={ctx} compact />
                         <VerificationTag record={r} />
                       </td>
                       <td>

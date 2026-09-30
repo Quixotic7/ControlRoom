@@ -1,17 +1,14 @@
 import { useEffect, useState } from "react";
 import type { RecordFile, Claim } from "../src/types";
 import { ago } from "./api";
-import { microtasks } from "../src/microtasks";
 export function ProgressReport({
   record,
   claim,
   role,
-  checklist = false,
 }: {
   record: RecordFile;
   claim?: Claim;
   role?: string;
-  checklist?: boolean;
 }) {
   const [clock, setClock] = useState(Date.now());
   useEffect(() => {
@@ -23,8 +20,7 @@ export function ProgressReport({
   const expired = !!claim && Date.parse(claim.expiresAt) <= clock;
   const last = [p?.at, claim?.reportedAt].filter(Boolean).sort().at(-1);
   const stale = !!last && clock - Date.parse(last) > 30 * 60 * 1000;
-  const tasks = checklist ? microtasks(record.body).items : [];
-  if (!p && !claim && role !== "progress" && !tasks.length) return null;
+  if (!p && !claim && role !== "progress") return null;
   const minutes = start
     ? Math.max(0, Math.floor((clock - Date.parse(start)) / 60000))
     : null;
@@ -74,11 +70,6 @@ export function ProgressReport({
           aria-valuenow={p.percent}
         >
           <span style={{ width: `${p.percent}%` }} />
-        </span>
-      )}
-      {!!tasks.length && (
-        <span>
-          Checklist {tasks.filter((t) => t.done).length}/{tasks.length}
         </span>
       )}
     </span>
