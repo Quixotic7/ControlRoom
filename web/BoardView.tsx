@@ -428,17 +428,14 @@ export function BoardView({
                           ticketDrag.commit();
                           return;
                         }
-                        const droppedOnTicket =
-                          e.target instanceof Element &&
-                          e.target.closest(".board-ticket[data-id]");
-                        if (ticketDrag?.session && droppedOnTicket) {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          ticketDrag.end();
-                          return;
-                        }
+                        // A missing placement preview can still be a stage
+                        // move (Review deliberately does not reorder on entry,
+                        // and sorted views may disable manual placement).
+                        // Treat card surfaces like the rest of their column.
                         const id = e.dataTransfer.getData(dragType);
-                        const r = ctx.byId.get(id);
+                        const r =
+                          ticketDrag?.session?.records.get(id) ??
+                          ctx.byId.get(id);
                         if (r) {
                           e.preventDefault();
                           onMove(r, c.id);
