@@ -331,6 +331,8 @@ export function BoardView({
                   const slotPrefix = boardSlot(g.key, c.id, "");
                   const preview = ticketDrag?.session?.preview;
                   const sourceId = ticketDrag?.session?.source.meta.id;
+                  // Collapse only after native drag startup reaches a drop target.
+                  // Hiding the source during dragstart can cancel the browser drag.
                   const firstVisible = items.find(
                     (item) => item.meta.id !== sourceId,
                   )?.meta.id;
@@ -445,7 +447,7 @@ export function BoardView({
                               />
                               <div
                                 data-id={r.meta.id}
-                                className={`board-ticket${r.meta.id === sourceId ? " drag-source" : ""}${selected.has(r.meta.id) ? " selected" : ""}${
+                                className={`board-ticket${r.meta.id === sourceId && preview ? " drag-source" : ""}${selected.has(r.meta.id) ? " selected" : ""}${
                                   g.record && r.meta.parent !== g.record.meta.id
                                     ? " nested-ticket"
                                     : ""
