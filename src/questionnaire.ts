@@ -14,6 +14,7 @@ export const questionsSchema = z
         prompt: z.string().trim().min(1).max(5000),
         type: z.enum(["text", "choice"]),
         required: z.boolean().default(true),
+        multiple: z.boolean().optional(),
         choices: z
           .array(z.string().trim().min(1).max(1000))
           .min(2)
@@ -42,9 +43,27 @@ export const questionsSchema = z
 export type QuestionSpec = z.infer<typeof questionsSchema>;
 export function questionText(questions: QuestionSpec) {
   return questions
-    .map(
-      (q) =>
-        `### ${q.id}: ${q.prompt}${q.required ? " (required)" : " (optional)"}\n\n${q.type === "choice" ? q.choices!.map((c) => `- ${c}${c === q.recommended ? " (recommended)" : ""}`).join("\n") + "\n\nCustom text is also welcome." : "Free-text answer."}`,
-    )
+    .map((q) => {
+      const heading = `### ${q.id}: ${q.prompt}${q.required ? " (required)" : " (optional)"}`;
+      if (q.type !== "choice") return `${heading}\n\nFree-text answer.`;
+      const options = q
+        .choices!.map(
+          (c) => `- ${c}${c === q.recommended ? " (recommended)" : ""}`,
+        )
+        .join("\n");
+      const mode = q.multiple ? "Select all that apply." : "Select one option.";
+      return `${heading}\n\n${options}\n\n${mode} Custom text is separate and also welcome.`;
+    })
     .join("\n\n");
 }
+
+export const choiceAnswersSchema = z.record(
+  z.string(),
+  z
+    .object({
+      selected: z.array(z.string()).max(30),
+      custom: z.string().trim().max(10000),
+    })
+    .strict(),
+);
+export type ChoiceAnswers = z.infer<typeof choiceAnswersSchema>;

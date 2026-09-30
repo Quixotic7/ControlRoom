@@ -1,4 +1,8 @@
-import { questionsSchema, questionText } from "./questionnaire.js";
+import {
+  questionsSchema,
+  questionText,
+  choiceAnswersSchema,
+} from "./questionnaire.js";
 import type { AgentReviewReceipt, Assignment } from "./orchestration-types.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -1155,6 +1159,7 @@ export class Store {
     revision: string,
     input: unknown,
     actor: Actor,
+    choiceInput?: unknown,
   ) {
     return this.write(() => {
       actorSchema.parse(actor);
@@ -1175,6 +1180,27 @@ export class Store {
         .parse(input);
       if (Object.keys(values).some((k) => !questions.some((q) => q.id === k)))
         throw new Problem(422, "Unknown question ID");
+      const choiceAnswers =
+        choiceInput === undefined
+          ? undefined
+          : choiceAnswersSchema.parse(choiceInput);
+      for (const [id, answer] of Object.entries(choiceAnswers ?? {})) {
+        const q = questions.find((q) => q.id === id);
+        if (!q || q.type !== "choice")
+          throw new Problem(422, "Unknown choice question ID");
+        if (
+          answer.selected.some((value) => !q.choices!.includes(value)) ||
+          new Set(answer.selected).size !== answer.selected.length ||
+          (!q.multiple && answer.selected.length > 1)
+        )
+          throw new Problem(422, "Choose valid options for this question");
+        values[id] = [
+          ...answer.selected,
+          ...(answer.custom ? [answer.custom] : []),
+        ].join("\n\n");
+        if (values[id].length > 10000)
+          throw new Problem(422, "Answer is too long");
+      }
       if (questions.some((q) => q.required && !values[q.id]?.trim()))
         throw new Problem(
           422,
@@ -1182,7 +1208,13 @@ export class Store {
         );
       if (!Object.values(values).some((v) => v.trim()))
         throw new Problem(422, "Supply an answer before submitting");
-      const answer = { actor, at: now(), questions, values };
+      const answer = {
+        actor,
+        at: now(),
+        questions,
+        values,
+        ...(choiceAnswers ? { choiceAnswers } : {}),
+      };
       const body =
         original.body +
         `\n\n## Answers from ${actor.name} at ${answer.at}\n\n` +

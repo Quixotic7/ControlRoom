@@ -427,6 +427,11 @@ export async function startMcp(
                 prompt: str("Question wording"),
                 type: { enum: ["text", "choice"] },
                 required: { type: "boolean" },
+                multiple: {
+                  type: "boolean",
+                  description:
+                    "For choice questions, allow multiple selected options. Custom text remains separate.",
+                },
                 choices: { type: "array", items: { type: "string" } },
                 recommended: { type: "string" },
               },

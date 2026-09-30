@@ -82,7 +82,7 @@ test("questionnaire drafts survive refresh and require explicit answers; edits c
     page.getByRole("button", { name: "Submit answers", exact: true }),
   ).toBeDisabled();
   await page
-    .getByRole("button", { name: "Quiet (recommended)", exact: true })
+    .getByRole("radio", { name: "Quiet (recommended)", exact: true })
     .click();
   await page
     .getByLabel("Answer: Explain the choice")
@@ -430,4 +430,109 @@ test("cross-parent drag is invalid and leaving a drag target clears its preview"
   await target.dispatchEvent("drop", { dataTransfer: dt });
   expect((await get(page, child.meta.id)).revision).toBe(child.revision);
   await source.dispatchEvent("dragend", { dataTransfer: dt });
+});
+
+test("questionnaire selections preserve independent notes across refresh, reopening and amendments", async ({
+  page,
+}) => {
+  const r = await create(page, "Independent choice notes");
+  const q = await (
+    await page.request.post(`/api/records/${r.meta.id}/questionnaires`, {
+      data: {
+        actor: agent,
+        questions: [
+          {
+            id: "single",
+            prompt: "Choose a style",
+            type: "choice",
+            choices: ["Calm", "Lively"],
+            recommended: "Calm",
+          },
+          {
+            id: "multi",
+            prompt: "Choose features",
+            type: "choice",
+            multiple: true,
+            choices: ["Search", "Tags", "History"],
+          },
+        ],
+      },
+    })
+  ).json();
+  await open(page, r.meta.id);
+  const notes = page.getByLabel("Answer: Choose a style");
+  const multiNotes = page.getByLabel("Answer: Choose features");
+  await expect(
+    page.getByRole("radio", { name: "Calm (recommended)", exact: true }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("button", { name: "Submit answers", exact: true }),
+  ).toBeDisabled();
+  await expect(notes).toHaveAttribute("rows", "1");
+  await notes.fill("Keep my custom instructions");
+  await page
+    .getByRole("radio", { name: "Calm (recommended)", exact: true })
+    .check();
+  await page.getByRole("radio", { name: "Lively", exact: true }).check();
+  await expect(notes).toHaveValue("Keep my custom instructions");
+  await page.getByRole("checkbox", { name: "Search", exact: true }).focus();
+  await page.keyboard.press("Space");
+  await page.getByRole("checkbox", { name: "History", exact: true }).check();
+  await multiNotes.fill("Keep both features");
+  await page.reload();
+  await expect(notes).toHaveValue("Keep my custom instructions");
+  await expect(
+    page.getByRole("radio", { name: "Lively", exact: true }),
+  ).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "Search", exact: true }),
+  ).toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: "History", exact: true }),
+  ).toBeChecked();
+  await page
+    .getByRole("button", { name: "Submit answers", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Submit answers", exact: true }),
+  ).toHaveCount(0);
+  const comment = async () =>
+    (
+      await (await page.request.get(`/api/records/${r.meta.id}/context`)).json()
+    ).comments.find((c: any) => c.id === q.id);
+  const original = (await comment()).answers[0];
+  expect(original.choiceAnswers.single).toEqual({
+    selected: ["Lively"],
+    custom: "Keep my custom instructions",
+  });
+  expect(original.choiceAnswers.multi).toEqual({
+    selected: ["Search", "History"],
+    custom: "Keep both features",
+  });
+  // Remove this browser's draft to prove the saved structured answer also rehydrates.
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith("questionnaire:")) localStorage.removeItem(key);
+  });
+  await page.reload();
+  await page.getByRole("button", { name: /^Conversation/ }).click();
+  await expect(notes).toHaveValue("Keep my custom instructions");
+  await expect(
+    page.getByRole("checkbox", { name: "History", exact: true }),
+  ).toBeChecked();
+  await page
+    .getByRole("button", { name: "Reopen questionnaire", exact: true })
+    .click();
+  await page.getByRole("checkbox", { name: "Search", exact: true }).uncheck();
+  await expect(multiNotes).toHaveValue("Keep both features");
+  await page
+    .getByRole("button", { name: "Submit amended answers", exact: true })
+    .click();
+  await expect.poll(async () => (await comment()).answers.length).toBe(2);
+  const amended = await comment();
+  expect(amended.answers[0]).toEqual(original);
+  expect(amended.answers[1].choiceAnswers.multi).toEqual({
+    selected: ["History"],
+    custom: "Keep both features",
+  });
 });
