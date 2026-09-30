@@ -495,3 +495,46 @@ test("table dropdown fills only the selected visible column and keeps a rectangu
   expect((await record(page, hidden.meta.id)).meta.status).toBe("backlog");
   expect((await record(page, hidden.meta.id)).meta.priority).toBe(0);
 });
+
+test("priority planning retains selected-column edits without changing workflow", async ({
+  page,
+}) => {
+  const label = `planning-fill-${Date.now()}`;
+  const first = await create(page, `Planning fill first ${label}`, {
+    labels: [label],
+    priority: 2,
+    order: 10,
+    status: "selected",
+  });
+  const second = await create(page, `Planning fill second ${label}`, {
+    labels: [label],
+    priority: 2,
+    order: 20,
+    status: "review",
+  });
+  await page.request.patch("/api/preferences", {
+    data: { selected: null, page: "project", viewId: "priority-planning" },
+  });
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  await page
+    .locator(`td[data-cell-id="${first.meta.id}"][data-cell-column="priority"]`)
+    .focus();
+  await page
+    .locator(
+      `td[data-cell-id="${second.meta.id}"][data-cell-column="priority"]`,
+    )
+    .click({ modifiers: ["Shift"] });
+  const editor = page.getByLabel(`Priority of ${first.meta.title}`);
+  await editor.focus();
+  await editor.selectOption("1");
+  for (const ticket of [first, second]) {
+    await expect
+      .poll(async () => (await record(page, ticket.meta.id)).meta.priority)
+      .toBe(1);
+    expect((await record(page, ticket.meta.id)).meta.status).toBe(
+      ticket.meta.status,
+    );
+  }
+  await expect(page.locator(".cell-selected")).toHaveCount(2);
+});
