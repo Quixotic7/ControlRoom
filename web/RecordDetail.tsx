@@ -27,6 +27,104 @@ import type {
 } from "../src/types";
 import { actor, api, ApiError, ago, recordId, split, uploadImage } from "./api";
 
+// Keep hot text-entry state close to the input. The record detail contains
+// project-wide derived data and (often) a long Markdown conversation; making
+// its parent own every keystroke needlessly rerenders all of that work. Drafts
+// are mirrored synchronously to refs by onDraft, then committed to the parent
+// on blur so save/close can always use the newest value without input lag.
+function DraftInput({
+  value,
+  reset,
+  onDraft,
+  onCommit,
+  ...props
+}: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> & {
+  value: string;
+  reset: string;
+  onDraft: (value: string) => void;
+  onCommit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  useEffect(() => {
+    if (value === draftRef.current) return;
+    draftRef.current = value;
+    setDraft(value);
+  }, [value, reset]);
+  return (
+    <input
+      {...props}
+      value={draft}
+      onChange={(e) => {
+        draftRef.current = e.target.value;
+        setDraft(e.target.value);
+        onDraft(e.target.value);
+      }}
+      onBlur={(e) => {
+        props.onBlur?.(e);
+        onCommit(e.currentTarget.value);
+      }}
+    />
+  );
+}
+
+function DraftTextarea({
+  value,
+  reset,
+  onDraft,
+  onCommit,
+  onImage,
+  onError,
+  ...props
+}: Omit<
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>,
+  "value" | "onChange" | "onPaste"
+> & {
+  value: string;
+  reset: string;
+  onDraft: (value: string) => void;
+  onCommit: (value: string) => void;
+  onImage: (id: string) => void;
+  onError: (error: unknown) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const draftRef = useRef(value);
+  useEffect(() => {
+    if (value === draftRef.current) return;
+    draftRef.current = value;
+    setDraft(value);
+  }, [value, reset]);
+  const update = (transform: (text: string) => string) => {
+    const next = transform(draftRef.current);
+    draftRef.current = next;
+    setDraft(next);
+    onDraft(next);
+    // Image upload completion and failure happen after the paste event, and
+    // must also update previews/microtasks even if the editor has blurred.
+    onCommit(next);
+  };
+  return (
+    <textarea
+      {...props}
+      value={draft}
+      onChange={(e) => {
+        draftRef.current = e.target.value;
+        setDraft(e.target.value);
+        onDraft(e.target.value);
+      }}
+      onBlur={(e) => {
+        props.onBlur?.(e);
+        onCommit(e.currentTarget.value);
+      }}
+      onPaste={(e) =>
+        pasteImage(e, update)
+          .then((id) => id && onImage(id))
+          .catch(onError)
+      }
+    />
+  );
+}
+
 // Absent, null, "" and [] all mean "no value" in a record form.
 const normalized = (v: unknown) =>
   JSON.stringify(
@@ -120,7 +218,7 @@ export function RecordDetail({
     tab: string;
   } | null>(null);
   const [baseline, setBaseline] = useState(record),
-    [m, setM] = useState<any>(
+    [m, setMState] = useState<any>(
       record?.meta ?? {
         title: "",
         status:
@@ -141,7 +239,7 @@ export function RecordDetail({
       : kind === "decision"
         ? "## Context\n\n\n## Decision\n\n\n## Why\n\n\n## Alternatives and tradeoffs\n\n"
         : "## Rule\n\n\n## Why\n\n\n## Examples and implementation references\n\n";
-  const [body, setBody] = useState(record?.body ?? template),
+  const [body, setBodyState] = useState(record?.body ?? template),
     [tab, setTab] = useState("details"),
     [preview, setPreview] = useState(
       kind === "ticket" && !!record?.body.trim(),
@@ -158,7 +256,35 @@ export function RecordDetail({
       current: RecordFile;
       fields: string[];
     } | null>(null),
-    [closeFailed, setCloseFailed] = useState(false);
+    [closeFailed, setCloseFailed] = useState(false),
+    [titlePresent, setTitlePresent] = useState(() => !!m.title.trim());
+  const mRef = useRef<any>(m);
+  const bodyRef = useRef(body);
+  const draftReset = baseline?.revision ?? "new";
+  function isDraftDirty(draft = mRef.current, text = bodyRef.current) {
+    return baseline
+      ? Object.keys(changedFields(baseline.meta, draft)).length > 0 ||
+          text !== baseline.body
+      : !!draft.title.trim() || text !== template;
+  }
+  function replaceMeta(next: any) {
+    mRef.current = next;
+    setMState(next);
+    setTitlePresent(!!next.title.trim());
+  }
+  function replaceBody(next: string | ((body: string) => string)) {
+    const value = typeof next === "function" ? next(bodyRef.current) : next;
+    bodyRef.current = value;
+    setBodyState(value);
+  }
+  function draftMeta(key: string, value: any) {
+    const next = { ...mRef.current, [key]: value };
+    mRef.current = next;
+    if (key === "title") setTitlePresent(!!value.trim());
+  }
+  function draftBody(value: string) {
+    bodyRef.current = value;
+  }
   function rememberReadingPosition() {
     const scroller = detailBody.current;
     if (!scroller || (tab !== "conversation" && tab !== "details")) {
@@ -200,10 +326,7 @@ export function RecordDetail({
     }
     rememberReadingPosition();
   }, [state.comments, tab, conversationOrder]);
-  const dirty = baseline
-    ? Object.keys(changedFields(baseline.meta, m)).length > 0 ||
-      body !== baseline.body
-    : !!m.title.trim() || body !== template;
+  const dirty = isDraftDirty();
   useEffect(() => {
     if (standalone) dialog.current?.show();
     else dialog.current?.showModal();
@@ -221,7 +344,7 @@ export function RecordDetail({
         .catch((e) => setError(String(e)));
   }, [tab, record?.revision]);
   const set = (key: string, value: any) =>
-    setM((v: any) => ({ ...v, [key]: value }));
+    replaceMeta({ ...mRef.current, [key]: value });
   const pending = useRef(false);
   const reviewAttempt = useRef<{ signature: string; requestId: string } | null>(
     null,
@@ -240,8 +363,8 @@ export function RecordDetail({
       outcome,
       target,
       feedback,
-      patch: changedFields(baseline.meta, m),
-      body: body !== baseline.body ? body : undefined,
+      patch: changedFields(baseline.meta, mRef.current),
+      body: bodyRef.current !== baseline.body ? bodyRef.current : undefined,
       actor,
     };
     const signature = JSON.stringify(draft);
@@ -257,8 +380,8 @@ export function RecordDetail({
         },
       );
       setBaseline(r);
-      setM(r.meta);
-      setBody(r.body);
+      replaceMeta(r.meta);
+      replaceBody(r.body);
       setConflict(null);
       await onSaved(r.meta.id);
       onClose();
@@ -272,9 +395,11 @@ export function RecordDetail({
     }
   }
   // `draft` lets a one-click change (archive) save without waiting for state.
-  async function save(review = false, closeAfter = true, draft = m) {
+  async function save(review = false, closeAfter = true, draft?: Meta) {
     if (pending.current) return false;
-    if (!draft.title.trim()) {
+    const currentDraft = draft ?? mRef.current;
+    const currentBody = bodyRef.current;
+    if (!currentDraft.title.trim()) {
       setError("Give the ticket a short title before closing.");
       return false;
     }
@@ -284,28 +409,33 @@ export function RecordDetail({
     try {
       let r: RecordFile;
       const changed = baseline
-        ? Object.keys(changedFields(baseline.meta, draft)).length > 0 ||
-          body !== baseline.body
+        ? Object.keys(changedFields(baseline.meta, currentDraft)).length > 0 ||
+          currentBody !== baseline.body
         : true;
       if (!baseline)
-        r = await api("/records", "POST", { kind, meta: draft, body, actor });
+        r = await api("/records", "POST", {
+          kind,
+          meta: currentDraft,
+          body: currentBody,
+          actor,
+        });
       else if (!changed) r = baseline;
-      else r = await patchRecord(baseline, draft);
+      else r = await patchRecord(baseline, currentDraft, currentBody);
       setBaseline(r);
       setConflict(null);
       setCloseFailed(false);
       if (review)
         r = await api(`/records/${r.meta.id}/review`, "POST", {
           revision: r.revision,
-          handoff: draft.handoff,
-          evidence: draft.evidence,
-          reviewInstructions: draft.reviewInstructions,
-          exceptions: draft.exceptions,
+          handoff: currentDraft.handoff,
+          evidence: currentDraft.evidence,
+          reviewInstructions: currentDraft.reviewInstructions,
+          exceptions: currentDraft.exceptions,
           actor,
         });
       setBaseline(r);
-      setM(r.meta);
-      setBody(r.body);
+      replaceMeta(r.meta);
+      replaceBody(r.body);
       await onSaved(r.meta.id);
       if (closeAfter) onClose();
       return r;
@@ -323,14 +453,15 @@ export function RecordDetail({
   async function patchRecord(
     base: RecordFile,
     draft: Meta,
+    draftBody: string,
   ): Promise<RecordFile> {
     const patch = changedFields(base.meta, draft),
-      bodyChanged = body !== base.body;
+      bodyChanged = draftBody !== base.body;
     const send = (revision: string) =>
       api<RecordFile>(`/records/${base.meta.id}`, "PATCH", {
         revision,
         patch,
-        body: bodyChanged ? body : undefined,
+        body: bodyChanged ? draftBody : undefined,
         actor,
       });
     try {
@@ -355,11 +486,23 @@ export function RecordDetail({
   }
   function rebase(current: RecordFile, keepMine: boolean) {
     if (keepMine && baseline) {
-      setM({ ...current.meta, ...changedFields(baseline.meta, m) });
-      if (body === baseline.body) setBody(current.body);
+      const nextMeta = {
+        ...current.meta,
+        ...changedFields(baseline.meta, mRef.current),
+      };
+      const nextBody =
+        bodyRef.current === baseline.body ? current.body : bodyRef.current;
+      mRef.current = nextMeta;
+      bodyRef.current = nextBody;
+      setMState(nextMeta);
+      setBodyState(nextBody);
+      setTitlePresent(!!nextMeta.title.trim());
     } else {
-      setM(current.meta);
-      setBody(current.body);
+      mRef.current = current.meta;
+      bodyRef.current = current.body;
+      setMState(current.meta);
+      setBodyState(current.body);
+      setTitlePresent(!!current.meta.title.trim());
     }
     setBaseline(current);
     setConflict(null);
@@ -367,7 +510,7 @@ export function RecordDetail({
   }
   async function close() {
     if (pending.current) return;
-    if (!dirty) {
+    if (!isDraftDirty()) {
       onClose();
       return;
     }
@@ -421,17 +564,20 @@ export function RecordDetail({
   }
   // Functional update: concurrent uploads must not overwrite each other.
   const attachId = (id: string) =>
-    setM((v: any) =>
-      v.attachments?.includes(id)
-        ? v
-        : { ...v, attachments: [...(v.attachments ?? []), id] },
+    replaceMeta(
+      mRef.current.attachments?.includes(id)
+        ? mRef.current
+        : {
+            ...mRef.current,
+            attachments: [...(mRef.current.attachments ?? []), id],
+          },
     );
   async function attach(file: File) {
     try {
       const a = await uploadImage(file);
       attachId(a.id);
       // Attached from the images section: also reference it in the text.
-      setBody(
+      replaceBody(
         (b: string) => `${b.trimEnd()}\n\n${imageMarkdown(a.id, a.name)}\n`,
       );
       openImage(a.id);
@@ -728,7 +874,7 @@ export function RecordDetail({
         }
       />
       <div className="record-title">
-        <input
+        <DraftInput
           aria-label="Title"
           autoFocus
           placeholder={
@@ -739,7 +885,9 @@ export function RecordDetail({
                 : "What was decided?"
           }
           value={m.title}
-          onChange={(e) => set("title", e.target.value)}
+          reset={draftReset}
+          onDraft={(value) => draftMeta("title", value)}
+          onCommit={(value) => set("title", value)}
         />
         <div className="record-subtitle">
           {kind === "ticket" &&
@@ -1090,7 +1238,7 @@ export function RecordDetail({
                 />
               )}
               {kind === "ticket" && (
-                <Microtasks body={body} onChange={setBody} />
+                <Microtasks body={body} onChange={replaceBody} />
               )}
               <div className="section-heading">
                 <h3>
@@ -1112,7 +1260,7 @@ export function RecordDetail({
                   <RecordMarkdown openImage={openImage}>{body}</RecordMarkdown>
                 </div>
               ) : (
-                <textarea
+                <DraftTextarea
                   className="markdown-editor"
                   aria-label="Markdown body"
                   placeholder={
@@ -1121,12 +1269,11 @@ export function RecordDetail({
                       : undefined
                   }
                   value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  onPaste={(e) =>
-                    pasteImage(e, (t) => setBody((b: string) => t(b)))
-                      .then((id) => id && attachId(id))
-                      .catch((err) => setError(String(err)))
-                  }
+                  reset={draftReset}
+                  onDraft={draftBody}
+                  onCommit={replaceBody}
+                  onImage={attachId}
+                  onError={(err) => setError(String(err))}
                   spellCheck
                 />
               )}
@@ -1516,8 +1663,11 @@ export function RecordDetail({
               className="button subtle"
               disabled={saving || state.branchChanged}
               onClick={() => {
-                const next = { ...m, archived: !m.archived };
-                setM(next);
+                const next = {
+                  ...mRef.current,
+                  archived: !mRef.current.archived,
+                };
+                replaceMeta(next);
                 void save(false, true, next);
               }}
             >
@@ -1537,7 +1687,7 @@ export function RecordDetail({
           )}
           <button
             className="button primary"
-            disabled={saving || !m.title.trim() || state.branchChanged}
+            disabled={saving || !titlePresent || state.branchChanged}
             onClick={() => save()}
           >
             {saving ? "Saving…" : baseline ? "Save changes" : `Create ${kind}`}
