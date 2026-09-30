@@ -50,7 +50,7 @@ test("approval filter composes with saved board and table views", async ({
   await expect(filter).toHaveValue(`label:${label} is:approved`);
   await expect(approval).toHaveValue("approved");
   await expect(
-    page.locator(".board-ticket").filter({ hasText: label }),
+    page.locator(".group-header").filter({ hasText: parent.meta.title }),
   ).toHaveCount(1);
   await page.getByRole("button", { name: "Save view", exact: true }).click();
 
@@ -64,14 +64,26 @@ test("approval filter composes with saved board and table views", async ({
   );
   await page.getByRole("button", { name: "Save view", exact: true }).click();
 
+  await page.reload();
+  await expect(filter).toHaveValue(`label:${label} -is:approved`);
+  await expect(approval).toHaveValue("not-approved");
+
   await page.getByRole("button", { name: "Board", exact: true }).click();
   await expect(filter).toHaveValue(`label:${label} is:approved`);
   await expect(approval).toHaveValue("approved");
 
-  await filter.fill(`label:${label} is:approved,blocked`);
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await expect(filter).toHaveValue(`label:${label} -is:approved`);
+  await expect(approval).toHaveValue("not-approved");
+
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+
+  await filter.fill(`label:${label} -is:approved,blocked "customer login"`);
   await expect(approval).toHaveValue("custom");
   await approval.selectOption("all");
-  await expect(filter).toHaveValue(`label:${label} is:blocked`);
+  await expect(filter).toHaveValue(
+    `label:${label} -is:blocked "customer login"`,
+  );
 });
 
 for (const layout of ["Board", "Table"] as const) {

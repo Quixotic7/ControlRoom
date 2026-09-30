@@ -116,4 +116,11 @@ test("approval control preserves non-approval constraints and exposes mixed expr
     withApprovalFilter("label:ui is:approved,blocked login", "all"),
     "label:ui is:blocked login",
   );
+  assert.equal(
+    withApprovalFilter(
+      'label:"needs design" -is:approved,blocked "customer login"',
+      "all",
+    ),
+    'label:"needs design" -is:blocked "customer login"',
+  );
 });
