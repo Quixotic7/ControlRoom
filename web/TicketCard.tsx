@@ -42,7 +42,6 @@ export function TicketCard({
   showParent,
   tabIndex,
   onOpen,
-  onDropCard,
 }: {
   record: RecordFile;
   ctx: Context;
@@ -51,8 +50,6 @@ export function TicketCard({
   // Roving tabindex: the board keeps exactly one card in the Tab order.
   tabIndex?: number;
   onOpen: (id: string) => void;
-  // A ticket dragged onto this card: place it before this one.
-  onDropCard?: (draggedId: string, target: RecordFile) => void;
 }) {
   const drag = useTicketDrag(record);
   const m = record.meta;
@@ -83,18 +80,7 @@ export function TicketCard({
         setDragging(true);
       }}
       onDragEnd={() => setDragging(false)}
-      onDragOver={drag.over}
-      onDragLeave={drag.leave}
       onKeyDown={drag.key}
-      onDrop={(e) => {
-        if (drag.drop(e)) return;
-        const id = e.dataTransfer.getData(dragType);
-        if (id && onDropCard) {
-          e.preventDefault();
-          e.stopPropagation();
-          onDropCard(id, record);
-        }
-      }}
       {...ticketNavigation(m.id, onOpen)}
     >
       <span className="card-meta">

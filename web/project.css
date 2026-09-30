@@ -763,8 +763,53 @@ body,
 .board-ticket {
   position: relative;
 }
+.board-ticket-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ticket-drop-gap {
+  position: relative;
+  flex: 0 0 auto;
+  height: 8px;
+  pointer-events: none;
+  transition: height 140ms ease-out;
+}
+.ticket-drop-gap.edge-start,
+.ticket-drop-gap.edge-end,
+.ticket-drop-gap.suppressed {
+  height: 0;
+}
+.ticket-drop-gap.active {
+  height: calc(var(--ticket-drag-height) + 16px);
+}
+.ticket-drop-gap.active.edge-start,
+.ticket-drop-gap.active.edge-end {
+  height: calc(var(--ticket-drag-height) + 8px);
+}
+.ticket-drop-gap.active::before {
+  content: "";
+  position: absolute;
+  inset: 8px 0;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  box-shadow: var(--glow);
+}
+.ticket-drop-gap.active.edge-start::before {
+  top: 0;
+}
+.ticket-drop-gap.active.edge-end::before {
+  bottom: 0;
+}
 .board-ticket .ticket-card {
   padding-right: 38px;
+}
+.board-ticket.drag-source {
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 .board-ticket.selected .ticket-card {
   background: var(--accent-soft);
@@ -1070,6 +1115,40 @@ body,
 }
 .project-table tbody tr.selected {
   background: var(--accent-soft);
+}
+.project-table .ticket-drop-row > td {
+  height: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+}
+.project-table tr.drag-source > td {
+  height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border: 0;
+  font-size: 0;
+  line-height: 0;
+}
+.project-table tr.drag-source > td > * {
+  display: none;
+}
+.ticket-drop-space {
+  position: relative;
+  height: 0;
+  transition: height 140ms ease-out;
+}
+.ticket-drop-row.active .ticket-drop-space {
+  height: var(--ticket-drag-height);
+}
+.ticket-drop-row.active .ticket-drop-space::before {
+  content: "";
+  position: absolute;
+  inset: 4px 8px;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  box-shadow: var(--glow);
 }
 /* Shared board/table selection and bulk editing. */
 .bulk-editor {

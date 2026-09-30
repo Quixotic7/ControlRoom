@@ -13,6 +13,30 @@ import { Menu } from "./Menu";
 import type { Context, Group } from "./model";
 import { QuickTicket } from "./QuickTicket";
 import { dragType, TicketCard } from "./TicketCard";
+import { useTicketDragContext } from "./TicketDrag";
+
+const boardSlot = (group: string, column: string, id: string) =>
+  `board/${group}/${column}/${id}`;
+
+function TicketDropGap({
+  active,
+  edge,
+  slot,
+  suppressed,
+}: {
+  active: boolean;
+  edge?: "start" | "end";
+  slot: string;
+  suppressed?: boolean;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      className={`ticket-drop-gap${active ? " active" : ""}${edge ? ` edge-${edge}` : ""}${suppressed ? " suppressed" : ""}`}
+      data-ticket-drop-slot={slot}
+    />
+  );
+}
 
 export function GroupHeader({
   group,
@@ -118,7 +142,6 @@ export function BoardView({
   visible,
   onOpen,
   onMove,
-  onPlace,
   reload,
   hidden,
   onToggleColumn,
@@ -137,7 +160,6 @@ export function BoardView({
   visible: RecordFile[];
   onOpen: (id: string) => void;
   onMove: (record: RecordFile, status: string) => void;
-  onPlace: (draggedId: string, target: RecordFile) => void;
   reload: () => Promise<void>;
   hidden: Set<string>;
   onToggleColumn: (id: string) => void;
@@ -148,6 +170,7 @@ export function BoardView({
   selected: Set<string>;
   onToggleSelected: (id: string, on: boolean) => void;
 }) {
+  const ticketDrag = useTicketDragContext();
   // The cell a dragged card is currently over, for the drop highlight.
   const [over, setOver] = useState<string | null>(null);
   // The one card in the Tab order (as "group/ticket", since label groups can
@@ -282,6 +305,13 @@ export function BoardView({
               <div className="board-row">
                 {ctx.columns.map((c) => {
                   const cell = `${g.key}/${c.id}`;
+                  const items = g.items.filter((r) => r.meta.status === c.id);
+                  const slotPrefix = boardSlot(g.key, c.id, "");
+                  const preview = ticketDrag?.session?.preview;
+                  const sourceId = ticketDrag?.session?.source.meta.id;
+                  const firstVisible = items.find(
+                    (item) => item.meta.id !== sourceId,
+                  )?.meta.id;
                   if (hidden.has(c.id))
                     return (
                       <div
@@ -300,14 +330,74 @@ export function BoardView({
                       onDragOver={(e) => {
                         if (!e.dataTransfer.types.includes(dragType)) return;
                         e.preventDefault();
+                        const candidates = Array.from(
+                          e.currentTarget.querySelectorAll<HTMLElement>(
+                            ".board-ticket[data-id]",
+                          ),
+                        ).filter((card) => {
+                          const record = items.find(
+                            (item) => item.meta.id === card.dataset.id,
+                          );
+                          return record && ticketDrag?.canPlace(record);
+                        });
+                        const next = candidates.find((card) => {
+                          const box = card.getBoundingClientRect();
+                          return e.clientY < box.top + box.height / 2;
+                        });
+                        const card = next ?? candidates.at(-1);
+                        const target = items.find(
+                          (item) => item.meta.id === card?.dataset.id,
+                        );
+                        if (target && ticketDrag) {
+                          const after = !next;
+                          ticketDrag.previewAt(
+                            target,
+                            after,
+                            boardSlot(
+                              g.key,
+                              c.id,
+                              after ? "$end" : target.meta.id,
+                            ),
+                          );
+                          e.dataTransfer.dropEffect = "move";
+                        } else {
+                          ticketDrag?.clearPreview();
+                          e.dataTransfer.dropEffect =
+                            ticketDrag?.session?.source.meta.status !== c.id
+                              ? "move"
+                              : "none";
+                        }
                         if (over !== cell) setOver(cell);
                       }}
                       onDragLeave={(e) => {
-                        if (!e.currentTarget.contains(e.relatedTarget as Node))
+                        if (
+                          !e.currentTarget.contains(e.relatedTarget as Node)
+                        ) {
                           setOver(null);
+                          ticketDrag?.clearPreview();
+                        }
                       }}
                       onDrop={(e) => {
                         setOver(null);
+                        if (
+                          ticketDrag?.session?.preview?.slot.startsWith(
+                            slotPrefix,
+                          )
+                        ) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          ticketDrag.commit();
+                          return;
+                        }
+                        const droppedOnTicket =
+                          e.target instanceof Element &&
+                          e.target.closest(".board-ticket[data-id]");
+                        if (ticketDrag?.session && droppedOnTicket) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          ticketDrag.end();
+                          return;
+                        }
                         const id = e.dataTransfer.getData(dragType);
                         const r = ctx.byId.get(id);
                         if (r) {
@@ -316,42 +406,69 @@ export function BoardView({
                         }
                       }}
                     >
-                      {g.items
-                        .filter((r) => r.meta.status === c.id)
-                        .map((r) => (
-                          <div
-                            key={r.meta.id}
-                            className={`board-ticket${selected.has(r.meta.id) ? " selected" : ""}${
-                              g.record && r.meta.parent !== g.record.meta.id
-                                ? " nested-ticket"
-                                : ""
-                            }`}
-                          >
-                            <label className="board-check">
-                              <input
-                                type="checkbox"
-                                aria-label={`Select ${r.meta.title}`}
-                                checked={selected.has(r.meta.id)}
-                                onChange={(e) =>
-                                  onToggleSelected(r.meta.id, e.target.checked)
+                      <div className="board-ticket-list">
+                        {items.map((r) => {
+                          const slot = boardSlot(g.key, c.id, r.meta.id);
+                          return (
+                            <React.Fragment key={r.meta.id}>
+                              <TicketDropGap
+                                active={preview?.slot === slot}
+                                edge={
+                                  r.meta.id === firstVisible
+                                    ? "start"
+                                    : undefined
                                 }
+                                slot={slot}
+                                suppressed={r.meta.id === sourceId}
                               />
-                            </label>
-                            <TicketCard
-                              record={r}
-                              ctx={ctx}
-                              claim={claims.get(r.meta.id)}
-                              showParent={
-                                !g.record || r.meta.parent !== g.record.meta.id
-                              }
-                              tabIndex={
-                                `${g.key}/${r.meta.id}` === tabStop ? 0 : -1
-                              }
-                              onOpen={onOpen}
-                              onDropCard={onPlace}
-                            />
-                          </div>
-                        ))}
+                              <div
+                                data-id={r.meta.id}
+                                className={`board-ticket${r.meta.id === sourceId ? " drag-source" : ""}${selected.has(r.meta.id) ? " selected" : ""}${
+                                  g.record && r.meta.parent !== g.record.meta.id
+                                    ? " nested-ticket"
+                                    : ""
+                                }`}
+                              >
+                                <label className="board-check">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={`Select ${r.meta.title}`}
+                                    checked={selected.has(r.meta.id)}
+                                    onChange={(e) =>
+                                      onToggleSelected(
+                                        r.meta.id,
+                                        e.target.checked,
+                                      )
+                                    }
+                                  />
+                                </label>
+                                <TicketCard
+                                  record={r}
+                                  ctx={ctx}
+                                  claim={claims.get(r.meta.id)}
+                                  showParent={
+                                    !g.record ||
+                                    r.meta.parent !== g.record.meta.id
+                                  }
+                                  tabIndex={
+                                    `${g.key}/${r.meta.id}` === tabStop ? 0 : -1
+                                  }
+                                  onOpen={onOpen}
+                                />
+                              </div>
+                            </React.Fragment>
+                          );
+                        })}
+                        {!!items.length && (
+                          <TicketDropGap
+                            active={
+                              preview?.slot === boardSlot(g.key, c.id, "$end")
+                            }
+                            edge="end"
+                            slot={boardSlot(g.key, c.id, "$end")}
+                          />
+                        )}
+                      </div>
                       <QuickTicket
                         lane={
                           groupBy === "none" ? c.name : `${g.title} / ${c.name}`

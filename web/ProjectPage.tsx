@@ -1,5 +1,6 @@
 import { TicketDragContext, type DragSession } from "./TicketDrag";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type {
   Claim,
   GroupBy,
@@ -385,12 +386,35 @@ export function ProjectPage({
   return (
     <TicketDragContext.Provider
       value={{
+        clearPreview: () =>
+          setTicketDrag((current) =>
+            current?.preview ? { ...current, preview: null } : current,
+          ),
+        commit: () => {
+          if (ticketDrag?.preview)
+            place(
+              ticketDrag.source.meta.id,
+              ticketDrag.preview.target,
+              ticketDrag.preview.after,
+            );
+          setTicketDrag(null);
+        },
         end: () => setTicketDrag(null),
         session: ticketDrag,
-        start: (r) =>
+        start: (r, height) =>
           setTicketDrag({
+            height,
+            preview: null,
             source: r,
             records: new Map(state.records.map((r) => [r.meta.id, r])),
+          }),
+        previewAt: (target, after, slot) =>
+          setTicketDrag((current) => {
+            if (!current) return current;
+            const preview = current.preview;
+            return preview?.slot === slot && preview.after === after
+              ? current
+              : { ...current, preview: { target, after, slot } };
           }),
         shift: (r, by) => {
           if (!canReorder) return;
@@ -399,7 +423,6 @@ export function ProjectPage({
             target = peers[index + by];
           if (target) place(r.meta.id, target, by > 0);
         },
-        place,
         canPlace: (target) =>
           !!ticketDrag &&
           canReorder &&
@@ -413,7 +436,14 @@ export function ProjectPage({
           ),
       }}
     >
-      <div className="project-page">
+      <div
+        className="project-page"
+        style={
+          {
+            "--ticket-drag-height": `${ticketDrag?.height ?? 0}px`,
+          } as CSSProperties
+        }
+      >
         <h1 className="sr-only">{state.config.name} views</h1>
         <nav className="view-tabs" aria-label="Project views">
           {saved.map((v) => {
@@ -737,7 +767,6 @@ export function ProjectPage({
             visible={visible}
             onOpen={onOpen}
             onMove={move}
-            onPlace={place}
             reload={reload}
             hidden={visibility.hidden}
             onToggleColumn={visibility.toggle}
