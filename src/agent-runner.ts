@@ -70,6 +70,10 @@ export function processAlive(pid?: number) {
     return e.code === "EPERM";
   }
 }
+export function processGroupAlive(pid?: number) {
+  if (!pid || process.platform === "win32") return false;
+  return processAlive(-pid);
+}
 
 export type ProcessResult = {
   code: number;

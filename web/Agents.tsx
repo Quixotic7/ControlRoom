@@ -578,6 +578,30 @@ export function Agents({
                     Resume with current context
                   </button>
                 )}
+                {run.kind === "work" &&
+                  run.state === "interrupted" &&
+                  t?.meta.assignment?.runId === run.id &&
+                  t.meta.assignment.worker === run.agent.name &&
+                  ["assigned", "acknowledged"].includes(
+                    t.meta.assignment.state,
+                  ) && (
+                    <button
+                      className="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void action(
+                          () =>
+                            api(`/orchestration/${run.id}/takeover`, "POST", {
+                              revision: t.revision,
+                              actor,
+                            }),
+                          "Stopped assignment taken over under your identity.",
+                        )
+                      }
+                    >
+                      Take over ticket
+                    </button>
+                  )}
               </div>
             </article>
           );

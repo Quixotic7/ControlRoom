@@ -659,3 +659,285 @@ test("recovery does not substitute another worker when the selected profile is r
   assert.equal(f.manager.status().runs[0].agent.name, "Worker 2");
   assert.equal(f.manager.status().runs[0].state, "interrupted");
 });
+
+test("designated orchestrator takes over a stopped worker with stale, identity and unrelated-work guards", async (t) => {
+  const blocking: Execute = (options) =>
+    new Promise((_resolve, reject) => {
+      fs.mkdirSync(path.dirname(options.log), { recursive: true });
+      fs.writeFileSync(options.log, "retained worker log\n");
+      options.onStart(987_654_321);
+      options.signal.addEventListener(
+        "abort",
+        () => reject(new Error("fixture worker stopped")),
+        { once: true },
+      );
+    });
+  const f = await fixture(t, blocking);
+  const reviewer: Actor = { name: f.config.reviewer.name, kind: "agent" };
+  const ticket = await f.create("Stopped worker ticket");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () => run.state === "running");
+  await f.manager.stop(run.id, human);
+  await until(
+    f.manager,
+    () => run.state === "interrupted" && (f.manager as any).active.size === 0,
+  );
+  assert.ok(run.worktree);
+  assert.ok(
+    fs.existsSync(f.store.file(`.local/orchestration/${run.id}/agent.log`)),
+  );
+
+  await f.store.claim(ticket.meta.id, worker, run.worktree!);
+  const unrelated = await f.create("Unrelated assignment");
+  const unrelatedRun = await f.manager.enqueue(
+    unrelated.meta.id,
+    "work",
+    "Worker 2",
+    human,
+    unrelated.revision,
+  );
+  await f.store.claim(
+    unrelated.meta.id,
+    { name: "Worker 2", kind: "agent" },
+    "/tmp/unrelated-worker",
+  );
+  const before = f.store.get(ticket.meta.id);
+  await assert.rejects(
+    f.manager.takeover(run.id, before.revision, {
+      name: "Worker 2",
+      kind: "agent",
+    }),
+    /designated orchestrator or a human/,
+  );
+  const changed = await f.store.update(
+    ticket.meta.id,
+    before.revision,
+    { progress: { note: "Stopped checkout inspected" } },
+    undefined,
+    worker,
+  );
+  await assert.rejects(
+    f.manager.takeover(run.id, before.revision, reviewer),
+    /record changed/,
+  );
+
+  const worktree = run.worktree;
+  const attempts = run.attempt;
+  const taken = await f.manager.takeover(run.id, changed.revision, reviewer);
+  assert.equal(taken.run.state, "taken_over");
+  assert.equal(taken.run.worktree, worktree);
+  assert.equal(taken.run.attempt, attempts);
+  assert.equal(taken.ticket.meta.owner, reviewer.name);
+  assert.deepEqual(taken.ticket.meta.assignment, {
+    runId: run.id,
+    worker: reviewer.name,
+    assignedBy: reviewer.name,
+    assignedAt: taken.ticket.meta.assignment?.assignedAt,
+    state: "acknowledged",
+    mode: "takeover",
+  });
+  assert.equal(taken.ticket.meta.scopeApproved, true);
+  assert.equal(
+    f.store.claims().some((claim) => claim.ticket === ticket.meta.id),
+    false,
+  );
+  assert.ok(
+    f.store.claims().some((claim) => claim.ticket === unrelated.meta.id),
+  );
+  assert.equal(
+    f.store.get(unrelated.meta.id).meta.assignment?.runId,
+    unrelatedRun.id,
+  );
+  const restoredStore = new Store(f.store.root).initialize();
+  const restoredManager = new Orchestrator(restoredStore);
+  t.after(() => restoredManager.close());
+  assert.equal(
+    restoredManager.status().runs.find((candidate) => candidate.id === run.id)
+      ?.state,
+    "taken_over",
+  );
+  await assert.rejects(
+    restoredManager.resume(run.id, human),
+    /can no longer resume/,
+  );
+  await assert.rejects(
+    restoredManager.enqueue(
+      ticket.meta.id,
+      "work",
+      "Worker 2",
+      human,
+      taken.ticket.revision,
+    ),
+    /active takeover assignment/,
+  );
+  await assert.rejects(
+    restoredStore.update(
+      ticket.meta.id,
+      taken.ticket.revision,
+      { progress: { note: "Original worker tried to continue" } },
+      undefined,
+      worker,
+    ),
+    /Assigned to Orchestrator/,
+  );
+
+  await restoredStore.claim(ticket.meta.id, reviewer, worktree!);
+  const reported = await restoredStore.update(
+    ticket.meta.id,
+    taken.ticket.revision,
+    {
+      progress: {
+        note: "Chat orchestrator implementing directly",
+        percent: 75,
+      },
+    },
+    undefined,
+    reviewer,
+  );
+  const submitted = await restoredStore.review(
+    ticket.meta.id,
+    reported.revision,
+    "Direct implementation is ready for human review",
+    "Focused takeover lifecycle tests passed",
+    "",
+    reviewer,
+  );
+  assert.equal(submitted.meta.status, "review");
+  assert.equal(submitted.meta.manualReviewRequired, true);
+  assert.equal(submitted.meta.progress?.actor.name, reviewer.name);
+  assert.equal(submitted.meta.assignment?.worker, reviewer.name);
+
+  const history = fs
+    .readFileSync(restoredStore.file("records/history.jsonl"), "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .find(
+      (event) =>
+        event.record === ticket.meta.id &&
+        event.before?.meta?.assignment?.worker === "Worker 1" &&
+        event.after?.meta?.assignment?.worker === reviewer.name,
+    );
+  assert.equal(history.actor.name, reviewer.name);
+  assert.equal(history.before.meta.assignment.runId, run.id);
+});
+
+test("takeover preserves an unanswered managed-run question", async (t) => {
+  let asked = false;
+  const asksForInput: Execute = async (options) => {
+    const response = await execute(options);
+    if (!asked && options.input.startsWith("Implement")) {
+      asked = true;
+      const index = options.args.indexOf("--output-last-message");
+      fs.writeFileSync(
+        options.args[index + 1],
+        JSON.stringify({
+          ...result("human"),
+          question: "Which customer-visible behavior should this implement?",
+        }),
+      );
+    }
+    return response;
+  };
+  const f = await fixture(t, asksForInput);
+  const reviewer: Actor = { name: f.config.reviewer.name, kind: "agent" };
+  const ticket = await f.create("Stopped worker with a product question");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () =>
+      run.state === "waiting_input" &&
+      !!run.questionId &&
+      (f.manager as any).active.size === 0,
+  );
+  const before = f.store
+    .comments()
+    .find((comment) => comment.id === run.questionId)!;
+  assert.equal(before.resolved, false);
+  assert.match(before.body, /Which customer-visible behavior/);
+
+  await f.manager.stop(run.id, human);
+  await f.manager.takeover(
+    run.id,
+    f.store.get(ticket.meta.id).revision,
+    reviewer,
+  );
+
+  const preserved = f.store
+    .comments()
+    .find((comment) => comment.id === run.questionId)!;
+  assert.equal(preserved.resolved, false);
+  assert.equal(preserved.revision, before.revision);
+  assert.equal(preserved.body, before.body);
+});
+
+test("takeover refuses active and uncertain original worker processes", async (t) => {
+  let finish!: () => void;
+  const lingering: Execute = (options) =>
+    new Promise((resolve) => {
+      options.onStart(987_654_320);
+      finish = () => resolve({ code: 0, output: "", structured: result() });
+    });
+  const f = await fixture(t, lingering);
+  const ticket = await f.create("Lingering worker");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () => run.state === "running");
+  await f.manager.stop(run.id, human);
+  await assert.rejects(
+    f.manager.takeover(run.id, f.store.get(ticket.meta.id).revision, human),
+    /Wait for every owned worker process to exit/,
+  );
+  finish();
+  await until(f.manager, () => (f.manager as any).active.size === 0);
+
+  run.state = "interrupted";
+  run.pid = undefined;
+  run.processStartedAt = undefined;
+  run.lastProcess = { pid: process.pid };
+  await assert.rejects(
+    f.manager.takeover(run.id, f.store.get(ticket.meta.id).revision, human),
+    /exit cannot be verified/,
+  );
+  assert.equal(f.store.get(ticket.meta.id).meta.assignment?.worker, "Worker 1");
+
+  run.lastProcess = { pid: 987_654_319, startedAt: "not running" };
+  const current = f.store.get(ticket.meta.id);
+  const reassigned = await f.store.managedUpdate(
+    ticket.meta.id,
+    current.revision,
+    {
+      assignment: {
+        ...current.meta.assignment!,
+        runId: "run-reassigned-elsewhere",
+      },
+    },
+    human,
+    () => {},
+  );
+  await assert.rejects(
+    f.manager.takeover(run.id, reassigned.revision, human),
+    /Managed assignment changed/,
+  );
+  assert.equal(
+    f.store.get(ticket.meta.id).meta.assignment?.runId,
+    "run-reassigned-elsewhere",
+  );
+});

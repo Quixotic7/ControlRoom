@@ -135,6 +135,26 @@ export async function startMcp(
         ),
     },
     {
+      name: "take_over_stopped_agent_run",
+      description:
+        "Explicitly take over an interrupted managed worker ticket under your own identity. Only the designated orchestrator or a human may do this. The service requires the current ticket etag and matching run/assignment, verifies that owned processes exited, retains the original run/worktree/logs/history, and releases only its obsolete claim.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          run: str("Interrupted managed worker run ID"),
+          revision: etag,
+        },
+        required: ["run", "revision"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/orchestration/${encodeURIComponent(a.run)}/takeover`,
+          "POST",
+          { revision: a.revision, actor: who },
+        ),
+    },
+    {
       name: "list_tickets",
       description:
         "List tickets on the board, optionally filtered. Returns number, status, title, owner, labels, and etag for each.",

@@ -295,7 +295,7 @@ Service and data
   agents status | agents log RUN
   agents configure --file CONFIG_JSON --etag CONFIG_REVISION
   agents queue --file ASSIGNMENT_JSON   {ticket, revision, kind: work|plan, worker} (worker required for work)
-  agents stop RUN | agents resume RUN
+  agents stop RUN | agents resume RUN | agents takeover RUN --etag TICKET_ETAG
   agents review-context RUN | agents review RUN --file REVIEW_JSON
   serve [--open] [--port PORT] [--lan | --local] [--dev] | stop | mcp | init
   export --output FILE | restore --file FILE
@@ -367,20 +367,29 @@ async function main() {
           { ...(id === "review" ? inputJson() : {}), actor: who },
         ),
       );
-    } else if (["stop", "resume", "log"].includes(id)) {
+    } else if (["stop", "resume", "takeover", "log"].includes(id)) {
       const run = positional[2];
       if (!run) throw new Error("Provide a run ID");
+      if (id === "takeover" && !option("etag"))
+        throw new Error(
+          "Provide --etag from the current ticket so a stale assignment cannot be taken over",
+        );
       output(
         await api(
           store,
           `/api/orchestration/${encodeURIComponent(run)}/${id}`,
           id === "log" ? "GET" : "POST",
-          id === "log" ? undefined : { actor: who },
+          id === "log"
+            ? undefined
+            : {
+                actor: who,
+                ...(id === "takeover" ? { revision: option("etag") } : {}),
+              },
         ),
       );
     } else
       throw new Error(
-        "Use agents status|configure --file config.json|queue --file assignment.json|stop RUN|resume RUN|log RUN",
+        "Use agents status|configure --file config.json|queue --file assignment.json|stop RUN|resume RUN|takeover RUN --etag TICKET_ETAG|log RUN",
       );
     return;
   }
