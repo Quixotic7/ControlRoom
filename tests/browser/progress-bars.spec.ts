@@ -38,6 +38,15 @@ test("ticket progress bars separate microtasks and all direct child tickets", as
     archived: true,
   });
 
+  const many = await create(
+    page,
+    `Progress large parent ${suffix}`,
+    {},
+    "## Microtasks\n" +
+      Array.from({ length: 40 }, (_, i) => `- [x] Task ${i}`).join("\n"),
+  );
+  await create(page, `Open large child ${suffix}`, { parent: many.meta.id });
+
   await page.goto("/");
   const group = page.locator(".group-header", { hasText: parent.meta.title });
   await expect(
@@ -50,6 +59,36 @@ test("ticket progress bars separate microtasks and all direct child tickets", as
       name: "Child tickets progress: 1 of 2 complete",
     }),
   ).toBeVisible();
+
+  const largeGroup = page.locator(".group-header", {
+    hasText: many.meta.title,
+  });
+  const half = group.getByRole("progressbar", {
+    name: "Microtasks progress: 1 of 2 complete",
+  });
+  const full = largeGroup.getByRole("progressbar", {
+    name: "Microtasks progress: 40 of 40 complete",
+  });
+  await expect(full).toBeVisible();
+  expect((await half.boundingBox())!.width).toBe(
+    (await full.boundingBox())!.width,
+  );
+  await expect(half.locator(".ticket-progress-cell")).toHaveCount(0);
+  const fillRatio = (bar: typeof half) =>
+    bar.evaluate(
+      (el) =>
+        el.firstElementChild!.getBoundingClientRect().width /
+        el.getBoundingClientRect().width,
+    );
+  expect(await fillRatio(half)).toBeCloseTo(0.5);
+  expect(await fillRatio(full)).toBe(1);
+  expect(
+    await fillRatio(
+      largeGroup.getByRole("progressbar", {
+        name: "Child tickets progress: 0 of 1 complete",
+      }),
+    ),
+  ).toBe(0);
 
   await group.locator(".group-goal").click();
   const detail = page.getByRole("dialog");
