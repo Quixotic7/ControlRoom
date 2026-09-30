@@ -41,8 +41,16 @@ export const defaultViews: ProjectView[] = [
     sort: "priority",
   },
 ];
-export const viewsOf = (state: ProjectState) =>
-  state.config.views?.length ? state.config.views : defaultViews;
+// Projects created before Priority planning saved their own view list. Keep
+// that list intact, but surface the new built-in preset alongside it instead
+// of making an existing project recreate its views to discover planning.
+export const viewsOf = (state: ProjectState) => {
+  const views = state.config.views?.length ? state.config.views : defaultViews;
+  const planning = defaultViews.find((view) => view.id === "priority-planning")!;
+  return views.some((view) => view.id === planning.id)
+    ? views
+    : [...views, planning];
+};
 
 export const groupByOptions: Record<GroupBy, string> = {
   none: "No grouping",

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { defaultViews } from "../../web/model";
 
 const actor = { name: "Priority planning fixture", kind: "human" };
 const create = async (
@@ -83,4 +84,121 @@ test("priority planning ranks across statuses without changing workflow or paren
   await expect
     .poll(async () => (await record(page, second.meta.id)).meta.order)
     .toBeLessThan((await record(page, high.meta.id)).meta.order);
+});
+
+test("keyboard priority controls step once, then move to the ends", async ({
+  page,
+}) => {
+  await page.request.get("/");
+  await page.request.patch("/api/preferences", {
+    data: { selected: null, page: "project", viewId: "priority-planning" },
+  });
+  const prefix = `Priority keyboard ${Date.now()}`;
+  const first = await create(page, `${prefix} first`, {
+    status: "backlog",
+    priority: 2,
+    order: 10,
+  });
+  const second = await create(page, `${prefix} second`, {
+    status: "selected",
+    priority: 2,
+    order: 20,
+  });
+  const third = await create(page, `${prefix} third`, {
+    status: "review",
+    priority: 2,
+    order: 30,
+  });
+  const fourth = await create(page, `${prefix} fourth`, {
+    status: "backlog",
+    priority: 2,
+    order: 40,
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(prefix);
+  await expect(
+    page.getByLabel(`Move ${first.meta.title} to first position`),
+  ).toBeDisabled();
+  await expect(
+    page.getByLabel(`Move ${fourth.meta.title} to last position`),
+  ).toBeDisabled();
+
+  await page.getByLabel(`Move ${second.meta.title} later`).click();
+  await expect.poll(async () => (await record(page, second.meta.id)).meta.order).toBeGreaterThan(
+    (await record(page, third.meta.id)).meta.order,
+  );
+  expect((await record(page, second.meta.id)).meta.order).toBeLessThan(
+    (await record(page, fourth.meta.id)).meta.order,
+  );
+
+  await page.getByLabel(`Move ${second.meta.title} to last position`).click();
+  await expect.poll(async () => (await record(page, second.meta.id)).meta.order).toBeGreaterThan(
+    (await record(page, fourth.meta.id)).meta.order,
+  );
+  await page.getByLabel(`Move ${second.meta.title} to first position`).click();
+  await expect.poll(async () => (await record(page, second.meta.id)).meta.order).toBeLessThan(
+    (await record(page, first.meta.id)).meta.order,
+  );
+});
+
+test("manual table ordering only operates on same-status peers", async ({ page }) => {
+  await page.request.get("/");
+  await page.request.patch("/api/preferences", {
+    data: { selected: null, page: "project", viewId: "table" },
+  });
+  const prefix = `Manual peers ${Date.now()}`;
+  const first = await create(page, `${prefix} first`, {
+    status: "backlog",
+    order: 10,
+  });
+  await create(page, `${prefix} other stage`, {
+    status: "selected",
+    order: 20,
+  });
+  const last = await create(page, `${prefix} last`, {
+    status: "backlog",
+    order: 30,
+  });
+
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(prefix);
+  await page.getByRole("button", { name: "View options" }).click();
+  await page.getByLabel("Sort by").selectOption("manual");
+  await page.keyboard.press("Escape");
+  await page.getByLabel(`Move ${last.meta.title} earlier`).click();
+  await expect.poll(async () => (await record(page, last.meta.id)).meta.order).toBeLessThan(
+    (await record(page, first.meta.id)).meta.order,
+  );
+  expect((await record(page, last.meta.id)).meta.status).toBe("backlog");
+  await expect(
+    page.getByLabel(`Move ${last.meta.title} later`),
+  ).toHaveCount(0);
+});
+
+test("priority planning is discoverable beside a legacy saved view list", async ({
+  page,
+}) => {
+  await page.request.get("/");
+  const initial = await (await page.request.get("/api/state")).json();
+  const legacy = defaultViews.filter(
+    (view) => view.id === "board" || view.id === "table",
+  );
+  await page.request.patch("/api/config", {
+    data: { revision: initial.configRevision, patch: { views: legacy } },
+  });
+  await page.request.patch("/api/preferences", {
+    data: { selected: null, page: "project", viewId: "priority-planning" },
+  });
+  await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "Priority planning", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  const unchanged = await (await page.request.get("/api/state")).json();
+  expect(unchanged.config.views.map((view: { id: string }) => view.id)).toEqual(
+    legacy.map((view) => view.id),
+  );
+  await page.request.patch("/api/config", {
+    data: { revision: unchanged.configRevision, patch: { views: initial.config.views } },
+  });
 });

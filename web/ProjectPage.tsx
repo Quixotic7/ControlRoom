@@ -201,10 +201,13 @@ export function ProjectPage({
     [tickets, filter, ctx, view.sort],
   );
   const filtering = filter.text.length + filter.terms.length > 0;
-  // A table sorted by priority is the planning interaction: priority is the
-  // bucket and order is the rank within it. It intentionally never inherits
-  // board placement's status or parent semantics.
-  const priorityPlanning = view.layout === "table" && view.sort === "priority";
+  // A table grouped and sorted by priority is the planning interaction:
+  // priority is the bucket and order is the rank within it. It intentionally
+  // never inherits board placement's status or parent semantics.
+  const priorityPlanning =
+    view.layout === "table" &&
+    view.groupBy === "priority" &&
+    view.sort === "priority";
   const groups = useMemo(() => {
     const grouped = groupTickets(visible, view.groupBy, ctx).filter(
       // Empty groups stay as drop targets, but are noise while filtering.
@@ -337,7 +340,11 @@ export function ProjectPage({
     const peers = peersOf(r);
     return peers[peers.findIndex((p) => p.meta.id === r.meta.id) - 1];
   };
-  function place(draggedId: string, target: RecordFile, insertAfter = false) {
+  function place(
+    draggedId: string,
+    target: RecordFile,
+    placement: "before" | "after" = "before",
+  ) {
     const r = ticketDrag?.records.get(draggedId) ?? ctx.byId.get(draggedId);
     if (!r || r.meta.id === target.meta.id) return;
     const role = ctx.columns.find((c) => c.id === target.meta.status)?.role;
@@ -366,7 +373,7 @@ export function ProjectPage({
     }
     const peers = peersOf(target, r.meta.id);
     const index = peers.findIndex((p) => p.meta.id === target.meta.id);
-    const slot = index + Number(insertAfter);
+    const slot = index + Number(placement === "after");
     const before = slot > 0 ? orderOf(peers[slot - 1]) : orderOf(target) - 1024;
     const after = slot < peers.length ? orderOf(peers[slot]) : before + 1024;
     const expected = peers.map((p) => ({
@@ -406,16 +413,26 @@ export function ProjectPage({
   function placeInPriority(
     draggedId: string,
     priority: number,
-    position: "first" | "last" = "last",
+    position: "first" | "last" | "before" | "after" = "last",
+    anchor?: RecordFile,
   ) {
     const r = ticketDrag?.records.get(draggedId) ?? ctx.byId.get(draggedId);
     if (!r || !priorityPlanning) return;
     const peers = visible.filter(
       (item) => item.meta.id !== r.meta.id && priorityOf(item) === priority,
     );
-    const target = position === "first" ? peers[0] : peers.at(-1);
+    const target =
+      anchor && priorityOf(anchor) === priority
+        ? anchor
+        : position === "first"
+          ? peers[0]
+          : peers.at(-1);
     if (target) {
-      place(r.meta.id, target, position === "last");
+      place(
+        r.meta.id,
+        target,
+        position === "first" || position === "before" ? "before" : "after",
+      );
       return;
     }
     // An empty visible bucket has no target revision to guard. Its new rank
@@ -465,7 +482,7 @@ export function ProjectPage({
             place(
               ticketDrag.source.meta.id,
               ticketDrag.preview.target,
-              ticketDrag.preview.after,
+              ticketDrag.preview.after ? "after" : "before",
             );
           else if (ticketDrag?.preview?.priority !== undefined)
             placeInPriority(
@@ -504,7 +521,7 @@ export function ProjectPage({
           const peers = peersOf(r),
             index = peers.findIndex((p) => p.meta.id === r.meta.id),
             target = peers[index + by];
-          if (target) place(r.meta.id, target, by > 0);
+          if (target) place(r.meta.id, target, by > 0 ? "after" : "before");
         },
         canPlace: (target) =>
           !!ticketDrag &&

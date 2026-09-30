@@ -119,11 +119,16 @@ export function TableView({
   onOpen: (id: string) => void;
   onMove: (record: RecordFile, status: string) => void;
   onPriority: (record: RecordFile, priority: number) => void;
-  onPlace: (draggedId: string, target: RecordFile) => void;
+  onPlace: (
+    draggedId: string,
+    target: RecordFile,
+    placement: "before" | "after",
+  ) => void;
   onPlaceInPriority: (
     draggedId: string,
     priority: number,
-    position?: "first" | "last",
+    position?: "first" | "last" | "before" | "after",
+    anchor?: RecordFile,
   ) => void;
   reload: () => Promise<void>;
 }) {
@@ -715,112 +720,113 @@ export function TableView({
                         <td className="muted nowrap">
                           {ago(r.meta.updatedAt)}
                         </td>
-                        {canReorder && (
+                        {priorityPlanning ? (
                           <td>
-                            <div className="order-controls">
-                              <button
-                                className="icon-button"
-                                aria-label={`Move ${r.meta.title} to first position`}
-                                disabled={!previousPeer(r)}
-                                onClick={() =>
-                                  priorityPlanning
-                                    ? onPlaceInPriority(
+                            {(() => {
+                              const position = g.items.findIndex(
+                                (item) => item.meta.id === r.meta.id,
+                              );
+                              const earlier = g.items[position - 1];
+                              const later = g.items[position + 1];
+                              return (
+                                <div className="order-controls">
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} to first position`}
+                                    disabled={!earlier}
+                                    onClick={() =>
+                                      onPlaceInPriority(
                                         r.meta.id,
                                         priorityOf(r),
                                         "first",
                                       )
-                                    : (() => {
-                                        const target = g.items[0];
-                                        if (target) onPlace(r.meta.id, target);
-                                      })()
-                                }
-                              >
-                                ⇤
-                              </button>
-                              <button
-                                className="icon-button"
-                                aria-label={`Move ${r.meta.title} earlier`}
-                                disabled={!previousPeer(r)}
-                                onClick={() => {
-                                  const target = previousPeer(r);
-                                  if (target) onPlace(r.meta.id, target);
-                                }}
-                              >
-                                <ArrowUpIcon />
-                              </button>
-                              <button
-                                className="icon-button"
-                                aria-label={`Move ${r.meta.title} later`}
-                                disabled={
-                                  priorityPlanning
-                                    ? !g.items.some(
-                                        (item) => item.meta.id !== r.meta.id,
-                                      )
-                                    : !shown[shown.indexOf(r) + 1]
-                                }
-                                onClick={() => {
-                                  if (priorityPlanning)
-                                    onPlaceInPriority(
-                                      r.meta.id,
-                                      priorityOf(r),
-                                      "last",
-                                    );
-                                  else {
-                                    const target = shown[shown.indexOf(r) + 1];
-                                    if (target) onPlace(r.meta.id, target);
-                                  }
-                                }}
-                              >
-                                ↓
-                              </button>
-                              <button
-                                className="icon-button"
-                                aria-label={`Move ${r.meta.title} to last position`}
-                                disabled={
-                                  priorityPlanning
-                                    ? !g.items.some(
-                                        (item) => item.meta.id !== r.meta.id,
-                                      )
-                                    : !shown[shown.indexOf(r) + 1]
-                                }
-                                onClick={() =>
-                                  priorityPlanning
-                                    ? onPlaceInPriority(
+                                    }
+                                  >
+                                    ⇤
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} earlier`}
+                                    disabled={!earlier}
+                                    onClick={() => {
+                                      if (earlier)
+                                        onPlaceInPriority(
+                                          r.meta.id,
+                                          priorityOf(r),
+                                          "before",
+                                          earlier,
+                                        );
+                                    }}
+                                  >
+                                    <ArrowUpIcon />
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} later`}
+                                    disabled={!later}
+                                    onClick={() => {
+                                      if (later)
+                                        onPlaceInPriority(
+                                          r.meta.id,
+                                          priorityOf(r),
+                                          "after",
+                                          later,
+                                        );
+                                    }}
+                                  >
+                                    ↓
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} to last position`}
+                                    disabled={!later}
+                                    onClick={() =>
+                                      onPlaceInPriority(
                                         r.meta.id,
                                         priorityOf(r),
                                         "last",
                                       )
-                                    : (() => {
-                                        const target = g.items.at(-1);
-                                        if (target) onPlace(r.meta.id, target);
-                                      })()
-                                }
-                              >
-                                ⇥
-                              </button>
-                              {priorityPlanning && (
-                                <select
-                                  className="order-priority"
-                                  aria-label={`Move ${r.meta.title} to priority`}
-                                  value={priorityOf(r)}
-                                  onChange={(e) =>
-                                    onPlaceInPriority(
-                                      r.meta.id,
-                                      Number(e.target.value),
-                                      "last",
-                                    )
-                                  }
-                                >
-                                  {priorities.map((priority, index) => (
-                                    <option value={index} key={priority}>
-                                      {priority}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </div>
+                                    }
+                                  >
+                                    ⇥
+                                  </button>
+                                  <select
+                                    className="order-priority"
+                                    aria-label={`Move ${r.meta.title} to priority`}
+                                    value={priorityOf(r)}
+                                    onChange={(e) =>
+                                      onPlaceInPriority(
+                                        r.meta.id,
+                                        Number(e.target.value),
+                                        "last",
+                                      )
+                                    }
+                                  >
+                                    {priorities.map((priority, index) => (
+                                      <option value={index} key={priority}>
+                                        {priority}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              );
+                            })()}
                           </td>
-                        )}
+                        ) : canReorder ? (
+                          <td>
+                            <button
+                              className="icon-button"
+                              aria-label={`Move ${r.meta.title} earlier`}
+                              disabled={!previousPeer(r)}
+                              onClick={() => {
+                                const target = previousPeer(r);
+                                if (target) onPlace(r.meta.id, target, "before");
+                              }}
+                            >
+                              <ArrowUpIcon />
+                            </button>
+                          </td>
+                        ) : null}
                       </DragRow>
                     </Fragment>
                   );
