@@ -821,6 +821,17 @@ textarea::placeholder {
   display: block;
   margin-bottom: 12px;
 }
+.workflow-reconciliation {
+  background: var(--warning-soft, var(--subtle));
+  border: 1px solid var(--warning, var(--accent));
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.workflow-reconciliation p {
+  margin: 5px 0 10px;
+}
 .workflow-removal {
   background: var(--danger-soft);
   border: 1px solid var(--danger);

@@ -1,7 +1,103 @@
 import { NetworkSettings } from "./NetworkSettings";
 import React, { useEffect, useMemo, useState } from "react";
-import type { Column, ProjectState } from "../src/types";
+import type { Column, Config, ProjectState } from "../src/types";
 import { api, isRemoteBrowser } from "./api";
+
+type WorkflowDraft = Pick<Config, "name" | "columns" | "shortcut">;
+
+const cloneWorkflowDraft = (draft: WorkflowDraft): WorkflowDraft => ({
+  name: draft.name,
+  columns: draft.columns.map((column) => ({ ...column })),
+  shortcut: { ...draft.shortcut },
+});
+
+const workflowDraft = (config: Config): WorkflowDraft =>
+  cloneWorkflowDraft(config);
+
+const sameWorkflowDraft = (a: WorkflowDraft, b: WorkflowDraft) =>
+  JSON.stringify(a) === JSON.stringify(b);
+
+const sameColumn = (a: Column, b: Column) =>
+  a.id === b.id && a.name === b.name && a.role === b.role;
+
+// Reapply only the fields the local draft changed. This lets a local rename
+// coexist with a status added or renamed by another browser.
+function reapplyWorkflowDraft(
+  base: WorkflowDraft,
+  local: WorkflowDraft,
+  remote: WorkflowDraft,
+): WorkflowDraft {
+  const baseColumns = new Map(
+    base.columns.map((column) => [column.id, column]),
+  );
+  const localColumns = new Map(
+    local.columns.map((column) => [column.id, column]),
+  );
+  const merged = new Map<string, Column>();
+  for (const remoteColumn of remote.columns) {
+    const baseColumn = baseColumns.get(remoteColumn.id);
+    const localColumn = localColumns.get(remoteColumn.id);
+    // A local removal applies only if nobody changed that status remotely.
+    // Keeping a remotely changed status avoids silently discarding their edit.
+    if (!localColumn) {
+      if (!baseColumn || !sameColumn(baseColumn, remoteColumn))
+        merged.set(remoteColumn.id, remoteColumn);
+      continue;
+    }
+    if (!baseColumn) {
+      merged.set(remoteColumn.id, remoteColumn);
+      continue;
+    }
+    merged.set(remoteColumn.id, {
+      id: remoteColumn.id,
+      name:
+        localColumn.name === baseColumn.name
+          ? remoteColumn.name
+          : localColumn.name,
+      role:
+        localColumn.role === baseColumn.role
+          ? remoteColumn.role
+          : localColumn.role,
+    });
+  }
+  // Locally added statuses are safe to append, provided no remote status has
+  // since claimed the same stable ID.
+  for (const column of local.columns)
+    if (!baseColumns.has(column.id) && !merged.has(column.id))
+      merged.set(column.id, column);
+
+  const localOrderChanged =
+    base.columns.map((column) => column.id).join(",") !==
+    local.columns
+      .filter((column) => baseColumns.has(column.id))
+      .map((column) => column.id)
+      .join(",");
+  const orderedIds = localOrderChanged
+    ? [
+        ...local.columns.map((column) => column.id),
+        ...remote.columns.map((column) => column.id),
+      ]
+    : [
+        ...remote.columns.map((column) => column.id),
+        ...local.columns.map((column) => column.id),
+      ];
+  const seen = new Set<string>();
+  const columns = orderedIds.flatMap((id) => {
+    const column = merged.get(id);
+    if (!column || seen.has(id)) return [];
+    seen.add(id);
+    return [column];
+  });
+  return {
+    name: local.name === base.name ? remote.name : local.name,
+    columns,
+    shortcut:
+      JSON.stringify(local.shortcut) === JSON.stringify(base.shortcut)
+        ? remote.shortcut
+        : local.shortcut,
+  };
+}
+
 export function Settings({
   state,
   reload,
@@ -19,17 +115,39 @@ export function Settings({
     [columns, setColumns] = useState<Column[]>(state.config.columns),
     [revision, setRevision] = useState(state.configRevision),
     [shortcut, setShortcut] = useState(state.config.shortcut),
+    [baseline, setBaseline] = useState<WorkflowDraft>(() =>
+      workflowDraft(state.config),
+    ),
+    [remoteWorkflow, setRemoteWorkflow] = useState<{
+      revision: string;
+      draft: WorkflowDraft;
+    } | null>(null),
     [capture, setCapture] = useState<any>(null),
     [drafts, setDrafts] = useState<string[]>([]),
     [saved, setSaved] = useState(""),
     [workflowError, setWorkflowError] = useState(""),
     [pendingRemoval, setPendingRemoval] = useState<Column | null>(null);
-  useEffect(() => {
-    setName(state.config.name);
-    setColumns(state.config.columns);
-    setRevision(state.configRevision);
-    setShortcut(state.config.shortcut);
+  const currentDraft = (): WorkflowDraft => ({ name, columns, shortcut });
+  const applyWorkflow = (draft: WorkflowDraft, nextRevision: string) => {
+    setName(draft.name);
+    setColumns(draft.columns);
+    setShortcut(draft.shortcut);
+    setBaseline(cloneWorkflowDraft(draft));
+    setRevision(nextRevision);
+    setRemoteWorkflow(null);
     setPendingRemoval(null);
+  };
+  useEffect(() => {
+    if (state.configRevision === revision) return;
+    const remote = workflowDraft(state.config);
+    if (!sameWorkflowDraft(currentDraft(), baseline)) {
+      setRemoteWorkflow({ revision: state.configRevision, draft: remote });
+      setWorkflowError(
+        "Workflow configuration changed elsewhere. Your unsaved draft is still here; choose how to reconcile it before saving.",
+      );
+      return;
+    }
+    applyWorkflow(remote, state.configRevision);
   }, [state.configRevision]);
   const ticketCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -68,6 +186,12 @@ export function Settings({
     return () => clearInterval(timer);
   }, []);
   async function save() {
+    if (remoteWorkflow) {
+      setWorkflowError(
+        "Reconcile the newer workflow configuration before saving. Your draft has not been changed.",
+      );
+      return;
+    }
     const invalid = validateWorkflow();
     if (invalid) {
       setWorkflowError(invalid);
@@ -80,6 +204,7 @@ export function Settings({
       });
       const next = await api<ProjectState>("/state");
       setRevision(next.configRevision);
+      setBaseline(cloneWorkflowDraft({ name, columns, shortcut }));
       await api("/active", "POST", {});
       await reload();
       setSaved("Project settings saved.");
@@ -87,7 +212,7 @@ export function Settings({
     } catch (e) {
       if (String(e).includes("Configuration changed")) {
         setWorkflowError(
-          "Workflow configuration changed elsewhere. The current configuration was reloaded; review it and apply your changes again.",
+          "Workflow configuration changed elsewhere. Your unsaved draft is still here; choose how to reconcile it before saving.",
         );
         await reload();
         return;
@@ -184,14 +309,19 @@ export function Settings({
           first matching status in this order. Reorder statuses to change those
           defaults.
         </p>
-        <ul className="workflow-default-list" aria-label="Workflow role defaults">
+        <ul
+          className="workflow-default-list"
+          aria-label="Workflow role defaults"
+        >
           {(["backlog", "selected", "progress", "review", "done"] as const).map(
             (role) => {
               const column = defaultFor(role);
               return (
                 <li key={role}>
                   <code>{role}</code>
-                  <span>{column ? `${column.name} (${column.id})` : "Required"}</span>
+                  <span>
+                    {column ? `${column.name} (${column.id})` : "Required"}
+                  </span>
                 </li>
               );
             },
@@ -201,6 +331,46 @@ export function Settings({
           <p className="banner error workflow-message" role="alert">
             {workflowError}
           </p>
+        )}
+        {remoteWorkflow && (
+          <div className="workflow-reconciliation" role="alert">
+            <strong>New workflow settings are available.</strong>
+            <p>
+              Your edits remain in this form. Reload discards them and shows the
+              newer configuration. Reapply merges your changed fields onto it,
+              keeping statuses and fields changed elsewhere.
+            </p>
+            <div className="inline-actions">
+              <button
+                className="button primary small"
+                onClick={() => {
+                  const next = reapplyWorkflowDraft(
+                    baseline,
+                    currentDraft(),
+                    remoteWorkflow.draft,
+                  );
+                  applyWorkflow(next, remoteWorkflow.revision);
+                  setWorkflowError(
+                    "Your draft was reapplied to the latest workflow configuration. Review it, then save.",
+                  );
+                }}
+              >
+                Reapply my draft
+              </button>
+              <button
+                className="button small"
+                onClick={() => {
+                  applyWorkflow(remoteWorkflow.draft, remoteWorkflow.revision);
+                  setWorkflowError("");
+                  setSaved(
+                    "Latest workflow configuration loaded. Local draft discarded.",
+                  );
+                }}
+              >
+                Reload remote configuration
+              </button>
+            </div>
+          </div>
         )}
         {columns.map((c, i) => (
           <div className="column-setting" key={c.id}>
@@ -217,7 +387,9 @@ export function Settings({
                   )
                 }
               />
-              <small>Stable ID: <code>{c.id}</code></small>
+              <small>
+                Stable ID: <code>{c.id}</code>
+              </small>
             </label>
             <label className="column-role">
               <span>Workflow role</span>
@@ -268,7 +440,9 @@ export function Settings({
             <button
               className="icon-button"
               aria-label={`Remove ${c.name}`}
-              disabled={columns.filter((column) => column.role === c.role).length === 1}
+              disabled={
+                columns.filter((column) => column.role === c.role).length === 1
+              }
               title={
                 columns.filter((column) => column.role === c.role).length === 1
                   ? `Add or change another ${c.role} status before removing this required role.`
@@ -290,7 +464,8 @@ export function Settings({
         {pendingRemoval && (
           <div className="workflow-removal" role="alert">
             <strong>
-              {pendingRemoval.name} still has {ticketCounts.get(pendingRemoval.id)} ticket
+              {pendingRemoval.name} still has{" "}
+              {ticketCounts.get(pendingRemoval.id)} ticket
               {ticketCounts.get(pendingRemoval.id) === 1 ? "" : "s"}.
             </strong>
             <p>
@@ -307,7 +482,10 @@ export function Settings({
               >
                 Move tickets on board
               </button>
-              <button className="button small" onClick={() => setPendingRemoval(null)}>
+              <button
+                className="button small"
+                onClick={() => setPendingRemoval(null)}
+              >
                 Keep status
               </button>
             </div>
