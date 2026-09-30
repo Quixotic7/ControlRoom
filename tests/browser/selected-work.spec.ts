@@ -141,6 +141,9 @@ test("questionnaire drafts survive refresh and require explicit answers; edits c
   await expect(page.getByLabel("Answer: Explain the choice")).toHaveValue(
     "A draft I can return to",
   );
+  await expect(
+    page.getByRole("button", { name: "Submit amended answers", exact: true }),
+  ).toBeEnabled();
   await page.getByLabel("Answer: Updated treatment?").fill("Custom purple");
   await page.getByLabel("Answer: Explain the choice").fill("Amended rationale");
   await page

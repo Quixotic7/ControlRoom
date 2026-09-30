@@ -206,13 +206,13 @@ export async function buildServer(
     ),
   );
   app.patch("/api/comments/:id", async (req: any) => {
-    await store.resolveComment(
+    const comment = await store.resolveComment(
       req.params.id,
       req.body.revision,
       !!req.body.resolved,
       actor(req.body),
     );
-    return { ok: true };
+    return { ok: true, comment };
   });
   app.post("/api/records/:id/claim", async (req: any) =>
     store.claim(

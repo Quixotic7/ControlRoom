@@ -83,6 +83,30 @@ export function Questionnaire({
       setPending(false);
     }
   }
+  async function reopen() {
+    if (busy.current || disabled) return;
+    busy.current = true;
+    setPending(true);
+    setError("");
+    try {
+      // Reopening itself changes the comment revision.  Acknowledge the exact
+      // revision returned by that deliberate action, while retaining every
+      // draft field (including fields intentionally cleared by the human).
+      // Other edits still leave the draft stale and require reconciliation.
+      const result = await api<{ comment: Comment }>(
+        `/comments/${question.id}`,
+        "PATCH",
+        { actor, revision: question.revision, resolved: false },
+      );
+      change({ revision: result.comment.revision, values: draft.values });
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      busy.current = false;
+      setPending(false);
+    }
+  }
   return (
     <article
       className="open-question questionnaire"
@@ -210,6 +234,16 @@ export function Questionnaire({
       >
         {question.answers?.length ? "Submit amended answers" : "Submit answers"}
       </button>
+      {question.resolved && (
+        <button
+          type="button"
+          className="button subtle"
+          disabled={disabled || pending}
+          onClick={() => void reopen()}
+        >
+          Reopen questionnaire
+        </button>
+      )}
       <p className="muted">
         Nothing is submitted until you press this button. Drafts have no time
         limit.
