@@ -118,3 +118,113 @@ for (const layout of ["Board", "Table"] as const) {
     ).toBe(current.revision);
   });
 }
+
+for (const destinationKind of ["card", "empty space"] as const) {
+  test(`Failed Review can be dragged into Review onto ${destinationKind}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 2200, height: 1000 });
+    await page.request.get("/");
+    await page.request.patch("/api/preferences", {
+      data: { selected: null, page: "project", viewId: "board" },
+    });
+    const original = await (await page.request.get("/api/state")).json();
+    const failedStatus = "failed-review-drag";
+    const columns = [...original.config.columns];
+    columns.splice(
+      columns.findIndex((c: any) => c.role === "review"),
+      0,
+      {
+        id: failedStatus,
+        name: "Failed Review",
+        role: "progress",
+      },
+    );
+    expect(
+      (
+        await page.request.patch("/api/config", {
+          data: {
+            revision: original.configRevision,
+            patch: { columns },
+          },
+        })
+      ).ok(),
+    ).toBeTruthy();
+    const prefix = `Review pointer ${destinationKind}`;
+    const parent = await create(page, `${prefix} parent`);
+    const source = await create(page, `${prefix} source`, {
+      parent: parent.meta.id,
+      status: failedStatus,
+      order: 17,
+    });
+    const target =
+      destinationKind === "card"
+        ? await create(page, `${prefix} target`, {
+            parent: parent.meta.id,
+            status: "review",
+            order: 29,
+          })
+        : null;
+    try {
+      await page.goto("/");
+      await page.getByLabel("Filter tickets").fill(prefix);
+      const card = page.locator(`.ticket-card[data-id="${source.meta.id}"]`);
+      const destination = target
+        ? page.locator(`.ticket-card[data-id="${target.meta.id}"]`)
+        : page.locator(
+            `.board-cell[data-column="review"][data-group="${parent.meta.id}"]`,
+          );
+      await card.dragTo(
+        destination,
+        target ? {} : { targetPosition: { x: 20, y: 15 } },
+      );
+      await expect
+        .poll(
+          async () =>
+            (
+              await (
+                await page.request.get(`/api/records/${source.meta.id}`)
+              ).json()
+            ).meta.status,
+        )
+        .toBe("review");
+      const moved = await (
+        await page.request.get(`/api/records/${source.meta.id}`)
+      ).json();
+      expect(moved.meta.parent).toBe(parent.meta.id);
+      expect(moved.meta.order).toBe(17);
+      if (target)
+        expect(
+          (
+            await (
+              await page.request.get(`/api/records/${target.meta.id}`)
+            ).json()
+          ).revision,
+        ).toBe(target.revision);
+      await expect(page.locator(".drag-source")).toHaveCount(0);
+      await expect(page.locator(".ticket-drop-gap.active")).toHaveCount(0);
+    } finally {
+      const current = await (
+        await page.request.get(`/api/records/${source.meta.id}`)
+      ).json();
+      await page.request.patch(`/api/records/${source.meta.id}`, {
+        data: {
+          actor,
+          revision: current.revision,
+          patch: { status: "progress" },
+        },
+      });
+      const state = await (await page.request.get("/api/state")).json();
+      expect(
+        (
+          await page.request.patch("/api/config", {
+            data: {
+              revision: state.configRevision,
+              patch: { columns: original.config.columns },
+            },
+          })
+        ).ok(),
+      ).toBeTruthy();
+    }
+  });
+}
