@@ -13,9 +13,9 @@ async function create(page: Page, title: string, extra = {}) {
   return r.json();
 }
 async function open(page: Page, id: string) {
-  await page.goto("about:blank");
-  await page.request.patch("/api/preferences", { data: { selected: id } });
-  await page.goto("/");
+  // Open the explicit ticket link; a pending preference save from the old
+  // page can otherwise race an API-only update of the remembered selection.
+  await page.goto(`/#ticket=${encodeURIComponent(id)}`);
   await expect(page.getByRole("dialog")).toBeVisible();
 }
 async function state(page: Page) {
