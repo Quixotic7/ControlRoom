@@ -90,7 +90,7 @@ export function GroupHeader({
         <span className="tag green">Approved scope</span>
       )}
       {goal?.meta.archived && <span className="tag">Archived parent</span>}
-      {goal && <TicketProgress record={goal} ctx={ctx} compact />}
+      {goal && <TicketProgress record={goal} ctx={ctx} compact continuous />}
     </div>
   );
 }

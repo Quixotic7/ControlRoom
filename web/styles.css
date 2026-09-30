@@ -2210,7 +2210,10 @@ dialog::backdrop {
 }
 .group-header .ticket-progress.compact {
   margin: 0;
-  min-width: 84px;
+  width: 160px;
+  flex: 0 0 160px;
+  min-width: 0;
+  max-width: 35vw;
 }
 .ticket-progress-item {
   display: flex;
@@ -2222,6 +2225,17 @@ dialog::backdrop {
 .ticket-progress.compact .ticket-progress-item {
   height: 7px;
   gap: 2px;
+}
+.ticket-progress-item.continuous {
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line);
+  gap: 0;
+}
+.ticket-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
 }
 .ticket-progress-cell {
   min-width: 5px;

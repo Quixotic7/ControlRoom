@@ -32,15 +32,17 @@ function CompletionBar({
   label,
   completion,
   title,
+  continuous = false,
 }: {
   label: string;
   completion: Completion;
   title?: string;
+  continuous?: boolean;
 }) {
   const accessible = `${label} progress: ${completion.complete} of ${completion.total} complete`;
   return (
     <span
-      className="ticket-progress-item"
+      className={`ticket-progress-item${continuous ? " continuous" : ""}`}
       role="progressbar"
       aria-label={accessible}
       aria-valuemin={0}
@@ -48,13 +50,23 @@ function CompletionBar({
       aria-valuenow={completion.complete}
       title={title ?? accessible}
     >
-      {Array.from({ length: completion.total }, (_, index) => (
+      {continuous ? (
         <span
           aria-hidden="true"
-          className={`ticket-progress-cell${index < completion.complete ? " complete" : ""}`}
-          key={index}
+          className="ticket-progress-fill"
+          style={{
+            width: `${(completion.complete / completion.total) * 100}%`,
+          }}
         />
-      ))}
+      ) : (
+        Array.from({ length: completion.total }, (_, index) => (
+          <span
+            aria-hidden="true"
+            className={`ticket-progress-cell${index < completion.complete ? " complete" : ""}`}
+            key={index}
+          />
+        ))
+      )}
     </span>
   );
 }
@@ -63,21 +75,28 @@ export function TicketProgress({
   record,
   ctx,
   compact = false,
+  continuous = false,
 }: {
   record: RecordFile;
   ctx: Context;
   compact?: boolean;
+  continuous?: boolean;
 }) {
   const completion = ticketCompletion(record, ctx);
   if (!completion.microtasks && !completion.children) return null;
   return (
     <span className={`ticket-progress${compact ? " compact" : ""}`}>
       {completion.microtasks && (
-        <CompletionBar label="Microtasks" completion={completion.microtasks} />
+        <CompletionBar
+          label="Microtasks"
+          completion={completion.microtasks}
+          continuous={continuous}
+        />
       )}
       {completion.children && (
         <CompletionBar
           label="Child tickets"
+          continuous={continuous}
           completion={completion.children}
           title="Child tickets progress includes all direct child tickets, including archived tickets."
         />
