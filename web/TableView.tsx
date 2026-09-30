@@ -480,6 +480,8 @@ export function TableView({
                       collapsed={isCollapsed}
                       onToggle={() => onToggleGroup(g.key)}
                       onOpen={onOpen}
+                      reload={reload}
+                      writesDisabled={writesDisabled}
                     />
                   </td>
                 </tr>

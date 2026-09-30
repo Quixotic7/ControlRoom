@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 
-const actor = { name: "Quick approval reviewer", kind: "human" };
+const fixtureActor = { name: "Quick approval reviewer", kind: "human" };
+const webActor = { name: "You", kind: "human" };
 
 async function create(page: Page, title: string, meta = {}) {
   const response = await page.request.post("/api/records", {
@@ -8,7 +9,7 @@ async function create(page: Page, title: string, meta = {}) {
       kind: "ticket",
       meta: { title, ...meta },
       body: "Acceptance criteria and unrelated body stay intact.",
-      actor,
+      actor: fixtureActor,
     },
   });
   expect(response.ok()).toBeTruthy();
@@ -98,13 +99,13 @@ for (const layout of ["Board", "Table"] as const) {
 
     const approved = await record(page, planned.meta.id);
     expect(approved.meta.status).toBe(planned.meta.status);
-    expect(approved.meta.scopeApprovedBy).toEqual(actor);
+    expect(approved.meta.scopeApprovedBy).toEqual(webActor);
     expect(approved.meta.owner).toBe("Keep this owner");
     expect(approved.meta.customField).toBe("Keep this field");
 
     const accepted = await record(page, review.meta.id);
     expect(accepted.meta.status).toBe("done");
-    expect(accepted.meta.acceptedBy).toEqual(actor);
+    expect(accepted.meta.acceptedBy).toEqual(webActor);
     expect(accepted.meta.handoff).toBe(`Summary ${suffix}`);
     expect(accepted.meta.evidence).toBe(`Evidence ${suffix}`);
     expect(accepted.meta.customField).toBe("Review field stays");
@@ -113,6 +114,107 @@ for (const layout of ["Board", "Table"] as const) {
     );
   });
 }
+
+test("grouped parent headers expose scope approval and Review acceptance", async ({
+  page,
+}) => {
+  for (const layout of ["Board", "Table"] as const) {
+    const suffix = `${layout}-parent-${Date.now()}`;
+    const label = `group-approval-${suffix}`;
+    const planned = await create(page, `Planned parent ${suffix}`, {
+      labels: [label],
+      owner: "Parent owner stays",
+    });
+    await create(page, `Planned child ${suffix}`, {
+      labels: [label],
+      parent: planned.meta.id,
+    });
+    const review = await create(page, `Review parent ${suffix}`, {
+      labels: [label],
+      status: "review",
+      handoff: `Parent summary ${suffix}`,
+      evidence: `Parent evidence ${suffix}`,
+    });
+    await create(page, `Review child ${suffix}`, {
+      labels: [label],
+      parent: review.meta.id,
+    });
+    const archived = await create(page, `Archived parent ${suffix}`, {
+      archived: true,
+      labels: [label],
+      status: "review",
+      handoff: `Archived summary ${suffix}`,
+      evidence: `Archived evidence ${suffix}`,
+    });
+    await create(page, `Archived child ${suffix}`, {
+      labels: [label],
+      parent: archived.meta.id,
+    });
+
+    await page.goto("/");
+    await page.getByLabel("Filter tickets").fill(`label:${label}`);
+    if (layout === "Table")
+      await page.getByRole("button", { name: "Table", exact: true }).click();
+
+    const plannedHeader = page
+      .locator(".group-header")
+      .filter({ hasText: planned.meta.title });
+    const plannedActions = plannedHeader.getByLabel(
+      `Actions for ${planned.meta.title}`,
+    );
+    await plannedActions.getByRole("button", { name: "Approve scope" }).click();
+    await expect(plannedActions.getByText("Approved scope")).toBeVisible();
+
+    const reviewHeader = page
+      .locator(".group-header")
+      .filter({ hasText: review.meta.title });
+    const reviewActions = reviewHeader.getByLabel(
+      `Actions for ${review.meta.title}`,
+    );
+    await reviewActions.locator("summary").click();
+    await expect(
+      reviewActions.getByText(`Parent summary ${suffix}`),
+    ).toBeVisible();
+    await expect(
+      reviewActions.getByText(`Parent evidence ${suffix}`),
+    ).toBeVisible();
+    await reviewActions
+      .getByRole("button", { name: "Accept into Done" })
+      .click();
+    await expect
+      .poll(async () => (await record(page, review.meta.id)).meta.status)
+      .toBe("done");
+
+    const archivedHeader = page
+      .locator(".group-header")
+      .filter({ hasText: archived.meta.title });
+    await expect(
+      archivedHeader.getByText("Archived parent", { exact: true }),
+    ).toBeVisible();
+    const archivedActions = archivedHeader.getByLabel(
+      `Actions for ${archived.meta.title}`,
+    );
+    await expect(
+      archivedActions.getByRole("button", { name: "Approve scope" }),
+    ).toBeDisabled();
+    await archivedActions.locator("summary").click();
+    await expect(
+      archivedActions.getByText(`Archived summary ${suffix}`),
+    ).toBeVisible();
+    await expect(
+      archivedActions.getByRole("button", { name: "Accept into Done" }),
+    ).toBeDisabled();
+
+    const approved = await record(page, planned.meta.id);
+    expect(approved.meta.status).toBe(planned.meta.status);
+    expect(approved.meta.scopeApprovedBy).toEqual(webActor);
+    expect(approved.meta.owner).toBe("Parent owner stays");
+    expect((await record(page, review.meta.id)).meta.acceptedBy).toEqual(
+      webActor,
+    );
+    expect((await record(page, archived.meta.id)).meta.status).toBe("review");
+  }
+});
 
 test("approved and inherited scope are distinct in board and table views", async ({
   page,
@@ -134,25 +236,21 @@ test("approved and inherited scope are distinct in board and table views", async
     if (layout === "Table")
       await page.getByRole("button", { name: "Table", exact: true }).click();
     const parentActions = page.getByLabel(`Actions for ${parent.meta.title}`);
-    const childActions = page.getByLabel(`Actions for ${child.meta.title}`);
+    await expect(parentActions.getByText("Approved scope")).toBeVisible();
     if (layout === "Table") {
-      await expect(parentActions.getByText("Approved scope")).toBeVisible();
+      const childActions = page.getByLabel(`Actions for ${child.meta.title}`);
       await expect(childActions.getByText(/Inherited scope/)).toBeVisible();
+      await expect(
+        childActions.getByRole("button", { name: "Approve scope" }),
+      ).toHaveCount(0);
     } else {
-      const parentCard = page
-        .locator(".board-ticket")
-        .filter({ hasText: parent.meta.title });
       const childCard = page
         .locator(".board-ticket")
         .filter({ hasText: child.meta.title });
-      await expect(parentCard.getByText("Approved scope")).toBeVisible();
       await expect(childCard.getByText(/Inherited scope/)).toBeVisible();
     }
     await expect(
       parentActions.getByRole("button", { name: "Approve scope" }),
-    ).toHaveCount(0);
-    await expect(
-      childActions.getByRole("button", { name: "Approve scope" }),
     ).toHaveCount(0);
   }
 });
@@ -199,7 +297,7 @@ test("selected scope approval reports success, ineligible items, and a stale fai
       data: {
         revision: latest.revision,
         patch: { owner: "Concurrent editor" },
-        actor,
+        actor: fixtureActor,
       },
     });
     expect(response.ok()).toBeTruthy();
@@ -221,7 +319,7 @@ test("selected scope approval reports success, ineligible items, and a stale fai
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
 
   expect((await record(page, good.meta.id)).meta.scopeApprovedBy).toEqual(
-    actor,
+    webActor,
   );
   expect(
     (await record(page, stale.meta.id)).meta.scopeApproved,
