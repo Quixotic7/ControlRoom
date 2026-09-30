@@ -136,6 +136,8 @@ test("queue navigation saves ticket drafts, retains them on failure, and waits f
     },
   );
   await page.getByRole("button", { name: "Request changes" }).click();
+  await page.getByLabel("Review feedback", { exact: true }).fill("Please finish the remaining acceptance criterion.");
+  await page.getByLabel("Return to").selectOption("progress");
   await page.getByRole("button", { name: "Save feedback & return" }).click();
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   await page.keyboard.press("Alt+ArrowRight");
