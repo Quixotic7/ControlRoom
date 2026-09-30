@@ -23,17 +23,28 @@ test("status customization preserves a local draft through a concurrent update",
       page.getByRole("heading", { name: "Customize statuses", exact: true }),
     ).toBeVisible();
 
-    const displayNameBox = await page
-      .getByLabel("Name for stage-muj0to06")
-      .boundingBox();
-    const workflowRoleBox = await page
-      .getByLabel("Role for stage-muj0to06")
-      .boundingBox();
-    expect(displayNameBox).not.toBeNull();
-    expect(workflowRoleBox).not.toBeNull();
-    expect(
-      Math.abs(displayNameBox!.y - workflowRoleBox!.y),
-    ).toBeLessThanOrEqual(1);
+    const assertStatusRowAligned = async () => {
+      const row = page.locator(
+        '.column-setting:has(input[aria-label="Name for backlog"])',
+      );
+      const controls = await Promise.all([
+        row.getByLabel("Name for backlog").boundingBox(),
+        row.getByLabel("Role for backlog").boundingBox(),
+        row.locator(".icon-button").nth(0).boundingBox(),
+        row.locator(".icon-button").nth(1).boundingBox(),
+        row.locator(".icon-button").nth(2).boundingBox(),
+      ]);
+      expect(controls.every(Boolean)).toBeTruthy();
+      const y = controls.map((box) => box!.y);
+      expect(Math.max(...y) - Math.min(...y)).toBeLessThanOrEqual(1);
+    };
+    await assertStatusRowAligned();
+    await page.setViewportSize({ width: 520, height: 1000 });
+    await assertStatusRowAligned();
+    await page.evaluate(() => {
+      document.documentElement.dataset.theme = "snes";
+    });
+    await assertStatusRowAligned();
 
     await page.getByLabel("Name for backlog").fill("Local intake");
     const beforeRemoteChange = await state(page);

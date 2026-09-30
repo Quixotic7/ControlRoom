@@ -764,10 +764,11 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 .column-setting {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 46fr) minmax(0, 30fr) repeat(3, 30px);
   gap: 6px;
   margin-bottom: 8px;
-  align-items: end;
+  align-items: start;
 }
 .column-display-name,
 .column-role {
@@ -781,18 +782,17 @@ textarea::placeholder {
   color: var(--muted);
 }
 .column-display-name {
-  width: 46%;
+  min-width: 0;
 }
 .column-role {
-  width: 30%;
-}
-.column-role::after {
-  content: "";
-  min-height: 15px;
+  min-width: 0;
 }
 .column-setting input,
 .column-setting select {
   width: 100%;
+}
+.column-setting > .icon-button {
+  margin-top: 15px;
 }
 .column-setting small {
   font-family: var(--body);
@@ -2166,6 +2166,10 @@ dialog::backdrop {
   }
   .fields.two {
     grid-template-columns: 1fr;
+  }
+  .column-setting {
+    grid-template-columns: minmax(0, 46fr) minmax(0, 30fr) repeat(3, 28px);
+    gap: 4px;
   }
   .record-dialog {
     width: 94vw;
