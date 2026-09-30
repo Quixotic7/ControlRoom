@@ -78,6 +78,7 @@ export function Feed({
   const scroller = useRef<HTMLDivElement>(null);
   const initialized = useRef(false);
   const requestVersion = useRef(0);
+  const liveRequestVersion = useRef(0);
   const filters = useMemo(
     () => ({ actor, eventType, ticket }),
     [actor, eventType, ticket],
@@ -96,6 +97,8 @@ export function Feed({
   // the reader is already at the top.
   useEffect(() => {
     const version = ++requestVersion.current;
+    // A new filter result also makes every in-flight live scan obsolete.
+    liveRequestVersion.current++;
     initialized.current = false;
     setLoading(true);
     setPending([]);
@@ -115,24 +118,73 @@ export function Feed({
 
   useEffect(() => {
     if (!initialized.current) return;
-    const version = requestVersion.current;
-    api<FeedPage>(url())
-      .then((page) => {
-        if (version !== requestVersion.current) return;
-        setFacets(page.facets);
-        const known = new Set(entries.flatMap((entry) => entry.sourceIds));
-        const incoming = page.entries.filter((entry) =>
-          entry.sourceIds.some((id) => !known.has(id)),
+    const filterVersion = requestVersion.current;
+    const liveVersion = ++liveRequestVersion.current;
+    const knownEntries = mergeFresh(pending, entries);
+    const knownSources = new Set(
+      knownEntries.flatMap((entry) => entry.sourceIds),
+    );
+    const isCurrent = () =>
+      filterVersion === requestVersion.current &&
+      liveVersion === liveRequestVersion.current;
+
+    // Read forward from the new head until a durable source identity overlaps
+    // the list we already have. A reconnect can contain more than one page of
+    // new activity, so stopping after the first 30 would leave an unreachable
+    // gap ahead of the retained older cursor.
+    void (async () => {
+      try {
+        let nextCursor: string | undefined;
+        let lastPage: FeedPage | undefined;
+        let reachedKnown = false;
+        const fresh: FeedEntry[] = [];
+        do {
+          const page = await api<FeedPage>(url(nextCursor));
+          if (!isCurrent()) return;
+          lastPage = page;
+          fresh.push(...page.entries);
+          reachedKnown = page.entries.some((entry) =>
+            entry.sourceIds.some((id) => knownSources.has(id)),
+          );
+          nextCursor = page.nextCursor;
+          // With no prior boundary, the first page establishes normal
+          // pagination rather than turning an empty filtered feed into a full
+          // history scan.
+          if (!knownSources.size || reachedKnown || !page.hasMore) break;
+        } while (nextCursor);
+
+        if (!isCurrent() || !lastPage) return;
+        setFacets(lastPage.facets);
+        setError("");
+        const incoming = fresh.filter((entry) =>
+          entry.sourceIds.some((id) => !knownSources.has(id)),
         );
+
+        if (!knownSources.size) {
+          setCursor(lastPage.nextCursor);
+          setHasMore(lastPage.hasMore);
+        } else if (!reachedKnown && !lastPage.hasMore) {
+          // The known boundary disappeared (for example after recovery from a
+          // damaged source). We scanned the complete result, so its tail is
+          // authoritative and there is no older cursor left to retain.
+          setCursor(undefined);
+          setHasMore(false);
+        }
+
         if (!incoming.length) return;
         if ((scroller.current?.scrollTop ?? 0) < 8) {
-          setEntries((current) => mergeFresh(page.entries, current));
+          setEntries((current) =>
+            mergeFresh(fresh, mergeFresh(pending, current)),
+          );
+          setPending([]);
           scroller.current?.scrollTo({ top: 0 });
         } else {
           setPending((current) => mergeFresh(incoming, current));
         }
-      })
-      .catch((e) => setError(String(e)));
+      } catch (e) {
+        if (isCurrent()) setError(String(e));
+      }
+    })();
   }, [revision]);
 
   const showPending = () => {
@@ -142,18 +194,20 @@ export function Feed({
   };
   const loadOlder = async () => {
     if (!cursor || loading) return;
+    const version = requestVersion.current;
     setLoading(true);
     try {
       const page = await api<FeedPage>(url(cursor));
+      if (version !== requestVersion.current) return;
       setEntries((current) => mergeFresh(current, page.entries));
       setCursor(page.nextCursor);
       setHasMore(page.hasMore);
       setFacets(page.facets);
       setError("");
     } catch (e) {
-      setError(String(e));
+      if (version === requestVersion.current) setError(String(e));
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   };
 

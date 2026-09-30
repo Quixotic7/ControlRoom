@@ -3,17 +3,25 @@ import { test, expect } from "@playwright/test";
 test("feed filters, loads older activity, and queues live updates while reading", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   const actor = { name: `Feed tester ${Date.now()}`, kind: "human" } as const;
   const title = `Feed pagination ${Date.now()}`;
-  const record = await (
-    await page.request.post("/api/records", {
-      data: { kind: "ticket", meta: { title }, body: "", actor },
-    })
-  ).json();
-  for (let index = 0; index < 34; index++)
-    await page.request.post(`/api/records/${record.meta.id}/comments`, {
-      data: { body: `Earlier feed comment ${index}`, actor },
-    });
+  const bootstrap = await page.request.get("/");
+  expect(bootstrap.ok()).toBe(true);
+  const createResponse = await page.request.post("/api/records", {
+    data: { kind: "ticket", meta: { title }, body: "", actor },
+  });
+  expect(createResponse.ok()).toBe(true);
+  const record = await createResponse.json();
+  for (let index = 0; index < 34; index++) {
+    const response = await page.request.post(
+      `/api/records/${record.meta.id}/comments`,
+      {
+        data: { body: `Earlier feed comment ${index}`, actor },
+      },
+    );
+    expect(response.ok()).toBe(true);
+  }
 
   await page.goto("/");
   await page.getByRole("button", { name: "Feed", exact: true }).click();
@@ -29,6 +37,41 @@ test("feed filters, loads older activity, and queues live updates while reading"
   await expect(page.locator(".feed-entry")).toHaveCount(30);
   await expect(page.locator(".feed-entry").first()).toContainText(title);
 
+  // A page from the previous filter must not merge into the next result set
+  // or replace its cursor/loading state when it eventually resolves.
+  let releaseOlder!: () => void;
+  let markOlderStarted!: () => void;
+  const olderGate = new Promise<void>((resolve) => (releaseOlder = resolve));
+  const olderStarted = new Promise<void>(
+    (resolve) => (markOlderStarted = resolve),
+  );
+  await page.route("**/api/feed?*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.searchParams.has("cursor")) {
+      markOlderStarted();
+      await olderGate;
+    }
+    await route.continue();
+  });
+  const staleResponse = page.waitForResponse((response) => {
+    const responseUrl = new URL(response.url());
+    return (
+      responseUrl.pathname === "/api/feed" &&
+      responseUrl.searchParams.has("cursor")
+    );
+  });
+  await page.getByRole("button", { name: "Load older activity" }).click();
+  await olderStarted;
+  await page.getByLabel("Actor").selectOption("human:Morgan");
+  await expect(page.locator(".feed-entry")).toHaveCount(0);
+  releaseOlder();
+  await staleResponse;
+  await expect(page.locator(".feed-entry")).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.unroute("**/api/feed?*");
+  await page.getByLabel("Actor").selectOption(`${actor.kind}:${actor.name}`);
+  await expect(page.locator(".feed-entry")).toHaveCount(30);
+
   await feed.evaluate((node) => (node.scrollTop = 0));
   const topText = `Live at top ${Date.now()}`;
   await page.request.post(`/api/records/${record.meta.id}/comments`, {
@@ -39,10 +82,38 @@ test("feed filters, loads older activity, and queues live updates while reading"
   await feed.evaluate((node) => (node.scrollTop = node.scrollHeight));
   const before = await feed.evaluate((node) => node.scrollTop);
   const waitingText = `Wait for reader ${Date.now()}`;
-  await page.request.post(`/api/records/${record.meta.id}/comments`, {
-    data: { body: waitingText, actor },
+  let releaseRefresh!: () => void;
+  let markRefreshStarted!: () => void;
+  const refreshGate = new Promise<void>(
+    (resolve) => (releaseRefresh = resolve),
+  );
+  const refreshStarted = new Promise<void>(
+    (resolve) => (markRefreshStarted = resolve),
+  );
+  await page.route("**/api/feed?*", async (route) => {
+    markRefreshStarted();
+    await refreshGate;
+    await route.continue();
   });
-  const indicator = page.getByRole("button", { name: "1 new update" });
+  const firstBurstResponse = await page.request.post(
+    `/api/records/${record.meta.id}/comments`,
+    {
+      data: { body: waitingText, actor },
+    },
+  );
+  expect(firstBurstResponse.ok()).toBe(true);
+  await refreshStarted;
+  let newestText = waitingText;
+  for (let index = 1; index < 35; index++) {
+    newestText = `Reconnect burst ${index}`;
+    const response = await page.request.post(
+      `/api/records/${record.meta.id}/comments`,
+      { data: { body: newestText, actor } },
+    );
+    expect(response.ok()).toBe(true);
+  }
+  releaseRefresh();
+  const indicator = page.getByRole("button", { name: "35 new updates" });
   await expect(indicator).toBeVisible();
   await expect(
     page.locator(".feed-entry").filter({ hasText: waitingText }),
@@ -53,12 +124,12 @@ test("feed filters, loads older activity, and queues live updates while reading"
 
   await indicator.click();
   const newest = page.locator(".feed-entry").first();
-  await expect(newest).toContainText(waitingText);
+  await expect(newest).toContainText(newestText);
   await newest.click();
   await expect(page.locator(".detail-tabs button.active")).toHaveText(
     /Conversation/,
   );
   await expect(page.locator('.comment[data-focused="true"]')).toContainText(
-    waitingText,
+    newestText,
   );
 });
