@@ -1,32 +1,39 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext } from "react";
 import type { DragEvent, KeyboardEvent } from "react";
 import type { RecordFile } from "../src/types";
+export type DragPreview = {
+  after: boolean;
+  slot: string;
+  target: RecordFile;
+};
 export type DragSession = {
+  height: number;
+  preview: DragPreview | null;
   source: RecordFile;
   records: Map<string, RecordFile>;
 };
 type DragContext = {
+  clearPreview: () => void;
+  commit: () => void;
   end: () => void;
   session: DragSession | null;
-  start: (r: RecordFile) => void;
+  start: (r: RecordFile, height: number) => void;
+  previewAt: (target: RecordFile, after: boolean, slot: string) => void;
   canPlace: (r: RecordFile) => boolean;
   shift: (r: RecordFile, by: number) => void;
-  place: (id: string, target: RecordFile, after?: boolean) => void;
 };
 export const TicketDragContext = createContext<DragContext | null>(null);
+export const useTicketDragContext = () => useContext(TicketDragContext);
 export function useTicketDrag(record: RecordFile) {
   const ctx = useContext(TicketDragContext);
-  const [edge, setEdgeState] = useState<"before" | "after" | null>(null);
-  const edgeRef = useRef<typeof edge>(null);
-  const setEdge = (value: typeof edge) => {
-    edgeRef.current = value;
-    setEdgeState(value);
-  };
-  useEffect(() => {
-    if (!ctx?.session) setEdge(null);
-  }, [ctx?.session]);
+  const preview = ctx?.session?.preview;
   return {
-    edge: ctx?.session ? edge : null,
+    edge:
+      preview?.target.meta.id === record.meta.id
+        ? preview.after
+          ? ("after" as const)
+          : ("before" as const)
+        : null,
     key: (e: KeyboardEvent) => {
       if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         e.preventDefault();
@@ -37,41 +44,7 @@ export function useTicketDrag(record: RecordFile) {
     start: (e: DragEvent) => {
       e.dataTransfer.setData("text/workboard-ticket", record.meta.id);
       e.dataTransfer.effectAllowed = "move";
-      ctx?.start(record);
-    },
-    over: (e: DragEvent) => {
-      if (!ctx?.session) return;
-      e.stopPropagation();
-      if (!ctx.canPlace(record)) {
-        setEdge(null);
-        e.dataTransfer.dropEffect = "none";
-        return;
-      }
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const box = e.currentTarget.getBoundingClientRect();
-      setEdge(e.clientY < box.top + box.height / 2 ? "before" : "after");
-    },
-    leave: (e: DragEvent) => {
-      if (
-        !(e.relatedTarget instanceof Node) ||
-        !e.currentTarget.contains(e.relatedTarget)
-      )
-        setEdge(null);
-    },
-    drop: (e: DragEvent) => {
-      if (!ctx?.session) return false;
-      e.preventDefault();
-      e.stopPropagation();
-      if (ctx.canPlace(record) && edgeRef.current)
-        ctx.place(
-          ctx.session.source.meta.id,
-          record,
-          edgeRef.current === "after",
-        );
-      setEdge(null);
-      ctx.end();
-      return true;
+      ctx?.start(record, e.currentTarget.getBoundingClientRect().height);
     },
   };
 }

@@ -1,9 +1,9 @@
-import { useTicketDrag } from "./TicketDrag";
+import { useTicketDrag, useTicketDragContext } from "./TicketDrag";
+import { Fragment, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { ProgressReport } from "./ProgressReport";
 import { TicketProgress } from "./TicketProgress";
 import { ticketNavigation } from "./ticketNavigation";
-import { useEffect, useRef } from "react";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
 import { GroupHeader } from "./BoardView";
@@ -12,14 +12,40 @@ import { priorities, priorityOf, type Context, type Group } from "./model";
 import { QuickTicket } from "./QuickTicket";
 import { Avatar, VerificationTag } from "./TicketCard";
 
+const tableSlot = (group: string, id: string) => `table/${group}/${id}`;
+
+function TicketDropRow({
+  active,
+  columns,
+  slot,
+}: {
+  active: boolean;
+  columns: number;
+  slot: string;
+}) {
+  return (
+    <tr
+      aria-hidden="true"
+      className={`ticket-drop-row${active ? " active" : ""}`}
+      data-ticket-drop-slot={slot}
+    >
+      <td colSpan={columns}>
+        <div className="ticket-drop-space" />
+      </td>
+    </tr>
+  );
+}
+
 function DragRow({
   record,
   selected,
+  source,
   role,
   children,
 }: {
   record: RecordFile;
   selected: boolean;
+  source: boolean;
   role?: string;
   children: ReactNode;
 }) {
@@ -29,12 +55,9 @@ function DragRow({
       data-stage={role}
       data-id={record.meta.id}
       aria-selected={selected}
-      className={`${selected ? "selected " : ""}${drag.edge ? "insert-" + drag.edge : ""}`}
+      className={`${source ? "drag-source " : ""}${selected ? "selected " : ""}${drag.edge ? "insert-" + drag.edge : ""}`}
       onKeyDown={drag.key}
       onDragStart={drag.start}
-      onDragOver={drag.over}
-      onDragLeave={drag.leave}
-      onDrop={drag.drop}
     >
       {children}
     </tr>
@@ -76,6 +99,7 @@ export function TableView({
   onPlace: (draggedId: string, target: RecordFile) => void;
   reload: () => Promise<void>;
 }) {
+  const ticketDrag = useTicketDragContext();
   const backlog = ctx.columns.find((c) => c.role === "backlog")!.id;
   const allBox = useRef<HTMLInputElement>(null);
   const shown = [
@@ -123,7 +147,57 @@ export function TableView({
         {groups.map((g) => {
           const isCollapsed = collapsed.has(g.key);
           return (
-            <tbody key={g.key}>
+            <tbody
+              key={g.key}
+              onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes("text/workboard-ticket"))
+                  return;
+                e.preventDefault();
+                const candidates = Array.from(
+                  e.currentTarget.querySelectorAll<HTMLElement>("tr[data-id]"),
+                ).filter((row) => {
+                  const record = g.items.find(
+                    (item) => item.meta.id === row.dataset.id,
+                  );
+                  return record && ticketDrag?.canPlace(record);
+                });
+                const next = candidates.find((row) => {
+                  const box = row.getBoundingClientRect();
+                  return e.clientY < box.top + box.height / 2;
+                });
+                const row = next ?? candidates.at(-1);
+                const target = g.items.find(
+                  (item) => item.meta.id === row?.dataset.id,
+                );
+                if (target && ticketDrag) {
+                  const after = !next;
+                  ticketDrag.previewAt(
+                    target,
+                    after,
+                    tableSlot(g.key, after ? "$end" : target.meta.id),
+                  );
+                  e.dataTransfer.dropEffect = "move";
+                } else {
+                  ticketDrag?.clearPreview();
+                  e.dataTransfer.dropEffect = "none";
+                }
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node))
+                  ticketDrag?.clearPreview();
+              }}
+              onDrop={(e) => {
+                if (
+                  ticketDrag?.session?.preview?.slot.startsWith(
+                    tableSlot(g.key, ""),
+                  )
+                ) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  ticketDrag.commit();
+                }
+              }}
+            >
               {groupBy !== "none" && (
                 <tr className="group-row">
                   <td colSpan={columns}>
@@ -147,132 +221,159 @@ export function TableView({
                   const role = ctx.columns.find(
                     (c) => c.id === r.meta.status,
                   )?.role;
+                  const slot = tableSlot(g.key, r.meta.id);
                   return (
-                    <DragRow
-                      key={r.meta.id}
-                      record={r}
-                      role={role}
-                      selected={selected.has(r.meta.id)}
-                    >
-                      <td className="row-check">
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${r.meta.title}`}
-                          checked={selected.has(r.meta.id)}
-                          onChange={(e) =>
-                            onToggleSelected(r.meta.id, e.target.checked)
-                          }
-                        />
-                      </td>
-                      <td className="row-number">{++row}</td>
-                      <td className="title-cell">
-                        <button
-                          className="ticket-link"
-                          draggable={canReorder}
-                          onDragStart={(e) =>
-                            e.dataTransfer.setData(
-                              "text/workboard-ticket",
-                              r.meta.id,
-                            )
-                          }
-                          {...ticketNavigation(r.meta.id, onOpen)}
-                        >
-                          <StageIcon role={role} />
-                          <span className="ticket-title">{r.meta.title}</span>
-                          <span className="record-id">{recordId(r)}</span>
-                        </button>
-                        {r.meta.blocked && (
-                          <span className="tag danger">
-                            <BlockedIcon />
-                            Blocked
-                          </span>
-                        )}
-                        <ProgressReport record={r} claim={claim} role={role} />
-                        <TicketProgress record={r} ctx={ctx} compact />
-                        <VerificationTag record={r} />
-                      </td>
-                      <td>
-                        <span className="status-cell" data-stage={role}>
-                          <StageIcon role={role} />
-                          <select
-                            className="cell-select status-select"
-                            aria-label={`Status of ${r.meta.title}`}
-                            value={r.meta.status}
-                            onChange={(e) => onMove(r, e.target.value)}
+                    <Fragment key={r.meta.id}>
+                      <TicketDropRow
+                        active={ticketDrag?.session?.preview?.slot === slot}
+                        columns={columns}
+                        slot={slot}
+                      />
+                      <DragRow
+                        key={r.meta.id}
+                        record={r}
+                        role={role}
+                        selected={selected.has(r.meta.id)}
+                        source={
+                          ticketDrag?.session?.source.meta.id === r.meta.id
+                        }
+                      >
+                        <td className="row-check">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${r.meta.title}`}
+                            checked={selected.has(r.meta.id)}
+                            onChange={(e) =>
+                              onToggleSelected(r.meta.id, e.target.checked)
+                            }
+                          />
+                        </td>
+                        <td className="row-number">{++row}</td>
+                        <td className="title-cell">
+                          <button
+                            className="ticket-link"
+                            draggable={canReorder}
+                            onDragStart={(e) =>
+                              e.dataTransfer.setData(
+                                "text/workboard-ticket",
+                                r.meta.id,
+                              )
+                            }
+                            {...ticketNavigation(r.meta.id, onOpen)}
                           >
-                            {ctx.columns.map((c) => (
-                              <option value={c.id} key={c.id}>
-                                {c.name}
+                            <StageIcon role={role} />
+                            <span className="ticket-title">{r.meta.title}</span>
+                            <span className="record-id">{recordId(r)}</span>
+                          </button>
+                          {r.meta.blocked && (
+                            <span className="tag danger">
+                              <BlockedIcon />
+                              Blocked
+                            </span>
+                          )}
+                          <ProgressReport
+                            record={r}
+                            claim={claim}
+                            role={role}
+                          />
+                          <TicketProgress record={r} ctx={ctx} compact />
+                          <VerificationTag record={r} />
+                        </td>
+                        <td>
+                          <span className="status-cell" data-stage={role}>
+                            <StageIcon role={role} />
+                            <select
+                              className="cell-select status-select"
+                              aria-label={`Status of ${r.meta.title}`}
+                              value={r.meta.status}
+                              onChange={(e) => onMove(r, e.target.value)}
+                            >
+                              {ctx.columns.map((c) => (
+                                <option value={c.id} key={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          </span>
+                        </td>
+                        <td>
+                          <select
+                            className="cell-select"
+                            aria-label={`Priority of ${r.meta.title}`}
+                            value={priorityOf(r)}
+                            onChange={(e) =>
+                              onPriority(r, Number(e.target.value))
+                            }
+                          >
+                            {priorities.map((p, i) => (
+                              <option value={i} key={p}>
+                                {p}
                               </option>
                             ))}
                           </select>
-                        </span>
-                      </td>
-                      <td>
-                        <select
-                          className="cell-select"
-                          aria-label={`Priority of ${r.meta.title}`}
-                          value={priorityOf(r)}
-                          onChange={(e) =>
-                            onPriority(r, Number(e.target.value))
-                          }
-                        >
-                          {priorities.map((p, i) => (
-                            <option value={i} key={p}>
-                              {p}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        {r.meta.owner ? (
-                          <span className="owner-cell">
-                            <Avatar name={r.meta.owner} />
-                            {r.meta.owner}
-                          </span>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <span className="card-tags">
-                          {r.meta.labels?.map((l) => (
-                            <Label name={l} key={l} />
-                          ))}
-                        </span>
-                      </td>
-                      <td className="parent-cell">
-                        {parent ? (
-                          <button
-                            className="text-button"
-                            title={parent.meta.title}
-                            {...ticketNavigation(parent.meta.id, onOpen)}
-                          >
-                            {recordId(parent)} {parent.meta.title}
-                          </button>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-                      <td className="muted nowrap">{ago(r.meta.updatedAt)}</td>
-                      {canReorder && (
-                        <td>
-                          <button
-                            className="icon-button"
-                            aria-label={`Move ${r.meta.title} earlier`}
-                            disabled={!previousPeer(r)}
-                            onClick={() => {
-                              const target = previousPeer(r);
-                              if (target) onPlace(r.meta.id, target);
-                            }}
-                          >
-                            <ArrowUpIcon />
-                          </button>
                         </td>
-                      )}
-                    </DragRow>
+                        <td>
+                          {r.meta.owner ? (
+                            <span className="owner-cell">
+                              <Avatar name={r.meta.owner} />
+                              {r.meta.owner}
+                            </span>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className="card-tags">
+                            {r.meta.labels?.map((l) => (
+                              <Label name={l} key={l} />
+                            ))}
+                          </span>
+                        </td>
+                        <td className="parent-cell">
+                          {parent ? (
+                            <button
+                              className="text-button"
+                              title={parent.meta.title}
+                              {...ticketNavigation(parent.meta.id, onOpen)}
+                            >
+                              {recordId(parent)} {parent.meta.title}
+                            </button>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                        <td className="muted nowrap">
+                          {ago(r.meta.updatedAt)}
+                        </td>
+                        {canReorder && (
+                          <td>
+                            <button
+                              className="icon-button"
+                              aria-label={`Move ${r.meta.title} earlier`}
+                              disabled={!previousPeer(r)}
+                              onClick={() => {
+                                const target = previousPeer(r);
+                                if (target) onPlace(r.meta.id, target);
+                              }}
+                            >
+                              <ArrowUpIcon />
+                            </button>
+                          </td>
+                        )}
+                      </DragRow>
+                    </Fragment>
                   );
                 })}
+              {!isCollapsed && !!g.items.length && (
+                <TicketDropRow
+                  active={
+                    ticketDrag?.session?.preview?.slot ===
+                    tableSlot(g.key, "$end")
+                  }
+                  columns={columns}
+                  slot={tableSlot(g.key, "$end")}
+                />
+              )}
               {!isCollapsed && (
                 <tr className="add-row">
                   <td colSpan={2} />
