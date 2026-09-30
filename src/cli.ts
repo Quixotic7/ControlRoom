@@ -277,12 +277,15 @@ Reading
   list [--status S] [--owner O] [--label L] [--mine] [--open] [--archived] [--kind ticket|decision|rule]
   show ID                      the record and its etag
   context ID [--markdown] [--brief]   everything an agent needs, as JSON or a prompt-ready brief
+  merge-preview SURVIVOR SOURCE        review conflicts, preserved content, incoming links, and required etags
   next                         the ticket this agent should pick up next, with its brief
   wait ID [--for comment|status|any] [--timeout SECONDS]   block until the ticket changes
 
 Writing (need --etag from show or context, or --latest to use the current one)
   create ticket|decision|rule --title TITLE [--body-file FILE|--body TEXT] [--parent ID] [--labels a,b] [--set key=value ...]
   update ID --etag HASH [--set key=value ...] [--patch JSON] [--body-file FILE]
+  relate ID OTHER --etag HASH --other-etag HASH | unrelate ID OTHER --etag HASH --other-etag HASH
+  merge SURVIVOR SOURCE --file MERGE_JSON   requestId, preview revisions, and explicit conflict resolutions
   move ID STATUS --etag HASH
   handoff ID --etag HASH --body TEXT
   questionnaire ID --file questions.json [--patch '{"id":"comment-id","revision":"HASH"}']
@@ -419,6 +422,9 @@ async function main() {
     "claim",
     "release",
     "review",
+    "relate",
+    "unrelate",
+    "merge",
   ].includes(command);
   if (mutation && identity.inferred && who.kind === "agent")
     console.error(
@@ -468,6 +474,18 @@ async function main() {
       output(
         await api(store, `/api/records/${encodeURIComponent(id)}/context`),
       );
+    return;
+  }
+  if (command === "merge-preview") {
+    if (!extra) throw new Error("merge-preview needs a source ticket");
+    output(
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/merge-preview`,
+        "POST",
+        { source: extra },
+      ),
+    );
     return;
   }
   if (command === "next") {
@@ -546,6 +564,38 @@ async function main() {
         patch,
         body:
           command === "update" && option("body-file") ? bodyFile() : undefined,
+        actor: who,
+      }),
+    );
+    return;
+  }
+  if (command === "relate" || command === "unrelate") {
+    if (!extra) throw new Error(`${command} needs another ticket`);
+    const otherRevision = option("other-etag");
+    if (!otherRevision)
+      throw new Error("--other-etag is required from the other ticket");
+    output(
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/relationships`,
+        "POST",
+        {
+          other: extra,
+          revision: await etag(),
+          otherRevision,
+          action: command === "relate" ? "add" : "remove",
+          actor: who,
+        },
+      ),
+    );
+    return;
+  }
+  if (command === "merge") {
+    if (!extra) throw new Error("merge needs a source ticket");
+    output(
+      await api(store, `/api/records/${encodeURIComponent(id)}/merge`, "POST", {
+        ...inputJson(),
+        source: extra,
         actor: who,
       }),
     );

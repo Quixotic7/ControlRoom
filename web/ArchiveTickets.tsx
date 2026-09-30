@@ -287,6 +287,9 @@ export function ArchivedTickets({
                   const parent = r.meta.parent
                     ? recordsById.get(r.meta.parent)
                     : undefined;
+                  const survivor = r.meta.duplicateOf
+                    ? recordsById.get(r.meta.duplicateOf)
+                    : undefined;
                   return (
                     <li key={r.meta.id}>
                       <div className="archive-ticket-summary">
@@ -310,15 +313,28 @@ export function ArchivedTickets({
                             Parent unavailable: {r.meta.parent}
                           </span>
                         )}
+                        {survivor && (
+                          <button
+                            className="archive-parent text-button"
+                            {...ticketNavigation(survivor.meta.id, onOpen)}
+                          >
+                            Duplicate of {recordId(survivor)}{" "}
+                            {survivor.meta.title}
+                          </button>
+                        )}
                       </div>
-                      <button
-                        className="button small"
-                        disabled={pending !== null}
-                        aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
-                        onClick={() => void restore(r)}
-                      >
-                        {pending === r.meta.id ? "Restoring…" : "Unarchive"}
-                      </button>
+                      {r.meta.duplicateOf ? (
+                        <span className="tag">Duplicate</span>
+                      ) : (
+                        <button
+                          className="button small"
+                          disabled={pending !== null}
+                          aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
+                          onClick={() => void restore(r)}
+                        >
+                          {pending === r.meta.id ? "Restoring…" : "Unarchive"}
+                        </button>
+                      )}
                     </li>
                   );
                 })}

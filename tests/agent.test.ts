@@ -679,6 +679,90 @@ test("CLI: next, context brief, --set, --latest, review --run, wait, and MCP ove
   await until(10);
   assert.ok(!lines.find((l) => l.id === 10).result.isError);
   assert.equal(s.get("1").meta.progress?.percent, 80);
+  const createRelated = (title: string) => {
+    const response = run(s.root, [
+      "create",
+      "ticket",
+      "--title",
+      title,
+      "--json",
+    ]);
+    assert.equal(response.code, 0, response.err);
+    return JSON.parse(response.out);
+  };
+  const left = createRelated("CLI merge survivor"),
+    right = createRelated("CLI duplicate source");
+  const relate = run(s.root, [
+    "relate",
+    String(left.meta.number),
+    String(right.meta.number),
+    "--etag",
+    left.revision,
+    "--other-etag",
+    right.revision,
+    "--json",
+  ]);
+  assert.equal(relate.code, 0, relate.err);
+  const linked = JSON.parse(relate.out);
+  send({
+    jsonrpc: "2.0",
+    id: 11,
+    method: "tools/call",
+    params: {
+      name: "set_related_ticket",
+      arguments: {
+        id: left.meta.id,
+        other: right.meta.id,
+        etag: linked.ticket.revision,
+        other_etag: linked.related.revision,
+        action: "remove",
+      },
+    },
+  });
+  await until(11);
+  assert.ok(!lines.find((l) => l.id === 11).result.isError);
+  assert.deepEqual(s.get(left.meta.id).meta.related, []);
+  const cliPreview = run(s.root, [
+    "merge-preview",
+    String(left.meta.number),
+    String(right.meta.number),
+    "--json",
+  ]);
+  assert.equal(cliPreview.code, 0, cliPreview.err);
+  send({
+    jsonrpc: "2.0",
+    id: 12,
+    method: "tools/call",
+    params: {
+      name: "preview_ticket_merge",
+      arguments: { survivor: left.meta.id, source: right.meta.id },
+    },
+  });
+  await until(12);
+  const previewReply = lines.find((l) => l.id === 12).result;
+  assert.ok(!previewReply.isError, previewReply.content[0].text);
+  const preview = JSON.parse(previewReply.content[0].text);
+  assert.deepEqual(preview.affected, JSON.parse(cliPreview.out).affected);
+  send({
+    jsonrpc: "2.0",
+    id: 13,
+    method: "tools/call",
+    params: {
+      name: "merge_duplicate_ticket",
+      arguments: {
+        survivor: left.meta.id,
+        source: right.meta.id,
+        request_id: "mcp-merge-request",
+        revisions: preview.affected,
+        resolutions: {},
+      },
+    },
+  });
+  await until(13);
+  const mergeReply = lines.find((l) => l.id === 13).result;
+  assert.ok(!mergeReply.isError, mergeReply.content[0].text);
+  assert.equal(s.get(right.meta.id).meta.duplicateOf, left.meta.id);
+  assert.equal(s.get(right.meta.id).meta.status, "backlog");
   mcp.stdin.end();
   await new Promise((resolve) => mcp.on("close", resolve));
 });

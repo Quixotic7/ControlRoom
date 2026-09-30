@@ -1122,6 +1122,70 @@ dialog::backdrop {
 .child-ticket:hover {
   background: var(--hover);
 }
+.ticket-relationships {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+.relationship-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.relationship-row > :first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.relationship-search {
+  margin-top: 10px;
+  padding: 8px 0;
+  background: transparent;
+}
+.relationship-results {
+  margin: 2px 0 12px;
+}
+.preserved-sources,
+.merge-duplicate {
+  margin-top: 18px;
+}
+.merge-preview {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--subtle);
+}
+.merge-preview h4 {
+  margin: 0 0 8px;
+}
+.merge-conflict {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1fr);
+  gap: 4px 12px;
+  padding: 10px 0;
+  background: transparent;
+}
+.merge-conflict small,
+.merge-conflict select {
+  grid-column: 2;
+}
+.merge-links {
+  margin: 12px 0;
+  font-size: 13px;
+}
+.merge-links ul {
+  margin: 6px 0 0;
+}
+.danger-text {
+  color: var(--danger);
+}
+.duplicate-banner > span {
+  min-width: 0;
+}
 .existing-child {
   margin: 16px 0;
 }
@@ -2316,9 +2380,30 @@ dialog::backdrop {
   border-radius: var(--radius);
   padding: 6px 10px;
 }
-.pairing-page { display: grid; place-items: center; min-height: 100dvh; padding: 24px; }
-.pairing-page .settings-card { max-width: 540px; }
-.pairing-code { margin: 16px 0; }
-.pairing-code input { font-family: var(--mono); }
-.pairing-dialog { width: min(580px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; padding: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
-.pairing-dialog::backdrop { background: var(--bg); }
+.pairing-page {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px;
+}
+.pairing-page .settings-card {
+  max-width: 540px;
+}
+.pairing-code {
+  margin: 16px 0;
+}
+.pairing-code input {
+  font-family: var(--mono);
+}
+.pairing-dialog {
+  width: min(580px, calc(100vw - 32px));
+  max-height: 90dvh;
+  overflow: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+}
+.pairing-dialog::backdrop {
+  background: var(--bg);
+}
