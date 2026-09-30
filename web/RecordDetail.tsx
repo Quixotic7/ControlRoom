@@ -3,6 +3,8 @@ import { WindowMenu } from "./WindowMenu";
 import { Questionnaire } from "./Questionnaire";
 import { ProgressReport } from "./ProgressReport";
 import { Microtasks } from "./Microtasks";
+import { TicketProgress } from "./TicketProgress";
+import { context as projectContext } from "./model";
 import { ArrowUpIcon, CloseIcon, StageIcon, Logo } from "./Icons";
 import { ParentInput } from "./ParentInput";
 import { ScreenshotPicker } from "./ScreenshotPicker";
@@ -1079,6 +1081,12 @@ export function RecordDetail({
                       (c) => c.id === record.meta.status,
                     )?.role
                   }
+                />
+              )}
+              {kind === "ticket" && record && (
+                <TicketProgress
+                  record={{ ...record, body }}
+                  ctx={projectContext(state)}
                 />
               )}
               {kind === "ticket" && (

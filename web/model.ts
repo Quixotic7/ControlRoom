@@ -99,16 +99,26 @@ export type Context = {
   attachments: Map<string, Attachment>;
   columns: Column[];
   byId: Map<string, RecordFile>;
+  // Every direct child, including archived and filtered-out records.
+  children: Map<string, RecordFile[]>;
   claimed: Set<string>;
   hasChildren: Set<string>;
 };
 export function context(state: ProjectState): Context {
   const byId = new Map(state.records.map((r) => [r.meta.id, r]));
+  const children = new Map<string, RecordFile[]>();
+  for (const record of state.records)
+    if (record.meta.kind === "ticket" && record.meta.parent) {
+      const direct = children.get(record.meta.parent) ?? [];
+      direct.push(record);
+      children.set(record.meta.parent, direct);
+    }
   const now = new Date().toISOString();
   return {
     attachments: new Map(state.attachments.map((a) => [a.id, a])),
     columns: state.config.columns,
     byId,
+    children,
     claimed: new Set(
       state.claims.filter((c) => c.expiresAt > now).map((c) => c.ticket),
     ),

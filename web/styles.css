@@ -2116,6 +2116,43 @@ dialog::backdrop {
   height: 100%;
   background: var(--accent);
 }
+.ticket-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  min-width: 0;
+}
+.ticket-progress.compact {
+  gap: 4px;
+  margin: 6px 0;
+}
+.group-header .ticket-progress.compact {
+  margin: 0;
+  min-width: 84px;
+}
+.ticket-progress-item {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+  height: 10px;
+}
+.ticket-progress.compact .ticket-progress-item {
+  height: 7px;
+  gap: 2px;
+}
+.ticket-progress-cell {
+  min-width: 5px;
+  flex: 1 1 0;
+  border: 1px solid var(--muted);
+  border-radius: 2px;
+  background: var(--surface);
+}
+.ticket-progress-cell.complete {
+  border-color: var(--accent);
+  background: var(--accent);
+}
 .theme-preview-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
