@@ -103,6 +103,8 @@ const metaSchema = z
     order: z.number().finite().optional(),
     owner: z.string().optional(),
     scopeApproved: z.boolean().optional(),
+    scopeApprovedAt: z.string().datetime().optional(),
+    scopeApprovedBy: actorSchema.optional(),
     blocked: z.string().optional(),
     dependencies: strings.optional(),
     related: strings.optional(),
@@ -812,7 +814,12 @@ export class Store {
   ) {
     actorSchema.parse(actor);
     if (actor.kind !== "agent" || next.kind !== "ticket") return;
-    if (next.scopeApproved !== old?.meta.scopeApproved && next.scopeApproved)
+    if (
+      (next.scopeApproved !== old?.meta.scopeApproved && next.scopeApproved) ||
+      ["scopeApprovedAt", "scopeApprovedBy"].some(
+        (key) => JSON.stringify(next[key]) !== JSON.stringify(old?.meta[key]),
+      )
+    )
       throw new Problem(403, "Only a human can approve task scope");
     const role = this.config().columns.find((c) => c.id === next.status)?.role;
     if (!managed && role === "done" && old?.meta.status !== next.status)
@@ -1057,6 +1064,17 @@ export class Store {
           ...(old.meta.exceptionHistory ?? []),
           { rationale: patch.exceptions.trim(), actor, at: now() },
         ],
+      };
+    if (
+      old.meta.kind === "ticket" &&
+      actor.kind === "human" &&
+      patch.scopeApproved === true &&
+      !old.meta.scopeApproved
+    )
+      patch = {
+        ...patch,
+        scopeApprovedAt: now(),
+        scopeApprovedBy: actor,
       };
     if (
       old.meta.kind === "ticket" &&
@@ -1721,79 +1739,184 @@ export class Store {
   }
   // Keep the receipt in the Markdown record so a lost response can be retried
   // after a restart. Feedback uses a deterministic ID and is written only once.
+  private reviewOutcomeNow(id: string, input: unknown, actor: Actor) {
+    actorSchema.parse(actor);
+    if (actor.kind !== "human")
+      throw new Problem(403, "Only a human can accept or request changes");
+    const action = z
+      .object({
+        requestId: z.string().uuid(),
+        revision: z.string().min(1),
+        outcome: z.enum(["accept", "changes"]),
+        target: z.string().min(1),
+        feedback: z.string().trim().max(10000).default(""),
+        patch: z.record(z.string(), z.unknown()).default({}),
+        body: z.string().optional(),
+      })
+      .parse(input);
+    const fingerprint = hash(JSON.stringify({ action, actor }));
+    let current = this.get(id);
+    const receipt = current.meta.reviewOutcome as
+      | { requestId: string; fingerprint: string }
+      | undefined;
+    if (receipt?.requestId === action.requestId) {
+      if (receipt.fingerprint !== fingerprint)
+        throw new Problem(
+          409,
+          "This review request was already used with different content",
+        );
+    } else {
+      if (current.revision !== action.revision)
+        throw new Problem(
+          409,
+          "This record changed. Review the current version before deciding.",
+          { current },
+        );
+      const columns = this.config().columns;
+      if (
+        current.meta.kind !== "ticket" ||
+        columns.find((c) => c.id === current.meta.status)?.role !== "review"
+      )
+        throw new Problem(
+          422,
+          "Only a ticket in Review can receive a review outcome",
+        );
+      const role = action.outcome === "accept" ? "done" : "progress";
+      if (columns.find((c) => c.id === action.target)?.role !== role)
+        throw new Problem(422, `Choose a destination with the ${role} role`);
+      current = this.updateNow(
+        id,
+        action.revision,
+        {
+          ...action.patch,
+          status: action.target,
+          reviewOutcome: { requestId: action.requestId, fingerprint },
+        },
+        action.body,
+        actor,
+      );
+    }
+    const commentId = `comment-review-${hash(current.meta.id + action.requestId)}`;
+    if (!fs.existsSync(this.file(`records/comments/${commentId}.md`))) {
+      const title =
+        action.outcome === "accept"
+          ? "Accepted into Done"
+          : "Changes requested";
+      this.commentNow(
+        current.meta.id,
+        `## ${title}\n\n${action.feedback || "Review outcome recorded."}\n`,
+        actor,
+        "review",
+        commentId,
+      );
+    }
+    return current;
+  }
   reviewOutcome(id: string, input: unknown, actor: Actor) {
+    return this.write(() => this.reviewOutcomeNow(id, input, actor));
+  }
+  approvalActions(input: unknown, actor: Actor) {
     return this.write(() => {
       actorSchema.parse(actor);
       if (actor.kind !== "human")
-        throw new Problem(403, "Only a human can accept or request changes");
+        throw new Problem(
+          403,
+          "Only a human can approve scope or accept work into Done",
+        );
       const action = z
         .object({
-          requestId: z.string().uuid(),
-          revision: z.string().min(1),
-          outcome: z.enum(["accept", "changes"]),
-          target: z.string().min(1),
-          feedback: z.string().trim().max(10000).default(""),
-          patch: z.record(z.string(), z.unknown()).default({}),
-          body: z.string().optional(),
+          action: z.enum(["approve-scope", "accept-review"]),
+          target: z.string().min(1).optional(),
+          items: z
+            .array(
+              z.object({
+                id: z.string().min(1),
+                revision: z.string().min(1),
+                requestId: z.string().uuid().optional(),
+              }),
+            )
+            .min(1)
+            .max(1000),
         })
         .parse(input);
-      const fingerprint = hash(JSON.stringify({ action, actor }));
-      let current = this.get(id);
-      const receipt = current.meta.reviewOutcome as
-        | { requestId: string; fingerprint: string }
-        | undefined;
-      if (receipt?.requestId === action.requestId) {
-        if (receipt.fingerprint !== fingerprint)
-          throw new Problem(
-            409,
-            "This review request was already used with different content",
-          );
-      } else {
-        if (current.revision !== action.revision)
-          throw new Problem(
-            409,
-            "This record changed. Review the current version before deciding.",
-            { current },
-          );
-        const columns = this.config().columns;
-        if (
-          current.meta.kind !== "ticket" ||
-          columns.find((c) => c.id === current.meta.status)?.role !== "review"
-        )
-          throw new Problem(
-            422,
-            "Only a ticket in Review can receive a review outcome",
-          );
-        const role = action.outcome === "accept" ? "done" : "progress";
-        if (columns.find((c) => c.id === action.target)?.role !== role)
-          throw new Problem(422, `Choose a destination with the ${role} role`);
-        current = this.updateNow(
-          id,
-          action.revision,
-          {
-            ...action.patch,
-            status: action.target,
-            reviewOutcome: { requestId: action.requestId, fingerprint },
-          },
-          action.body,
-          actor,
-        );
+      if (action.action === "accept-review") {
+        if (!action.target) throw new Problem(422, "Choose a Done destination");
       }
-      const commentId = `comment-review-${hash(current.meta.id + action.requestId)}`;
-      if (!fs.existsSync(this.file(`records/comments/${commentId}.md`))) {
-        const title =
-          action.outcome === "accept"
-            ? "Accepted into Done"
-            : "Changes requested";
-        this.commentNow(
-          current.meta.id,
-          `## ${title}\n\n${action.feedback || "Review outcome recorded."}\n`,
-          actor,
-          "review",
-          commentId,
-        );
-      }
-      return current;
+      const results = action.items.map((item) => {
+        try {
+          if (action.action === "accept-review") {
+            // reviewOutcomeNow must see retries before any revision or stage
+            // precheck. Its durable receipt makes a lost-response retry
+            // succeed without writing a second review comment, while its
+            // fingerprint still rejects request IDs reused with new content.
+            const record = this.reviewOutcomeNow(
+              item.id,
+              {
+                requestId: item.requestId ?? crypto.randomUUID(),
+                revision: item.revision,
+                outcome: "accept",
+                target: action.target,
+                feedback: "Accepted from the board or table.",
+              },
+              actor,
+            );
+            return {
+              id: record.meta.id,
+              outcome: "succeeded" as const,
+              record,
+            };
+          }
+          const current = this.get(item.id);
+          if (current.revision !== item.revision)
+            throw new Problem(
+              409,
+              "This record changed. Review the current version before deciding.",
+              { current },
+            );
+          if (current.meta.kind !== "ticket")
+            throw new Problem(422, "Only tickets can have approved scope");
+          if (current.meta.scopeApproved)
+            throw new Problem(422, "Scope is already explicitly approved");
+          const inherited = this.scope(current);
+          if (inherited)
+            throw new Problem(
+              422,
+              `Scope is inherited from #${inherited.meta.number ?? inherited.meta.id}`,
+            );
+          const record = this.updateNow(
+            current.meta.id,
+            current.revision,
+            {
+              scopeApproved: true,
+              scopeApprovedAt: now(),
+              scopeApprovedBy: actor,
+            },
+            undefined,
+            actor,
+          );
+          return {
+            id: record.meta.id,
+            outcome: "succeeded" as const,
+            record,
+          };
+        } catch (error) {
+          const problem =
+            error instanceof Problem
+              ? error
+              : new Problem(500, "Unexpected approval action failure");
+          return {
+            id: item.id,
+            outcome:
+              problem.status === 422
+                ? ("ineligible" as const)
+                : ("failed" as const),
+            status: problem.status,
+            error: problem.message,
+            detail: problem.detail,
+          };
+        }
+      });
+      return { action: action.action, results };
     });
   }
   private reviewSummary(meta: Meta) {

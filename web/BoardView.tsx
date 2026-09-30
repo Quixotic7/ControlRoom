@@ -15,6 +15,7 @@ import { QuickTicket } from "./QuickTicket";
 import { dragType, TicketCard } from "./TicketCard";
 import { TicketProgress } from "./TicketProgress";
 import { useTicketDragContext } from "./TicketDrag";
+import { QuickApprovalActions } from "./ApprovalActions";
 
 const boardSlot = (group: string, column: string, id: string) =>
   `board/${group}/${column}/${id}`;
@@ -46,6 +47,8 @@ export function GroupHeader({
   collapsed,
   onToggle,
   onOpen,
+  reload,
+  writesDisabled,
 }: {
   group: Group;
   groupBy: GroupBy;
@@ -53,6 +56,8 @@ export function GroupHeader({
   collapsed: boolean;
   onToggle: () => void;
   onOpen: (id: string) => void;
+  reload: () => Promise<void>;
+  writesDisabled: boolean;
 }) {
   const goal = group.record;
   const column = goal && ctx.columns.find((c) => c.id === goal.meta.status);
@@ -86,11 +91,17 @@ export function GroupHeader({
           {column.name}
         </span>
       )}
-      {goal?.meta.scopeApproved && (
-        <span className="tag green">Approved scope</span>
-      )}
       {goal?.meta.archived && <span className="tag">Archived parent</span>}
       {goal && <TicketProgress record={goal} ctx={ctx} compact continuous />}
+      {goal && (
+        <QuickApprovalActions
+          record={goal}
+          ctx={ctx}
+          columns={ctx.columns}
+          disabled={writesDisabled || !!goal.meta.archived}
+          reload={reload}
+        />
+      )}
     </div>
   );
 }
@@ -323,6 +334,8 @@ export function BoardView({
                 collapsed={collapsed.has(g.key)}
                 onToggle={() => onToggleGroup(g.key)}
                 onOpen={onOpen}
+                reload={reload}
+                writesDisabled={writesDisabled}
               />
             )}
             {!collapsed.has(g.key) && (
@@ -474,6 +487,14 @@ export function BoardView({
                                     );
                                     setSelectionAnchor(r.meta.id);
                                   }}
+                                />
+                                <QuickApprovalActions
+                                  record={r}
+                                  ctx={ctx}
+                                  columns={ctx.columns}
+                                  disabled={writesDisabled}
+                                  reload={reload}
+                                  showScopeState={false}
                                 />
                               </div>
                             </React.Fragment>
