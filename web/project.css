@@ -578,45 +578,50 @@ body,
 }
 .archived-tickets {
   width: 100%;
-  max-width: 1200px;
-  margin: 0 auto;
+  min-height: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
 }
 .archived-tickets .section-heading {
   flex-wrap: wrap;
   gap: 12px;
 }
-.archive-lanes {
-  display: grid;
-  gap: 16px;
-}
-.archive-lane {
-  padding: 14px 16px;
-  background: var(--lane);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-.archive-lane h3 {
+.archive-board-scroll {
+  --insert-color: var(--accent);
+  flex: 1;
+  min-height: 200px;
+  overflow: auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 14px;
+  flex-direction: column;
+  margin: 0 -24px -32px;
+  padding: 0 24px 24px;
 }
-.archive-lane h3 .count {
-  margin-left: auto;
+.archive-board {
+  flex: 1;
+}
+.archive-board .board-cell {
+  align-items: stretch;
+}
+.archive-lane .empty-inline {
+  margin: 4px;
 }
 .archive-results {
-  margin: 8px 0 0;
+  display: grid;
+  gap: 8px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 .archive-results li {
   display: flex;
-  align-items: center;
-  gap: 16px;
+  align-items: flex-start;
+  gap: 8px;
   justify-content: space-between;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 .archive-results .text-button {
   text-align: left;
@@ -1723,6 +1728,10 @@ body,
     --column: 300px;
   }
   .board-scroll {
+    margin: 0 -12px -32px;
+    padding: 0 12px 24px;
+  }
+  .archive-board-scroll {
     margin: 0 -12px -32px;
     padding: 0 12px 24px;
   }

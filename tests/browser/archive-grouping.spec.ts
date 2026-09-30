@@ -34,7 +34,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("archived tickets stay grouped by their named workflow swimlanes with parent context", async ({
+test("archive history uses board-style workflow columns with parent context", async ({
   page,
 }) => {
   const original = await state(page);
@@ -95,12 +95,22 @@ test("archived tickets stay grouped by their named workflow swimlanes with paren
     await expect(shipped).toContainText(`Parent: #${parent.meta.number}`);
     await expect(review).toContainText(reviewChild.meta.title);
     await expect(review).not.toContainText(doneChild.meta.title);
+    const [reviewBox, shippedBox] = await Promise.all([
+      review.boundingBox(),
+      shipped.boundingBox(),
+    ]);
+    expect(reviewBox).not.toBeNull();
+    expect(shippedBox).not.toBeNull();
+    // Columns should sit beside each other as on the active board, not stack
+    // as headings in one history list.
+    expect(Math.abs(reviewBox!.y - shippedBox!.y)).toBeLessThan(2);
+    expect(reviewBox!.x).not.toBe(shippedBox!.x);
 
     await archiveView
       .getByLabel("Search archived tickets")
       .fill(`#${reviewChild.meta.number}`);
     await expect(review).toContainText(reviewChild.meta.title);
-    await expect(shipped).toHaveCount(0);
+    await expect(shipped).toContainText("No archived tickets.");
   } finally {
     const latest = await state(page);
     await page.request.patch("/api/config", {
