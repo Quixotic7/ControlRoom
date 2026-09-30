@@ -8,6 +8,12 @@ test("feed filters, loads older activity, and queues live updates while reading"
   const title = `Feed pagination ${Date.now()}`;
   const bootstrap = await page.request.get("/");
   expect(bootstrap.ok()).toBe(true);
+  // The browser suite shares its disposable project's saved preferences.
+  // Start without a ticket dialog restored by an earlier conversation test.
+  const preferences = await page.request.patch("/api/preferences", {
+    data: { selected: null, page: "project" },
+  });
+  expect(preferences.ok()).toBe(true);
   const createResponse = await page.request.post("/api/records", {
     data: { kind: "ticket", meta: { title }, body: "", actor },
   });
