@@ -24,6 +24,7 @@ export type Page =
   | "screenshots"
   | "insights"
   | "agents"
+  | "playbook"
   | "imports"
   | "settings";
 export const pages: Page[] = [
@@ -34,6 +35,7 @@ export const pages: Page[] = [
   "screenshots",
   "insights",
   "agents",
+  "playbook",
   "imports",
   "settings",
 ];
@@ -45,6 +47,7 @@ const tabs: [Page, string, () => React.JSX.Element][] = [
   ["screenshots", "Screenshots", ImageIcon],
   ["insights", "Insights", ChartIcon],
   ["agents", "Agents", ProjectIcon],
+  ["playbook", "Help & playbook", QuestionIcon],
 ];
 
 export function TopNav({
