@@ -171,9 +171,9 @@ export function TicketCard({
                 "agent" && (
                 <span
                   className="tag green"
-                  title="Accepted by the orchestrator. Integration was not performed."
+                  title="Accepted by the orchestrator. See the current handoff for integration and verification."
                 >
-                  Agent accepted · merge pending
+                  Agent accepted
                 </span>
               )}
           </span>

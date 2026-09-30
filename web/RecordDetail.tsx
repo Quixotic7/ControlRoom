@@ -1359,9 +1359,10 @@ export function RecordDetail({
               )}
               {record?.meta.agentReview && (
                 <p className="muted">
-                  Review by {record.meta.agentReview.reviewer}:{" "}
-                  {record.meta.agentReview.outcome}. Integration not performed.
-                  See the conversation for criteria and evidence.
+                  Historical managed review by{" "}
+                  {record.meta.agentReview.reviewer}:{" "}
+                  {record.meta.agentReview.outcome}. See the current handoff and
+                  conversation for integration and verification.
                 </p>
               )}
             </aside>

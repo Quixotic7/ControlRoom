@@ -503,7 +503,8 @@ export function Agents({
                       ? `Accepted by ${t.meta.agentReview.reviewer}`
                       : `Reviewer outcome: ${t.meta.agentReview.outcome}`}
                   </strong>{" "}
-                  · Integration not performed
+                  · Review snapshot; integration is tracked in the ticket
+                  handoff.
                 </p>
               )}
               <details>
