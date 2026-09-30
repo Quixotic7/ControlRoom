@@ -1,9 +1,12 @@
 import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.request.patch("/api/preferences", {
+  // Establish the local session before resetting shared fixture preferences.
+  await page.request.get("/");
+  const reset = await page.request.patch("/api/preferences", {
     data: { theme: "dark", page: "project", selected: null, viewId: "board" },
   });
+  expect(reset.ok()).toBeTruthy();
   await page.goto("/");
   await page.getByRole("button", { name: "More actions", exact: true }).click();
 });
