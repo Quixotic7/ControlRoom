@@ -1034,6 +1034,11 @@ body,
   border-radius: var(--radius);
   background: var(--surface);
 }
+.reorder-status {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
 .project-table {
   width: 100%;
   border-collapse: collapse;
@@ -1102,6 +1107,39 @@ body,
 }
 .title-cell {
   min-width: 300px;
+}
+.drag-handle {
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--faint);
+  cursor: grab;
+  font-size: 18px;
+  line-height: 1;
+  vertical-align: -1px;
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+.priority-boundary td {
+  height: auto;
+  padding: 5px 12px;
+  background: var(--subtle);
+  color: var(--faint);
+  font-family: var(--display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.order-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.order-priority {
+  max-width: 76px;
+  padding: 2px 18px 2px 4px;
+  font-size: 11px;
 }
 .ticket-link {
   display: inline-flex;

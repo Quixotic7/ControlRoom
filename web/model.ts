@@ -32,6 +32,14 @@ export const defaultViews: ProjectView[] = [
     groupBy: "none",
     sort: "number",
   },
+  {
+    id: "priority-planning",
+    name: "Priority planning",
+    layout: "table",
+    filter: "",
+    groupBy: "priority",
+    sort: "priority",
+  },
 ];
 export const viewsOf = (state: ProjectState) =>
   state.config.views?.length ? state.config.views : defaultViews;
@@ -46,7 +54,7 @@ export const groupByOptions: Record<GroupBy, string> = {
 };
 export const sortOptions: Record<SortBy, string> = {
   manual: "Manual order",
-  priority: "Priority, then manual",
+  priority: "Priority, then rank",
   number: "Ticket number",
   updated: "Recently updated",
   title: "Title",
