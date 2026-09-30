@@ -782,6 +782,7 @@ export async function startMcp(
             author: r.meta.author,
             supersedes: r.meta.supersedes,
             references: r.meta.references,
+            reference_checks: state.referenceChecks?.[r.meta.id] ?? [],
             title: r.meta.title,
             scope: r.meta.scope,
             strength: r.meta.strength,

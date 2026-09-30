@@ -208,26 +208,35 @@ test("attention covers blockers, reviews, open questions, and changed rules", ()
   const stale = ticket({ id: "WB-s", reviewedRules: { "UI-r": "old" } });
   const calm = ticket({ id: "WB-c", reviewedRules: { "UI-r": rule.revision } });
   const doneStale = ticket({ id: "WB-d", status: "done", reviewedRules: {} });
-  const s = stateOf([rule, blocked, review, asked, stale, calm, doneStale], {
-    comments: [
-      {
-        id: "c1",
-        ticket: "WB-q",
-        actor: { name: "a", kind: "agent" },
-        at: "",
-        kind: "question",
-        body: "?",
-        resolved: false,
-        revision: "",
-      },
-    ],
+  const unlinked = ticket({ id: "WB-u", reviewedRules: {} });
+  const explicit = ticket({
+    id: "WB-e",
+    reviewedRules: {},
+    rules: ["UI-r"],
   });
+  const s = stateOf(
+    [rule, blocked, review, asked, stale, calm, doneStale, unlinked, explicit],
+    {
+      comments: [
+        {
+          id: "c1",
+          ticket: "WB-q",
+          actor: { name: "a", kind: "agent" },
+          at: "",
+          kind: "question",
+          body: "?",
+          resolved: false,
+          revision: "",
+        },
+      ],
+    },
+  );
   const ctx = context(s);
   assert.deepEqual(
-    [blocked, review, asked, stale, calm, doneStale].map((r) =>
-      attentionReason(r, s, ctx),
+    [blocked, review, asked, stale, calm, doneStale, unlinked, explicit].map(
+      (r) => attentionReason(r, s, ctx),
     ),
-    ["blocked", "review", "question", "rules", null, null],
+    ["blocked", "review", "question", "rules", null, null, null, "rules"],
   );
 });
 

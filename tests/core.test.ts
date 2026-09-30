@@ -307,6 +307,139 @@ test("active rules are scoped, versioned, and changed guidance is detectable", a
   );
   assert.equal(s.historyFor(rule.meta.id).length, 2);
 });
+test("rule context explains applicability and validates canonical references without losing archived origins", async (t) => {
+  const s = fixture(t);
+  atomic(path.join(s.root, "tokens.css"), ":root { --action: blue; }");
+  const origin = await ticket(s, "Original design request");
+  const rule = await s.create(
+    "rule",
+    {
+      title: "Use the canonical action token",
+      status: "active",
+      scope: ["ui"],
+      references: [origin.meta.id, "tokens.css#L1", "missing/Button.tsx"],
+    },
+    "## Rule\n\nUse the existing action token.\n\n## Why\n\nOne source stays authoritative.",
+    a,
+  );
+  const archivedOrigin = await s.update(
+    origin.meta.id,
+    origin.revision,
+    { archived: true },
+    undefined,
+    human,
+  );
+  const parent = await ticket(s, "UI goal", {
+    scopeApproved: true,
+    labels: ["ui"],
+  });
+  const work = await ticket(s, "Button work", { parent: parent.meta.id });
+  const context = s.context(work.meta.id);
+  assert.deepEqual(
+    context.rules.map((candidate) => candidate.meta.id),
+    [rule.meta.id],
+  );
+  assert.deepEqual(context.ruleApplicability[0].reasons, [
+    "scope matched label: ui",
+  ]);
+  assert.deepEqual(
+    context.ruleApplicability[0].references.map((reference) => [
+      reference.reference,
+      reference.status,
+      reference.archived ?? false,
+    ]),
+    [
+      [archivedOrigin.meta.id, "available", true],
+      ["tokens.css#L1", "available", false],
+      ["missing/Button.tsx", "missing", false],
+    ],
+  );
+  const markdown = s.contextMarkdown(work.meta.id).markdown;
+  assert.match(markdown, /Applies because: scope matched label: ui/);
+  assert.match(markdown, /tokens\.css#L1` \(available\)/);
+  assert.match(markdown, /missing\/Button\.tsx` \(missing\)/);
+  assert.match(markdown, /archived record retained/);
+  assert.equal(
+    s.state().referenceChecks?.[rule.meta.id].at(-1)?.status,
+    "missing",
+  );
+});
+test("reviewed exceptions retain rationale and submitting-agent attribution", async (t) => {
+  const s = fixture(t);
+  const work = await ticket(s, "Intentional rule exception", {
+    scopeApproved: true,
+    status: "progress",
+  });
+  const reviewed = await s.review(
+    work.meta.id,
+    work.revision,
+    "Implemented the approved deviation.",
+    "Focused checks passed.",
+    "UI-example: legacy embed must retain its host spacing until migration.",
+    a,
+  );
+  assert.deepEqual(reviewed.meta.exceptionHistory, [
+    {
+      rationale:
+        "UI-example: legacy embed must retain its host spacing until migration.",
+      actor: a,
+      at: reviewed.meta.exceptionHistory?.[0].at,
+    },
+  ]);
+  assert.match(
+    s.contextMarkdown(work.meta.id).markdown,
+    /Agent A \(agent, .*\): UI-example: legacy embed/,
+  );
+  const reviewComment = s
+    .comments()
+    .find(
+      (comment) => comment.ticket === work.meta.id && comment.kind === "review",
+    );
+  assert.match(reviewComment?.body ?? "", /Recorded by Agent A \(agent\)/);
+  await assert.rejects(
+    s.update(
+      reviewed.meta.id,
+      reviewed.revision,
+      { exceptionHistory: [] },
+      undefined,
+      human,
+    ),
+    /cannot be rewritten/,
+  );
+  const reopened = await s.update(
+    reviewed.meta.id,
+    reviewed.revision,
+    { status: "progress" },
+    undefined,
+    human,
+  );
+  const reviewedAgain = await s.review(
+    reopened.meta.id,
+    reopened.revision,
+    "Updated the implementation.",
+    "Focused checks passed again.",
+    "UI-example: the migration now covers only the embedded toolbar.",
+    b,
+  );
+  assert.deepEqual(
+    reviewedAgain.meta.exceptionHistory?.map((exception) => ({
+      rationale: exception.rationale,
+      actor: exception.actor,
+    })),
+    [
+      {
+        rationale:
+          "UI-example: legacy embed must retain its host spacing until migration.",
+        actor: a,
+      },
+      {
+        rationale:
+          "UI-example: the migration now covers only the embedded toolbar.",
+        actor: b,
+      },
+    ],
+  );
+});
 test("successor decisions retain history and replace prior context", async (t) => {
   const s = fixture(t),
     old = await s.create(

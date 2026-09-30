@@ -1502,6 +1502,42 @@ body,
 .knowledge-card .time {
   margin-left: auto;
 }
+.knowledge-card > .tag.danger {
+  justify-self: start;
+}
+.reference-checks,
+.exception-history {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.reference-checks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.reference-checks li[data-status="missing"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.reference-checks code {
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+.exception-history li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.exception-history p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
 .time {
   font-size: 11px;
   color: var(--muted);

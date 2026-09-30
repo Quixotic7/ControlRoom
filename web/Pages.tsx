@@ -175,31 +175,42 @@ export function KnowledgePage({
         </div>
       )}
       <div className="knowledge-grid">
-        {shown.map((r) => (
-          <button
-            className="knowledge-card"
-            key={r.meta.id}
-            {...ticketNavigation(r.meta.id, onOpen)}
-          >
-            <span className="card-meta">
-              <span className="tag">{r.meta.category ?? r.meta.kind}</span>
-              <span
-                className={`tag ${["accepted", "active"].includes(r.meta.status) ? "green" : ""}`}
-              >
-                {r.meta.status}
+        {shown.map((r) => {
+          const broken = (state.referenceChecks?.[r.meta.id] ?? []).filter(
+            (reference) => reference.status === "missing",
+          );
+          return (
+            <button
+              className="knowledge-card"
+              key={r.meta.id}
+              {...ticketNavigation(r.meta.id, onOpen)}
+            >
+              <span className="card-meta">
+                <span className="tag">{r.meta.category ?? r.meta.kind}</span>
+                <span
+                  className={`tag ${["accepted", "active"].includes(r.meta.status) ? "green" : ""}`}
+                >
+                  {r.meta.status}
+                </span>
+                <span className="time">{ago(r.meta.updatedAt)}</span>
               </span>
-              <span className="time">{ago(r.meta.updatedAt)}</span>
-            </span>
-            <h2>{r.meta.title}</h2>
-            <p>
-              {r.body.replace(/[#*`]/g, "").slice(0, 180) ||
-                "Add context, rationale, and examples."}
-            </p>
-            <span className="muted">
-              {r.meta.strength ?? r.meta.author.name}
-            </span>
-          </button>
-        ))}
+              <h2>{r.meta.title}</h2>
+              <p>
+                {r.body.replace(/[#*`]/g, "").slice(0, 180) ||
+                  "Add context, rationale, and examples."}
+              </p>
+              <span className="muted">
+                {r.meta.strength ?? r.meta.author.name}
+              </span>
+              {!!broken.length && (
+                <span className="tag danger">
+                  {broken.length} broken reference
+                  {broken.length === 1 ? "" : "s"}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
       {!all.length && (
         <div className="empty-state">

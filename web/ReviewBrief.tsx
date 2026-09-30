@@ -64,11 +64,20 @@ export function ReviewBrief({
       )}
       {meta.exceptions && (
         <div className="banner">
-          <strong>Exceptions and limitations</strong>
-          <div className="markdown">
-            <RecordMarkdown openImage={openImage}>
-              {meta.exceptions}
-            </RecordMarkdown>
+          <div>
+            <strong>Exceptions and limitations</strong>
+            <div className="markdown">
+              <RecordMarkdown openImage={openImage}>
+                {meta.exceptions}
+              </RecordMarkdown>
+            </div>
+            {meta.exceptionHistory?.at(-1) && (
+              <small>
+                Recorded by {meta.exceptionHistory.at(-1)!.actor.name} (
+                {meta.exceptionHistory.at(-1)!.actor.kind}) on{" "}
+                {new Date(meta.exceptionHistory.at(-1)!.at).toLocaleString()}.
+              </small>
+            )}
           </div>
         </div>
       )}

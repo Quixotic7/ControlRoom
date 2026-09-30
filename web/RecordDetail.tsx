@@ -263,6 +263,9 @@ export function RecordDetail({
   const mRef = useRef<any>(m);
   const bodyRef = useRef(body);
   const draftReset = baseline?.revision ?? "new";
+  const referenceChecks = baseline
+    ? (state.referenceChecks?.[baseline.meta.id] ?? [])
+    : [];
   function isDraftDirty(draft = mRef.current, text = bodyRef.current) {
     return baseline
       ? Object.keys(changedFields(baseline.meta, draft)).length > 0 ||
@@ -1558,6 +1561,36 @@ export function RecordDetail({
                       "Implementation / document references",
                       "src/components/Button.tsx, docs/design.md",
                     )}
+                    {kind === "rule" && (
+                      <p className="help">
+                        Reference canonical token and component sources here; do
+                        not copy their values into the rule.
+                      </p>
+                    )}
+                    {!!referenceChecks.length && (
+                      <ul
+                        className="reference-checks"
+                        aria-label="Reference status"
+                      >
+                        {referenceChecks.map((reference) => (
+                          <li
+                            key={reference.reference}
+                            data-status={reference.status}
+                          >
+                            <code>{reference.reference}</code>
+                            <span>
+                              {reference.status === "missing"
+                                ? "Missing"
+                                : reference.status === "external"
+                                  ? "External — not checked"
+                                  : reference.archived
+                                    ? "Available — archived record retained"
+                                    : "Available"}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     <label className="field">
                       Replaces a previous {kind}
                       <select
@@ -1586,6 +1619,22 @@ export function RecordDetail({
                     attribution and revision history.
                   </p>
                 </>
+              )}
+              {kind === "ticket" && !!m.exceptionHistory?.length && (
+                <details className="disclosure">
+                  <summary>Recorded rule exceptions</summary>
+                  <ul className="exception-history">
+                    {m.exceptionHistory.map((exception: any, index: number) => (
+                      <li key={`${exception.at}-${index}`}>
+                        <strong>{exception.actor.name}</strong>{" "}
+                        <span className="muted">
+                          ({exception.actor.kind}) · {ago(exception.at)}
+                        </span>
+                        <p>{exception.rationale}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
               <section>
                 <div className="section-heading">
