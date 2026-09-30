@@ -534,15 +534,6 @@ body,
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.column-visibility-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 0 12px;
-  color: var(--muted);
-  font-size: 12px;
-}
 .archive-dialog {
   width: min(660px, 94vw);
   max-height: 88dvh;

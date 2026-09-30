@@ -43,6 +43,5 @@ export function useColumnVisibility(project: string, view: string) {
     error,
     toggle: (id: string) =>
       save(ids.includes(id) ? ids.filter((v) => v !== id) : [...ids, id]),
-    showAll: () => save([]),
   };
 }
