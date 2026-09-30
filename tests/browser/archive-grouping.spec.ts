@@ -83,20 +83,21 @@ test("archive history uses board-style workflow columns with parent context", as
       exact: true,
     });
     const shippedHeader = archiveView.getByRole("heading", {
-      name: "Shipped work 2",
+      name: "Shipped work",
       exact: true,
     });
     const shipped = archiveView.getByRole("region", {
-      name: "Shipped work 2",
+      name: "Shipped work",
       exact: true,
     });
     const review = archiveView.getByRole("region", {
-      name: "Ready for archive 1",
+      name: "Ready for archive",
       exact: true,
     });
-    // The lane count belongs to its visual column header, which labels the
-    // matching region for assistive technology.
+    // The named visual column header labels the matching region for assistive
+    // technology; assert its changing visible count separately.
     await expect(shippedHeader).toBeVisible();
+    await expect(shippedHeader).toContainText("2");
     await expect(shipped).toContainText(parent.meta.title);
     await expect(shipped).toContainText(doneChild.meta.title);
     await expect(shipped).toContainText(`Parent: #${parent.meta.number}`);

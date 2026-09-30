@@ -303,7 +303,9 @@ export function ArchivedTickets({
                 >
                   <StageIcon role={column?.role} size={16} />
                   <strong title={name}>{name}</strong>
-                  <span className="count">{laneTickets.length}</span>
+                  <span className="count" aria-hidden="true">
+                    {laneTickets.length}
+                  </span>
                 </h3>
               );
             })}
