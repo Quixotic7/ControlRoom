@@ -562,7 +562,7 @@ export function RecordDetail({
                   reload={() => onSaved(baseline.meta.id)}
                 />
               )}
-              {c.kind === "question" && (
+              {c.kind === "question" && !c.questions && (
                 <button
                   className="button subtle"
                   onClick={async () => {
@@ -579,6 +579,25 @@ export function RecordDetail({
                   }}
                 >
                   {c.resolved ? "Reopen question" : "Resolve question"}
+                </button>
+              )}
+              {c.questions && c.resolved && (
+                <button
+                  className="button subtle"
+                  onClick={async () => {
+                    try {
+                      await api(`/comments/${c.id}`, "PATCH", {
+                        revision: c.revision,
+                        resolved: false,
+                        actor,
+                      });
+                      await onSaved(baseline!.meta.id);
+                    } catch (e) {
+                      setError(String(e));
+                    }
+                  }}
+                >
+                  Reopen questionnaire
                 </button>
               )}
             </article>

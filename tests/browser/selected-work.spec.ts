@@ -129,6 +129,18 @@ test("questionnaire drafts survive refresh and require explicit answers; edits c
   ).toBe("A draft I can return to");
   expect(c.comments.find((i: any) => i.id === q.id).resolved).toBeTruthy();
   await page.getByRole("button", { name: /^Conversation/ }).click();
+  const submitted = page.getByLabel("Submitted answers");
+  await expect(submitted).toContainText("A draft I can return to");
+  await expect(submitted).toContainText("Explain the choice");
+  await expect(page.getByLabel("Answer: Explain the choice")).toHaveValue(
+    "A draft I can return to",
+  );
+  await page
+    .getByRole("button", { name: "Reopen questionnaire", exact: true })
+    .click();
+  await expect(page.getByLabel("Answer: Explain the choice")).toHaveValue(
+    "A draft I can return to",
+  );
   await page.getByLabel("Answer: Updated treatment?").fill("Custom purple");
   await page.getByLabel("Answer: Explain the choice").fill("Amended rationale");
   await page
@@ -142,6 +154,9 @@ test("questionnaire drafts survive refresh and require explicit answers; edits c
       return c.comments.find((i: any) => i.id === q.id).answers.length;
     })
     .toBe(2);
+  await expect(page.getByLabel("Submitted answers")).toContainText(
+    "Amended rationale",
+  );
 });
 test("all theme presets persist, preserve page state and offer legible token contrast", async ({
   page,
