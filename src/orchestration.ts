@@ -257,6 +257,18 @@ export class Orchestrator {
       }),
     );
   }
+  activity() {
+    return this.status()
+      .runs.filter(
+        (run) =>
+          run.kind === "work" && run.state === "running" && run.verifiedRunning,
+      )
+      .map((run) => ({
+        ticket: run.ticket,
+        runId: run.id,
+        worker: run.agent.name,
+      }));
+  }
   status() {
     return {
       config: this.config(),

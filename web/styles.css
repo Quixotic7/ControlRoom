@@ -2692,7 +2692,6 @@ dialog::backdrop {
   border-radius: 50%;
   background: var(--cyan);
   margin-right: 5px;
-  animation: reported-pulse 3s ease-in-out infinite;
 }
 @keyframes reported-pulse {
   50% {

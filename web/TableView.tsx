@@ -615,6 +615,10 @@ export function TableView({
                             record={r}
                             claim={claim}
                             role={role}
+                            stageName={
+                              ctx.columns.find((c) => c.id === r.meta.status)
+                                ?.name
+                            }
                           />
                           <TicketProgress record={r} ctx={ctx} compact />
                           <VerificationTag record={r} />

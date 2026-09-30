@@ -15,6 +15,10 @@ async function create(
   return response.json();
 }
 
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test.beforeEach(async ({ page }) => {
   await page.request.get("/");
   await page.request.patch("/api/preferences", {
@@ -22,9 +26,10 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("recent progress highlights cards and rows with an honest reduced-motion waveform", async ({
+test("only verified running workers animate; reports and claims remain distinct", async ({
   page,
 }) => {
+  test.setTimeout(60000);
   const recent = new Date().toISOString();
   const old = "2020-01-01T00:00:00.000Z";
   const active = await create(page, "Activity animation active", {
@@ -90,11 +95,29 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
     await route.fulfill({ response, json: state });
   });
 
+  let live = true;
+  let unavailable = false;
+  await page.route("**/api/activity", async (route) => {
+    if (unavailable) return route.fulfill({ status: 503, body: "Unavailable" });
+    return route.fulfill({
+      json: live
+        ? [
+            {
+              ticket: active.meta.id,
+              runId: "verified-fixture",
+              worker: agent.name,
+            },
+          ]
+        : [],
+    });
+  });
   await page.goto("/");
   await page.getByLabel("Filter tickets").fill("Activity animation");
   const card = page.locator(`.ticket-card[data-id="${active.meta.id}"]`);
-  await expect(card.locator('[data-activity="recent-reported"]')).toBeVisible();
-  await expect(card.getByLabel("Recent reported activity")).toBeVisible();
+  await expect(
+    card.locator('[data-activity="verified-running"]'),
+  ).toBeVisible();
+  await expect(card.getByLabel("Verified running agent")).toBeVisible();
   expect(
     await card.evaluate((element) => getComputedStyle(element).animationName),
   ).toContain("activity-highlight");
@@ -113,34 +136,31 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
     ).toHaveCount(0);
   }
 
-  await expect(
-    page
-      .locator(`.ticket-card[data-id="${noReport.meta.id}"]`)
-      .getByLabel("In progress stage animation"),
-  ).toBeVisible();
-  const unreported = page.locator(
-    `.ticket-card[data-id="${claimOnly.meta.id}"]`,
-  );
-  await expect(
-    unreported.getByLabel("In progress stage animation"),
-  ).toBeVisible();
-  await expect(unreported.getByLabel("Recent reported activity")).toHaveCount(
-    0,
-  );
-  expect(
-    await unreported.evaluate((node) => getComputedStyle(node).animationName),
-  ).toContain("activity-highlight");
-  const staleCard = page.locator(`.ticket-card[data-id="${stale.meta.id}"]`);
-  await expect(staleCard.getByLabel("Awaiting progress update")).toBeVisible();
-  expect(
-    await staleCard
-      .locator(".activity-waveform i")
-      .first()
-      .evaluate((node) => getComputedStyle(node).animationName),
-  ).toBe("none");
-  await page.screenshot({
-    path: "/private/tmp/cr28-stage-preview.png",
-    fullPage: true,
+  for (const record of [noReport, claimOnly, stale]) {
+    const idle = page.locator(`.ticket-card[data-id="${record.meta.id}"]`);
+    await expect(idle.locator(".activity-signal")).toHaveCount(0);
+    await expect(idle.getByText("No verified running agent")).toBeVisible();
+    expect(
+      await idle.evaluate((node) => getComputedStyle(node).animationName),
+    ).toBe("none");
+  }
+  // Stop telemetry must remove animation even when the record/report is unchanged.
+  live = false;
+  await expect(card.locator(".activity-signal")).toHaveCount(0, {
+    timeout: 10000,
+  });
+  await expect(card.getByText("No verified running agent")).toBeVisible();
+  live = true;
+  await expect(card.getByLabel("Verified running agent")).toBeVisible({
+    timeout: 10000,
+  });
+  unavailable = true;
+  await expect(card.locator(".activity-signal")).toHaveCount(0, {
+    timeout: 10000,
+  });
+  unavailable = false;
+  await expect(card.getByLabel("Verified running agent")).toBeVisible({
+    timeout: 10000,
   });
 
   await page.getByRole("button", { name: "View options", exact: true }).click();
@@ -150,7 +170,7 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
     .click();
   await page.keyboard.press("Escape");
   const row = page.locator(`tr[data-id="${active.meta.id}"]`);
-  await expect(row.getByLabel("Recent reported activity")).toBeVisible();
+  await expect(row.getByLabel("Verified running agent")).toBeVisible();
   expect(
     await row
       .locator("td")
@@ -161,7 +181,7 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
   await row.getByRole("button", { name: /^Activity animation active/ }).click();
   const detailActivity = page
     .getByRole("dialog")
-    .locator('.record-content > [data-activity="recent-reported"]');
+    .locator('.record-content > [data-activity="verified-running"]');
   await expect(detailActivity).toBeVisible();
   expect(
     await detailActivity.evaluate(
@@ -187,4 +207,26 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
       (element) => getComputedStyle(element).animationName,
     ),
   ).toBe("none");
+});
+
+test("custom progress-role statuses keep their own name without implying live work", async ({
+  page,
+}) => {
+  const ticket = await create(page, "Failed review activity", {
+    status: "progress",
+  });
+  await page.route("**/api/state", async (route) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    state.config.columns.find((column: any) => column.id === "progress").name =
+      "Failed Review";
+    await route.fulfill({ response, json: state });
+  });
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill("Failed review activity");
+  const card = page.locator(`.ticket-card[data-id="${ticket.meta.id}"]`);
+  await expect(card.getByText(/Failed Review · .* in stage/)).toBeVisible();
+  await expect(card.getByText(/In Progress/)).toHaveCount(0);
+  await expect(card.getByText("No verified running agent")).toBeVisible();
+  await expect(card.locator(".activity-signal")).toHaveCount(0);
 });
