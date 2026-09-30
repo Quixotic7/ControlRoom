@@ -22,6 +22,10 @@ export function ProgressReport({
   const stale = !!p && clock - Date.parse(p.at) > 30 * 60 * 1000;
   const recent =
     role === "progress" && !record.meta.blocked && !expired && !!p && !stale;
+  // Stage decoration is independent of telemetry: an ordinary In Progress
+  // ticket should still have motion, without claiming a verified running agent.
+  const signal = role === "progress" && !record.meta.blocked && !expired;
+  const flowing = signal && !stale;
   if (!p && !claim && role !== "progress") return null;
   const minutes = start
     ? Math.max(0, Math.floor((clock - Date.parse(start)) / 60000))
@@ -36,21 +40,35 @@ export function ProgressReport({
           : `${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
   return (
     <span
-      className={`progress-report${recent ? " recent-report" : ""}`}
-      data-activity={recent ? "recent-reported" : undefined}
+      className={`progress-report${recent ? " recent-report" : ""}${flowing ? " stage-flow" : ""}`}
+      data-activity={
+        recent ? "recent-reported" : flowing ? "stage-decoration" : undefined
+      }
     >
-      {recent && (
+      {signal && (
         <span
-          className="activity-signal"
-          aria-label="Recent reported activity"
-          title="Decorative waveform for a recent progress report; not measured agent activity"
+          className={`activity-signal${stale ? " signal-stale" : ""}`}
+          aria-label={
+            recent
+              ? "Recent reported activity"
+              : stale
+                ? "Awaiting progress update"
+                : "In progress stage animation"
+          }
+          title="Decorative stage visualization, not measured activity or proof that an agent is running. Last reported activity is shown separately."
         >
           <span className="activity-waveform" aria-hidden="true">
-            {Array.from({ length: 12 }, (_, index) => (
+            {Array.from({ length: 32 }, (_, index) => (
               <i key={index} />
             ))}
           </span>
-          <span>Recent reported activity</span>
+          <span>
+            {recent
+              ? "Recent reported activity"
+              : stale
+                ? "Awaiting progress update"
+                : "In progress · stage animation"}
+          </span>
         </span>
       )}
       {role === "progress" && (

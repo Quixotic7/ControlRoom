@@ -54,6 +54,9 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
       actor: agent,
     },
   });
+  const noReport = await create(page, "Activity animation no report", {
+    status: "progress",
+  });
   const claimOnly = await create(page, "Activity animation claim only", {
     status: "progress",
   });
@@ -102,13 +105,43 @@ test("recent progress highlights cards and rows with an honest reduced-motion wa
       .evaluate((element) => getComputedStyle(element).animationName),
   ).toBe("activity-wave");
 
-  for (const record of [stale, blocked, review, claimOnly, expired]) {
+  for (const record of [blocked, review, expired]) {
     await expect(
       page.locator(
         `.ticket-card[data-id="${record.meta.id}"] .activity-signal`,
       ),
     ).toHaveCount(0);
   }
+
+  await expect(
+    page
+      .locator(`.ticket-card[data-id="${noReport.meta.id}"]`)
+      .getByLabel("In progress stage animation"),
+  ).toBeVisible();
+  const unreported = page.locator(
+    `.ticket-card[data-id="${claimOnly.meta.id}"]`,
+  );
+  await expect(
+    unreported.getByLabel("In progress stage animation"),
+  ).toBeVisible();
+  await expect(unreported.getByLabel("Recent reported activity")).toHaveCount(
+    0,
+  );
+  expect(
+    await unreported.evaluate((node) => getComputedStyle(node).animationName),
+  ).toContain("activity-highlight");
+  const staleCard = page.locator(`.ticket-card[data-id="${stale.meta.id}"]`);
+  await expect(staleCard.getByLabel("Awaiting progress update")).toBeVisible();
+  expect(
+    await staleCard
+      .locator(".activity-waveform i")
+      .first()
+      .evaluate((node) => getComputedStyle(node).animationName),
+  ).toBe("none");
+  await page.screenshot({
+    path: "/private/tmp/cr28-stage-preview.png",
+    fullPage: true,
+  });
 
   await page.getByRole("button", { name: "View options", exact: true }).click();
   await page

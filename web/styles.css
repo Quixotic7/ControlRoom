@@ -2345,8 +2345,8 @@ dialog::backdrop {
   display: flex;
   align-items: center;
   gap: 2px;
-  width: 58px;
-  height: 16px;
+  width: 128px;
+  height: 28px;
   padding: 2px 4px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--cyan) 55%, transparent);
@@ -2357,7 +2357,7 @@ dialog::backdrop {
 .activity-waveform i {
   display: block;
   width: 2px;
-  height: 3px;
+  height: 5px;
   flex: 1 1 2px;
   border-radius: 1px;
   background: var(--cyan);
@@ -2377,6 +2377,30 @@ dialog::backdrop {
   animation-delay: -710ms;
   animation-duration: 650ms;
 }
+.ticket-card .activity-signal {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.ticket-card .activity-waveform,
+.record-content > .progress-report .activity-waveform {
+  width: 100%;
+  height: 38px;
+  padding: 6px;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 5px, color-mix(in srgb, var(--cyan) 12%, transparent) 5px 6px),
+    repeating-linear-gradient(90deg, transparent 0 11px, color-mix(in srgb, var(--cyan) 12%, transparent) 11px 12px),
+    color-mix(in srgb, var(--cyan) 7%, var(--surface));
+}
+.record-content > .progress-report .activity-signal {
+  max-width: 440px;
+  flex-direction: column;
+  align-items: stretch;
+}
+.signal-stale { color: var(--muted); }
+.signal-stale .activity-waveform { opacity: 0.45; }
+.signal-stale .activity-waveform i { animation: none; }
+.signal-stale .activity-waveform i:nth-child(3n) { transform: scaleY(2); }
 @keyframes activity-wave {
   0% {
     transform: scaleY(0.35);
@@ -2488,7 +2512,7 @@ dialog::backdrop {
 :root[data-theme] :is(.ticket-card, .button, .view-tab, .open-question) {
   box-shadow: var(--theme-edge, none);
 }
-.recent-report > span:first-child::before {
+.recent-report > span:first-child:not(.activity-signal)::before {
   content: "";
   display: inline-block;
   width: 5px;
@@ -2504,7 +2528,7 @@ dialog::backdrop {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .recent-report > span:first-child::before,
+  .recent-report > span:first-child:not(.activity-signal)::before,
   .activity-waveform i {
     animation: none;
   }
