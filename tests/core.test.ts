@@ -13,7 +13,12 @@ import {
   parseMd,
   safe,
 } from "../src/files.js";
-import { addImage, saveAnnotations, trashImage } from "../src/media.js";
+import {
+  addImage,
+  deleteImagesPermanently,
+  saveAnnotations,
+  trashImage,
+} from "../src/media.js";
 import {
   backup,
   restore,
@@ -103,6 +108,281 @@ test("screenshot trash preserves references and backup content and rejects stale
   assert.equal(restored.hash, image.hash);
   assert.equal(restored.missing, false);
   assert.ok(fs.existsSync(other.file(`assets/${image.id}/preview.png`)));
+});
+
+test("permanent screenshot deletion freezes revisions, retains tombstones, and round-trips backups", async (t) => {
+  const s = fixture(t);
+  let first = await addImage(s, "Annotated deletion", png);
+  first = await saveAnnotations(
+    s,
+    first.id,
+    first.revision,
+    [
+      {
+        id: "keep-written-context",
+        type: "pin",
+        x: 0.5,
+        y: 0.5,
+        text: "Retain this instruction after deleting pixels",
+        resolved: false,
+      },
+    ],
+    png,
+    human,
+  );
+  const second = await addImage(s, "Restored concurrently", png);
+  const ticketRecord = await s.create(
+    "ticket",
+    {
+      title: "References survive deletion",
+      attachments: [first.id],
+    },
+    `Linked prose stays intact: [screenshot](/api/images/${first.id}/base).`,
+    human,
+  );
+  await s.comment(
+    ticketRecord.meta.id,
+    `Conversation reference [opens here](#image=${first.id}).`,
+    human,
+  );
+  const preDeletionBackup = await backup(s);
+
+  const trashedFirst = await trashImage(
+    s,
+    first.id,
+    first.revision,
+    true,
+    human,
+  );
+  const trashedSecond = await trashImage(
+    s,
+    second.id,
+    second.revision,
+    true,
+    human,
+  );
+  const frozen = [
+    { id: first.id, revision: trashedFirst.revision },
+    { id: second.id, revision: trashedSecond.revision },
+  ];
+  await trashImage(s, second.id, trashedSecond.revision, false, human);
+  const newlyTrashed = await addImage(s, "Moved after preview", png);
+  const later = await trashImage(
+    s,
+    newlyTrashed.id,
+    newlyTrashed.revision,
+    true,
+    human,
+  );
+
+  const outcome = await deleteImagesPermanently(s, frozen, human);
+  assert.deepEqual(
+    outcome.deleted.map((item) => item.id),
+    [first.id],
+  );
+  assert.deepEqual(
+    outcome.failed.map((item) => item.id),
+    [second.id],
+  );
+  assert.match(outcome.failed[0].error, /no longer in Trash/);
+  const tombstone = s.attachment(first.id);
+  assert.ok(tombstone.permanentlyDeletedAt);
+  assert.equal(tombstone.permanentlyDeletedBy?.name, human.name);
+  assert.equal(tombstone.missing, true);
+  assert.equal(
+    tombstone.annotations[0].text,
+    "Retain this instruction after deleting pixels",
+  );
+  assert.equal(fs.existsSync(s.file(`assets/${first.id}`)), false);
+  assert.ok(
+    fs.existsSync(s.file(`records/attachments/${first.id}.md`)),
+    "written annotation instructions remain Git-tracked",
+  );
+  assert.equal(s.attachment(second.id).permanentlyDeletedAt, undefined);
+  assert.equal(s.attachment(newlyTrashed.id).revision, later.revision);
+  assert.equal(s.attachment(newlyTrashed.id).permanentlyDeletedAt, undefined);
+  assert.deepEqual(s.get(ticketRecord.meta.id).meta.attachments, [first.id]);
+  assert.equal(s.get(ticketRecord.meta.id).body, ticketRecord.body);
+  assert.match(
+    s.contextMarkdown(ticketRecord.meta.id).markdown,
+    /permanently deleted/,
+  );
+  assert.match(
+    s.contextMarkdown(ticketRecord.meta.id).markdown,
+    /Retain this instruction/,
+  );
+
+  const repeated = await deleteImagesPermanently(s, frozen.slice(0, 1), human);
+  assert.equal(repeated.deleted.length, 0);
+  assert.match(repeated.failed[0].error, /already permanently deleted/);
+  await assert.rejects(
+    trashImage(s, first.id, tombstone.revision, false, human),
+    /permanently deleted/,
+  );
+
+  const changed = await addImage(s, "Changed after preview", png);
+  const changedTrash = await trashImage(
+    s,
+    changed.id,
+    changed.revision,
+    true,
+    human,
+  );
+  await trashImage(s, changed.id, changedTrash.revision, true, a);
+  const stale = await deleteImagesPermanently(
+    s,
+    [{ id: changed.id, revision: changedTrash.revision }],
+    human,
+  );
+  assert.match(stale.failed[0].error, /changed after the confirmation preview/);
+
+  const alreadyMissing = await addImage(s, "Missing pixels", png);
+  const missingTrash = await trashImage(
+    s,
+    alreadyMissing.id,
+    alreadyMissing.revision,
+    true,
+    human,
+  );
+  fs.rmSync(s.file(`assets/${alreadyMissing.id}`), { recursive: true });
+  const missingResult = await deleteImagesPermanently(
+    s,
+    [{ id: alreadyMissing.id, revision: missingTrash.revision }],
+    human,
+  );
+  assert.deepEqual(
+    missingResult.deleted.map((item) => item.id),
+    [alreadyMissing.id],
+  );
+
+  const restoredOld = fixture(t);
+  await restore(restoredOld, preDeletionBackup);
+  assert.equal(
+    restoredOld.attachment(first.id).permanentlyDeletedAt,
+    undefined,
+  );
+  assert.equal(restoredOld.attachment(first.id).missing, false);
+  assert.ok(fs.existsSync(restoredOld.file(`assets/${first.id}/base.png`)));
+  assert.deepEqual(restoredOld.get(ticketRecord.meta.id).meta.attachments, [
+    first.id,
+  ]);
+
+  const restoredNew = fixture(t);
+  await restore(restoredNew, await backup(s));
+  assert.ok(restoredNew.attachment(first.id).permanentlyDeletedAt);
+  assert.equal(restoredNew.attachment(first.id).missing, true);
+  assert.equal(
+    restoredNew.attachment(first.id).annotations[0].text,
+    "Retain this instruction after deleting pixels",
+  );
+  assert.equal(
+    fs.existsSync(restoredNew.file(`assets/${first.id}/base.png`)),
+    false,
+  );
+
+  const dangling = await ticket(s, "Dangling screenshot", {
+    attachments: ["image-no-record"],
+  });
+  assert.match(
+    s.contextMarkdown(dangling.meta.id).markdown,
+    /metadata and local image are unavailable/,
+  );
+
+  const app = await buildServer(s);
+  t.after(() => app.close());
+  const placeholder = await app.inject({
+    method: "GET",
+    url: `/api/images/${first.id}/base`,
+    headers: {
+      host: "127.0.0.1",
+      authorization: `Bearer ${s.token()}`,
+    },
+  });
+  assert.equal(placeholder.statusCode, 200);
+  assert.match(placeholder.headers["content-type"] ?? "", /image\/svg\+xml/);
+  assert.match(placeholder.body, /Screenshot permanently deleted/);
+  const apiDeletion = await app.inject({
+    method: "POST",
+    url: "/api/images/permanent-delete",
+    headers: {
+      host: "127.0.0.1",
+      authorization: `Bearer ${s.token()}`,
+    },
+    payload: {
+      candidates: [{ id: newlyTrashed.id, revision: later.revision }],
+      actor: human,
+    },
+  });
+  assert.equal(apiDeletion.statusCode, 200);
+  assert.deepEqual(
+    apiDeletion.json().deleted.map((item: { id: string }) => item.id),
+    [newlyTrashed.id],
+  );
+});
+
+test("permanent deletion reports filesystem failures without claiming removed pixels remain", async (t) => {
+  const s = fixture(t);
+  const ready = async (name: string) => {
+    const image = await addImage(s, name, png);
+    return trashImage(s, image.id, image.revision, true, human);
+  };
+  const diskFailure = await ready("Failed asset removal"),
+    metadataFailure = await ready("Failed deletion record"),
+    success = await ready("Successful sibling");
+  const remove = fs.rmSync,
+    rename = fs.renameSync;
+  const removeMock = t.mock.method(
+    fs,
+    "rmSync",
+    (target: fs.PathLike, options?: fs.RmOptions) => {
+      if (String(target) === s.file(`assets/${diskFailure.id}`))
+        throw new Error("Simulated disk removal failure");
+      return remove(target, options);
+    },
+  );
+  const renameMock = t.mock.method(
+    fs,
+    "renameSync",
+    (from: fs.PathLike, to: fs.PathLike) => {
+      if (
+        String(to) === s.file(`records/attachments/${metadataFailure.id}.json`)
+      )
+        throw new Error("Simulated metadata write failure");
+      return rename(from, to);
+    },
+  );
+  const result = await deleteImagesPermanently(
+    s,
+    [diskFailure, metadataFailure, success],
+    human,
+  );
+  assert.deepEqual(
+    result.deleted.map((item) => item.id),
+    [success.id],
+  );
+  assert.equal(result.failed.length, 2);
+  assert.match(result.failed[0].error, /may have removed some files/);
+  assert.match(
+    result.failed[1].error,
+    /files were removed, but recording permanent deletion failed/,
+  );
+  assert.equal(s.attachment(diskFailure.id).missing, false);
+  assert.equal(s.attachment(metadataFailure.id).missing, true);
+  assert.equal(
+    s.attachment(metadataFailure.id).permanentlyDeletedAt,
+    undefined,
+  );
+  assert.ok(s.attachment(success.id).permanentlyDeletedAt);
+  removeMock.mock.restore();
+  renameMock.mock.restore();
+  // A new, explicit confirmation can finish the record for already-removed
+  // pixels; failures are never silently replayed by the deletion operation.
+  const retried = await deleteImagesPermanently(s, [metadataFailure], human);
+  assert.deepEqual(
+    retried.deleted.map((item) => item.id),
+    [metadataFailure.id],
+  );
+  assert.ok(s.attachment(metadataFailure.id).permanentlyDeletedAt);
 });
 
 test("Markdown updates preserve unknown YAML, comments, and unrelated body", async (t) => {

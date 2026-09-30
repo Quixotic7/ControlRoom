@@ -122,7 +122,11 @@ export function TicketCard({
                 ) : (
                   <span>Image unavailable</span>
                 )}
-                {image?.trashedAt && <small>In Trash</small>}
+                {image?.permanentlyDeletedAt ? (
+                  <small>Permanently deleted</small>
+                ) : (
+                  image?.trashedAt && <small>In Trash</small>
+                )}
               </span>
             );
           })}

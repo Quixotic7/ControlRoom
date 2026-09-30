@@ -20,6 +20,7 @@ export function ScreenshotPicker({
     .filter(
       (a) =>
         !a.trashedAt &&
+        !a.permanentlyDeletedAt &&
         !attached.includes(a.id) &&
         `${a.name} ${a.annotations.map((n) => n.text).join(" ")}`
           .toLowerCase()

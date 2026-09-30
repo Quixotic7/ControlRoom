@@ -224,7 +224,7 @@ test("multi-screenshot deletion excludes filtered images and reports stale items
   expect(changed.ok()).toBeTruthy();
   page.once("dialog", (d) => d.accept());
   await page
-    .getByRole("button", { name: "Delete selected", exact: true })
+    .getByRole("button", { name: "Move selected to Trash", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText("1 succeeded; 1 failed");
   expect(

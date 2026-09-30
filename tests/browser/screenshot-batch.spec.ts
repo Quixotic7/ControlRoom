@@ -142,6 +142,154 @@ test("screenshots can be deleted, restored, and still opened from linked tickets
   ).toEqual([asset.id]);
 });
 
+test("permanent deletion freezes selected and full-Trash scope with explicit results", async ({
+  page,
+}) => {
+  // The browser server shares a disposable project across tests. Restore
+  // earlier fixtures so this confirmation has a known, exact Trash scope.
+  const state = await (await page.request.get("/api/state")).json();
+  for (const asset of state.attachments.filter(
+    (item: { trashedAt?: string; permanentlyDeletedAt?: string }) =>
+      item.trashedAt && !item.permanentlyDeletedAt,
+  )) {
+    const restored = await page.request.put(`/api/images/${asset.id}/trash`, {
+      data: { revision: asset.revision, trashed: false, actor },
+    });
+    expect(restored.ok()).toBeTruthy();
+  }
+  const alpha = await image(page, "Permanent alpha"),
+    hidden = await image(page, "Permanent hidden");
+  const ticket = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "ticket",
+        meta: { title: "Permanent deletion link", attachments: [alpha.id] },
+        body: `[![Screenshot](/api/images/${alpha.id}/base)](#image=${alpha.id})`,
+        actor,
+      },
+    })
+  ).json();
+  for (const asset of [alpha, hidden])
+    expect(
+      (
+        await page.request.put(`/api/images/${asset.id}/trash`, {
+          data: { revision: asset.revision, trashed: true, actor },
+        })
+      ).ok(),
+    ).toBeTruthy();
+
+  await library(page, alpha.name);
+  await page.getByRole("button", { name: "More actions", exact: true }).click();
+  await page.getByLabel("Interface density").selectOption("comfortable");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".app-shell")).toHaveClass(/comfortable/);
+  await page.getByRole("button", { name: "Trash", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select screenshots", exact: true })
+    .click();
+  await page.getByLabel(`Select ${alpha.name}`).check();
+  await page
+    .getByRole("button", { name: "Delete permanently (1)", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Delete permanently" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText(alpha.name, { exact: true })).toBeVisible();
+  await expect(dialog.getByText(hidden.name, { exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(
+    (await (await page.request.get(`/api/images/${alpha.id}`)).json())
+      .permanentlyDeletedAt,
+  ).toBeUndefined();
+
+  await page
+    .getByRole("button", { name: "Delete permanently (1)", exact: true })
+    .click();
+  const currentAlpha = await (
+    await page.request.get(`/api/images/${alpha.id}`)
+  ).json();
+  await page.request.put(`/api/images/${alpha.id}/trash`, {
+    data: { revision: currentAlpha.revision, trashed: false, actor },
+  });
+  await dialog
+    .getByRole("button", { name: "Delete 1 permanently", exact: true })
+    .click();
+  await expect(dialog.getByText(/0 confirmed deleted; 1 remain/)).toBeVisible();
+  await expect(dialog.getByText(/no longer in Trash/)).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(page.locator(".screenshot-card")).toHaveCount(0);
+
+  const restoredAlpha = await (
+    await page.request.get(`/api/images/${alpha.id}`)
+  ).json();
+  await page.request.put(`/api/images/${alpha.id}/trash`, {
+    data: { revision: restoredAlpha.revision, trashed: true, actor },
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Trash", exact: true }).click();
+  await page.getByLabel("Search screenshots").fill(alpha.name);
+  await expect(page.locator(".screenshot-card")).toHaveCount(1);
+  await page.getByRole("button", { name: "More actions", exact: true }).click();
+  await page.getByLabel("Interface density").selectOption("compact");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".app-shell")).toHaveClass(/compact/);
+  await page
+    .getByRole("button", { name: "Empty Trash (2)", exact: true })
+    .click();
+  const emptyDialog = page.getByRole("dialog", { name: "Empty Trash" });
+  await expect(emptyDialog.getByText(/entire Trash/)).toBeVisible();
+  await expect(
+    emptyDialog.getByText(alpha.name, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    emptyDialog.getByText(hidden.name, { exact: true }),
+  ).toBeVisible();
+
+  const late = await image(page, "Trashed after preview");
+  await page.request.put(`/api/images/${late.id}/trash`, {
+    data: { revision: late.revision, trashed: true, actor },
+  });
+  await expect(emptyDialog.getByText(late.name, { exact: true })).toHaveCount(
+    0,
+  );
+  await page.setViewportSize({ width: 390, height: 800 });
+  await expect
+    .poll(async () => (await emptyDialog.boundingBox())?.width ?? 1000)
+    .toBeLessThanOrEqual(358);
+  await emptyDialog
+    .getByRole("button", { name: "Delete 2 permanently", exact: true })
+    .click();
+  await expect(
+    emptyDialog.getByText(/2 confirmed deleted; 0 remain/),
+  ).toBeVisible();
+  await emptyDialog.getByRole("button", { name: "Close", exact: true }).click();
+
+  const alphaDeleted = await (
+    await page.request.get(`/api/images/${alpha.id}`)
+  ).json();
+  const lateStillTrashed = await (
+    await page.request.get(`/api/images/${late.id}`)
+  ).json();
+  expect(alphaDeleted.permanentlyDeletedAt).toBeTruthy();
+  expect(lateStillTrashed.trashedAt).toBeTruthy();
+  expect(lateStillTrashed.permanentlyDeletedAt).toBeUndefined();
+  const placeholder = await page.request.get(`/api/images/${alpha.id}/base`);
+  expect(placeholder.ok()).toBeTruthy();
+  expect(placeholder.headers()["content-type"]).toContain("image/svg+xml");
+  expect(
+    (await (await page.request.get(`/api/records/${ticket.meta.id}`)).json())
+      .meta.attachments,
+  ).toEqual([alpha.id]);
+
+  await openTicket(page, ticket.meta.id);
+  await expect(
+    page.getByText(
+      "Screenshot permanently deleted · written annotations preserved",
+    ),
+  ).toBeVisible();
+});
+
 test("zoom and pan preserve source coordinates through export and reopening", async ({
   page,
 }) => {

@@ -582,7 +582,13 @@ export function AnnotationEditor({
           {error}
         </div>
       )}
-      {asset?.trashedAt && (
+      {asset?.permanentlyDeletedAt ? (
+        <div className="banner" role="status">
+          This screenshot was permanently deleted. Its local image and preview
+          were removed. Existing ticket links and written annotation context are
+          preserved below.
+        </div>
+      ) : asset?.trashedAt ? (
         <div className="banner" role="status">
           This screenshot is in Trash. Existing ticket links are preserved.
           <button
@@ -608,7 +614,7 @@ export function AnnotationEditor({
             Restore screenshot
           </button>
         </div>
-      )}
+      ) : null}
       <div
         className="annotation-tools"
         role="toolbar"
@@ -685,7 +691,15 @@ export function AnnotationEditor({
           onPointerCancel={viewport.up}
           onAuxClick={(e) => e.preventDefault()}
         >
-          {asset?.missing ? (
+          {asset?.permanentlyDeletedAt ? (
+            <div className="empty-state">
+              <h2>Screenshot permanently deleted</h2>
+              <p>
+                The local image and preview were removed. Written annotation
+                instructions remain available for linked tickets and context.
+              </p>
+            </div>
+          ) : asset?.missing ? (
             <div className="empty-state">
               <h2>Image is not available locally</h2>
               <p>
