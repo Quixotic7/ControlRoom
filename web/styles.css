@@ -1621,6 +1621,15 @@ dialog::backdrop {
   margin: 2px 0;
   overflow-wrap: anywhere;
 }
+.archive-dialog.permanent-delete-dialog {
+  width: min(720px, calc(100vw - 32px));
+}
+.permanent-delete-list code {
+  font-size: 11px;
+}
+.permanent-delete-list .muted {
+  display: block;
+}
 .screenshot-card strong {
   font-size: 14px;
   font-weight: 600;

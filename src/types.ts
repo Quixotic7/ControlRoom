@@ -143,6 +143,8 @@ export type Annotation = {
 export type Attachment = {
   trashedAt?: string;
   trashedBy?: Actor;
+  permanentlyDeletedAt?: string;
+  permanentlyDeletedBy?: Actor;
   id: string;
   name: string;
   hash: string;
@@ -152,6 +154,7 @@ export type Attachment = {
   annotations: Annotation[];
   revision: string;
   missing?: boolean;
+  referenceMissing?: boolean;
   createdAt: string;
 };
 export type ProjectState = {

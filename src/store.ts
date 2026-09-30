@@ -339,6 +339,25 @@ export class Store {
       missing: !fs.existsSync(this.file(`assets/${id}/base.png`)),
     };
   }
+  private attachmentReference(id: string): Attachment {
+    if (/^image-[\w-]+$/.test(id)) {
+      const file = this.file(`records/attachments/${id}.json`);
+      if (fs.existsSync(file)) return this.attachment(id);
+    }
+    return {
+      id,
+      name: "Screenshot reference unavailable",
+      hash: "",
+      width: 0,
+      height: 0,
+      mime: "image/png",
+      annotations: [],
+      revision: "",
+      missing: true,
+      referenceMissing: true,
+      createdAt: "",
+    };
+  }
   claims(): Claim[] {
     const p = this.file(".local/claims.json");
     return fs.existsSync(p) ? JSON.parse(read(p)) : [];
@@ -1381,7 +1400,7 @@ export class Store {
         "Explicit links, global rules, and labels on the ticket or approved parent. Review for missing rules.",
       dependencies: (ticket.meta.dependencies ?? []).map((d) => this.get(d)),
       comments,
-      attachments: [...attachmentIds].map((a) => this.attachment(a)),
+      attachments: [...attachmentIds].map((a) => this.attachmentReference(a)),
       claim: this.claims().find((c) => c.ticket === ticket.meta.id) ?? null,
     };
   }
@@ -1595,9 +1614,13 @@ export class Store {
         const notes = a.annotations.filter((n) => !n.resolved);
         lines.push(
           `- ${a.name} (${a.width}×${a.height}, ${notes.length} open notes)` +
-            (a.missing
-              ? " — image not present in this checkout"
-              : `: ${this.file(`assets/${a.id}/base.png`)}`),
+            (a.permanentlyDeletedAt
+              ? ` — permanently deleted ${a.permanentlyDeletedAt}; local image and preview removed, written annotations retained`
+              : a.referenceMissing
+                ? " — screenshot metadata and local image are unavailable"
+                : a.missing
+                  ? " — image not present in this checkout"
+                  : `: ${this.file(`assets/${a.id}/base.png`)}`),
         );
         for (const n of notes)
           lines.push(`  - ${n.id}: ${n.text || "(no written instruction)"}`);

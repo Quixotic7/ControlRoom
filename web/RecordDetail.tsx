@@ -1599,7 +1599,11 @@ export function RecordDetail({
                         <span>
                           {a?.name ?? "New screenshot"} ·{" "}
                           {a?.annotations.length ?? 0} notes
-                          {a?.trashedAt ? " · In Trash" : ""}
+                          {a?.permanentlyDeletedAt
+                            ? " · Permanently deleted"
+                            : a?.trashedAt
+                              ? " · In Trash"
+                              : ""}
                         </span>
                       </button>
                     );

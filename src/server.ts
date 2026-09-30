@@ -11,6 +11,7 @@ import { Store } from "./store.js";
 import { atomic, Problem, read } from "./files.js";
 import {
   addImage,
+  deleteImagesPermanently,
   imageContext,
   saveAnnotations,
   trashImage,
@@ -268,6 +269,12 @@ export async function buildServer(
   );
   app.get("/api/images/:id/base", async (req: any, reply) => {
     const a = store.attachment(req.params.id);
+    if (a.permanentlyDeletedAt)
+      return reply
+        .type("image/svg+xml")
+        .send(
+          '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="450" viewBox="0 0 800 450"><rect width="800" height="450" fill="#20252b"/><text x="400" y="210" fill="#d9dde3" font-family="system-ui,sans-serif" font-size="28" text-anchor="middle">Screenshot permanently deleted</text><text x="400" y="250" fill="#9da5af" font-family="system-ui,sans-serif" font-size="18" text-anchor="middle">Written annotation context was preserved</text></svg>',
+        );
     if (a.missing)
       throw new Problem(
         404,
@@ -288,6 +295,9 @@ export async function buildServer(
     const b = req.body;
     return trashImage(store, req.params.id, b.revision, b.trashed, actor(b));
   });
+  app.post("/api/images/permanent-delete", async (req: any) =>
+    deleteImagesPermanently(store, req.body.candidates, actor(req.body)),
+  );
   app.put("/api/images/:id/annotations", async (req: any) => {
     const b = req.body;
     return saveAnnotations(

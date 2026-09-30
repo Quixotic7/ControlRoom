@@ -4,6 +4,12 @@ import { atomic, hash, now, Problem, read, uid } from "./files.js";
 import type { Actor, Annotation, Attachment } from "./types.js";
 import type { Store } from "./store.js";
 
+export type PermanentDeleteCandidate = { id: string; revision: string };
+export type PermanentDeleteResult = {
+  deleted: { id: string; name: string }[];
+  failed: { id: string; name: string; error: string }[];
+};
+
 const coord = z.number().finite().min(0).max(1);
 const annotationSchema = z.object({
   id: z.string().regex(/^[\w-]+$/),
@@ -79,6 +85,8 @@ export function trashImage(
 ) {
   return store.write(() => {
     const a = store.attachment(id);
+    if (a.permanentlyDeletedAt)
+      throw new Problem(409, "Screenshot was permanently deleted.");
     if (a.revision !== revision)
       throw new Problem(
         409,
@@ -100,6 +108,101 @@ export function trashImage(
     return store.attachment(id);
   });
 }
+
+// Pixels are local/ignored while attachment JSON and written instructions are
+// durable/Git-tracked. Permanent deletion therefore keeps a tombstone in the
+// existing attachment record instead of rewriting every ticket/comment link.
+// That makes old prose safe to render and lets backups consistently contain
+// either the original pixels (made before deletion) or the tombstone (after).
+export function deleteImagesPermanently(
+  store: Store,
+  candidates: PermanentDeleteCandidate[],
+  actor: Actor,
+): Promise<PermanentDeleteResult> {
+  return store.write(() => {
+    const input = z
+      .array(
+        z.object({
+          id: z.string().regex(/^image-[\w-]+$/),
+          revision: z.string().min(1).max(200),
+        }),
+      )
+      .min(1)
+      .max(10000)
+      .parse(candidates);
+    if (new Set(input.map((candidate) => candidate.id)).size !== input.length)
+      throw new Problem(422, "Each screenshot may be deleted only once");
+
+    const result: PermanentDeleteResult = { deleted: [], failed: [] };
+    for (const candidate of input) {
+      let attachment: Attachment;
+      let assetsRemoved = false;
+      try {
+        attachment = store.attachment(candidate.id);
+      } catch {
+        result.failed.push({
+          id: candidate.id,
+          name: candidate.id,
+          error: "Screenshot record is unavailable.",
+        });
+        continue;
+      }
+      const fail = (error: string) =>
+        result.failed.push({
+          id: attachment.id,
+          name: attachment.name,
+          error,
+        });
+      if (attachment.permanentlyDeletedAt) {
+        fail("Screenshot was already permanently deleted.");
+        continue;
+      }
+      if (!attachment.trashedAt) {
+        fail("Screenshot is no longer in Trash.");
+        continue;
+      }
+      if (attachment.revision !== candidate.revision) {
+        fail("Screenshot changed after the confirmation preview opened.");
+        continue;
+      }
+
+      try {
+        // Remove every local derivative under the attachment's asset folder.
+        // Missing files are an already-reclaimed state and are safe to record.
+        const assetDirectory = store.file(`assets/${attachment.id}`);
+        if (fs.existsSync(assetDirectory))
+          fs.rmSync(assetDirectory, { recursive: true });
+        assetsRemoved = true;
+        const {
+          revision: _,
+          missing: __,
+          referenceMissing: ___,
+          ...record
+        } = attachment;
+        atomic(
+          store.file(`records/attachments/${attachment.id}.json`),
+          JSON.stringify(
+            {
+              ...record,
+              permanentlyDeletedAt: now(),
+              permanentlyDeletedBy: actor,
+            },
+            null,
+            2,
+          ),
+        );
+        result.deleted.push({ id: attachment.id, name: attachment.name });
+      } catch (error) {
+        fail(
+          assetsRemoved
+            ? `Local image files were removed, but recording permanent deletion failed. Written annotations remain. Inspect this item and confirm again to finish its deletion record: ${String(error)}`
+            : `Local deletion failed and may have removed some files. Inspect this item before confirming again: ${String(error)}`,
+        );
+      }
+    }
+    return result;
+  });
+}
 export function saveAnnotations(
   store: Store,
   id: string,
@@ -112,6 +215,8 @@ export function saveAnnotations(
     const a = store.attachment(id);
     if (a.revision !== revision)
       throw new Problem(409, "Annotations changed. Reload before saving.");
+    if (a.permanentlyDeletedAt)
+      throw new Problem(409, "Screenshot was permanently deleted.");
     if (a.trashedAt)
       throw new Problem(
         409,
@@ -169,12 +274,22 @@ export function saveAnnotations(
   });
 }
 export function imageContext(store: Store, a: Attachment) {
+  const validId = /^image-[\w-]+$/.test(a.id);
   return {
     ...a,
-    basePath: store.file(`assets/${a.id}/base.png`),
-    previewPath: fs.existsSync(store.file(`assets/${a.id}/preview.png`))
-      ? store.file(`assets/${a.id}/preview.png`)
-      : null,
-    instructionsPath: store.file(`records/attachments/${a.id}.md`),
+    basePath:
+      !validId || a.missing || a.permanentlyDeletedAt
+        ? null
+        : store.file(`assets/${a.id}/base.png`),
+    previewPath:
+      validId &&
+      !a.permanentlyDeletedAt &&
+      fs.existsSync(store.file(`assets/${a.id}/preview.png`))
+        ? store.file(`assets/${a.id}/preview.png`)
+        : null,
+    instructionsPath:
+      validId && fs.existsSync(store.file(`records/attachments/${a.id}.md`))
+        ? store.file(`records/attachments/${a.id}.md`)
+        : null,
   };
 }
