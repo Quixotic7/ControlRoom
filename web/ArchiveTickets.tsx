@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { RecordFile } from "../src/types";
+import type { Column, RecordFile } from "../src/types";
 import { actor, api, recordId } from "./api";
+import { StageIcon } from "./Icons";
 import { ticketNavigation, ticketPageUrl } from "./ticketNavigation";
 
 export type ArchiveScope = {
@@ -166,11 +167,13 @@ export function ArchiveTickets({
 
 export function ArchivedTickets({
   records,
+  columns,
   onOpen,
   reload,
   onBack,
 }: {
   records: RecordFile[];
+  columns: Column[];
   onOpen: (id: string) => void;
   reload: () => Promise<void>;
   onBack: () => void;
@@ -190,6 +193,29 @@ export function ArchivedTickets({
         .includes(word),
     ),
   );
+  const recordsById = new Map(records.map((r) => [r.meta.id, r]));
+  const columnById = new Map(columns.map((column) => [column.id, column]));
+  const archivedLanes = new Map<
+    string,
+    { column?: Column; tickets: RecordFile[] }
+  >();
+  for (const ticket of shown) {
+    const column = columnById.get(ticket.meta.status);
+    const key = column?.id ?? ticket.meta.status;
+    const lane = archivedLanes.get(key) ?? { column, tickets: [] };
+    lane.tickets.push(ticket);
+    archivedLanes.set(key, lane);
+  }
+  const lanes = [...archivedLanes.values()].sort((a, b) => {
+    const aIndex = a.column ? columns.indexOf(a.column) : columns.length;
+    const bIndex = b.column ? columns.indexOf(b.column) : columns.length;
+    return (
+      aIndex - bIndex ||
+      (a.column?.name ?? a.tickets[0].meta.status).localeCompare(
+        b.column?.name ?? b.tickets[0].meta.status,
+      )
+    );
+  });
   async function restore(r: RecordFile) {
     if (busy.current) return;
     busy.current = true;
@@ -219,7 +245,8 @@ export function ArchivedTickets({
         </button>
       </div>
       <p className="help">
-        Unarchive restores a ticket in its existing workflow stage. Move it into
+        Archived tickets are grouped by their prior workflow swimlane. Unarchive
+        restores a ticket in its existing workflow stage; move it into
         development separately when needed.
       </p>
       <label className="field">
@@ -239,26 +266,67 @@ export function ArchivedTickets({
       <p>
         {shown.length} of {tickets.length} archived tickets
       </p>
-      <ul className="archive-results">
-        {shown.map((r) => (
-          <li key={r.meta.id}>
-            <button
-              className="text-button"
-              {...ticketNavigation(r.meta.id, onOpen)}
+      <div className="archive-lanes" aria-label="Archived ticket swimlanes">
+        {lanes.map(({ column, tickets: laneTickets }) => {
+          const name =
+            column?.name ?? `Unknown stage (${laneTickets[0].meta.status})`;
+          return (
+            <section
+              className="archive-lane"
+              data-stage={column?.role}
+              aria-label={`${name} swimlane`}
+              key={column?.id ?? laneTickets[0].meta.status}
             >
-              {recordId(r)} {r.meta.title}
-            </button>
-            <button
-              className="button small"
-              disabled={pending !== null}
-              aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
-              onClick={() => void restore(r)}
-            >
-              {pending === r.meta.id ? "Restoring…" : "Unarchive"}
-            </button>
-          </li>
-        ))}
-      </ul>
+              <h3>
+                <StageIcon role={column?.role} />
+                {name}
+                <span className="count">{laneTickets.length}</span>
+              </h3>
+              <ul className="archive-results">
+                {laneTickets.map((r) => {
+                  const parent = r.meta.parent
+                    ? recordsById.get(r.meta.parent)
+                    : undefined;
+                  return (
+                    <li key={r.meta.id}>
+                      <div className="archive-ticket-summary">
+                        <button
+                          className="text-button"
+                          {...ticketNavigation(r.meta.id, onOpen)}
+                        >
+                          {recordId(r)} {r.meta.title}
+                        </button>
+                        {parent && (
+                          <button
+                            className="archive-parent text-button"
+                            {...ticketNavigation(parent.meta.id, onOpen)}
+                          >
+                            Parent: {recordId(parent)} {parent.meta.title}
+                            {parent.meta.archived ? " (Archived)" : ""}
+                          </button>
+                        )}
+                        {r.meta.parent && !parent && (
+                          <span className="archive-parent muted">
+                            Parent unavailable: {r.meta.parent}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        className="button small"
+                        disabled={pending !== null}
+                        aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
+                        onClick={() => void restore(r)}
+                      >
+                        {pending === r.meta.id ? "Restoring…" : "Unarchive"}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })}
+      </div>
       {!shown.length && (
         <p className="empty-inline">No archived tickets match this search.</p>
       )}
