@@ -13,6 +13,17 @@ const create = async (page: Page, title: string, meta = {}) =>
     })
   ).json();
 
+async function openFromQueue(page: Page, title: string, id: string) {
+  const queue = page.getByRole("region", { name: "Review queue" });
+  await queue.locator(".review-queue-item").filter({ hasText: title }).click();
+  await expect(page).toHaveURL(new RegExp(`#ticket=${id}$`));
+}
+
+async function expectOpenTicket(page: Page, title: string, id: string) {
+  await expect(page).toHaveURL(new RegExp(`#ticket=${id}$`));
+  await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(title);
+}
+
 test.beforeEach(async ({ page }) => {
   await page.request.get("/");
   await page.request.patch("/api/preferences", {
@@ -23,7 +34,8 @@ test.beforeEach(async ({ page }) => {
 test("review queue keeps feedback while keyboard navigation exposes evidence and missing diffs honestly", async ({
   page,
 }) => {
-  const first = await create(page, "First queued review", {
+  const nonce = `${Date.now()}-${Math.random()}`;
+  const first = await create(page, `First queued review ${nonce}`, {
     verification: {
       command: "npm test",
       exitCode: 0,
@@ -32,7 +44,7 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
     },
     reviewVerificationAt: "2026-01-01T00:00:00Z",
   });
-  const second = await create(page, "Second queued review", {
+  const second = await create(page, `Second queued review ${nonce}`, {
     verification: {
       command: "npm test",
       exitCode: 0,
@@ -49,8 +61,7 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
   await expect(queue).toContainText("Current verification passed");
   await expect(queue).toContainText("No PR or diff supplied");
 
-  await queue.getByRole("button").filter({ hasText: first.meta.title }).click();
-  await expect(page.getByText("Review 1 of 2", { exact: true })).toBeVisible();
+  await openFromQueue(page, first.meta.title, first.meta.id);
   await expect(
     page.getByRole("region", { name: "Change source" }),
   ).toContainText("Change and diff information is unavailable");
@@ -60,19 +71,15 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
   // Preserve native Option+Arrow word navigation while feedback is being
   // typed. The visible navigation buttons remain keyboard-operable.
   await feedback.press("Alt+ArrowRight");
-  await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(
-    first.meta.title,
-  );
+  await expectOpenTicket(page, first.meta.title, first.meta.id);
   await page.getByRole("button", { name: "Next" }).press("Alt+ArrowRight");
 
-  await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(
-    second.meta.title,
-  );
-  await expect(page.getByText("Review 2 of 2", { exact: true })).toBeVisible();
+  await expectOpenTicket(page, second.meta.title, second.meta.id);
   await expect(
     page.getByRole("region", { name: "What to review" }),
   ).toContainText("not linked to this review submission");
   await page.getByRole("button", { name: "Previous" }).press("Alt+ArrowLeft");
+  await expectOpenTicket(page, first.meta.title, first.meta.id);
   await expect(feedback).toHaveValue(
     "Keep this feedback while I inspect the next item.",
   );
@@ -87,17 +94,17 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
 test("queue navigation saves ticket drafts, retains them on failure, and waits for review outcomes", async ({
   page,
 }) => {
-  const first = await create(page, "Draft-safe queued review");
-  const second = await create(page, "Second draft-safe review");
+  const nonce = `${Date.now()}-${Math.random()}`;
+  const first = await create(page, `Draft-safe queued review ${nonce}`);
+  const second = await create(page, `Second draft-safe review ${nonce}`);
   await page.goto("/");
   await page.getByRole("button", { name: "Review queue" }).click();
-  const queue = page.getByRole("region", { name: "Review queue" });
-  await queue.getByRole("button").filter({ hasText: first.meta.title }).click();
+  await openFromQueue(page, first.meta.title, first.meta.id);
 
   const title = page.getByRole("textbox", { name: "Title" });
   await title.fill("Saved before moving on");
   await page.getByRole("button", { name: "Next" }).click();
-  await expect(title).toHaveValue(second.meta.title);
+  await expectOpenTicket(page, second.meta.title, second.meta.id);
   await expect
     .poll(async () => {
       const response = await page.request.get(`/api/records/${first.meta.id}`);
@@ -106,11 +113,15 @@ test("queue navigation saves ticket drafts, retains them on failure, and waits f
     .toBe("Saved before moving on");
 
   await page.getByRole("button", { name: "Previous" }).click();
+  await expectOpenTicket(page, "Saved before moving on", first.meta.id);
   await title.fill("Keep this unsaved title");
-  await page.route(`**/api/records/${first.meta.id}`, (route) => route.abort());
+  await page.route(`**/api/records/${first.meta.id}`, (route) => {
+    if (route.request().method() === "PATCH") return route.abort();
+    return route.continue();
+  });
   await page.getByRole("button", { name: "Next" }).click();
   await expect(title).toHaveValue("Keep this unsaved title");
-  await expect(page.getByText("Review 1 of 2", { exact: true })).toBeVisible();
+  await expectOpenTicket(page, "Keep this unsaved title", first.meta.id);
   await page.unroute(`**/api/records/${first.meta.id}`);
 
   let releaseOutcome!: () => void;
@@ -128,7 +139,7 @@ test("queue navigation saves ticket drafts, retains them on failure, and waits f
   await page.getByRole("button", { name: "Save feedback & return" }).click();
   await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
   await page.keyboard.press("Alt+ArrowRight");
-  await expect(title).toHaveValue("Keep this unsaved title");
+  await expectOpenTicket(page, "Keep this unsaved title", first.meta.id);
   releaseOutcome();
-  await expect(title).toHaveValue(second.meta.title);
+  await expectOpenTicket(page, second.meta.title, second.meta.id);
 });

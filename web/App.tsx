@@ -77,6 +77,10 @@ export function App() {
   const [reviewDrafts, setReviewDrafts] = useState<
     Record<string, ReviewActionDraft>
   >({});
+  // A review pass is a sequence, not a "most recently edited" list. Keep the
+  // IDs encountered when the reviewer opens the queue so saving an item (which
+  // updates `updatedAt`) cannot make Next/Previous jump or revisit an item.
+  const [reviewQueue, setReviewQueue] = useState<string[] | null>(null);
   const { state, reload, loadError } = useProjectState();
   function setSelected(id: string | null) {
     setSelectedState(id);
@@ -223,6 +227,44 @@ export function App() {
       .map((r) => [r, attentionReason(r, state, ctx)] as const)
       .filter((x): x is [(typeof x)[0], AttentionReason] => !!x[1]);
   }, [state, ctx]);
+  const reviewRecords = useMemo(
+    () =>
+      (state?.records ?? [])
+        .filter(
+          (record) =>
+            record.meta.kind === "ticket" &&
+            !record.meta.archived &&
+            state?.config.columns.find(
+              (column) => column.id === record.meta.status,
+            )?.role === "review",
+        )
+        .sort(
+          (a, b) =>
+            (a.meta.number ?? Number.MAX_SAFE_INTEGER) -
+              (b.meta.number ?? Number.MAX_SAFE_INTEGER) ||
+            a.meta.id.localeCompare(b.meta.id),
+        ),
+    [state],
+  );
+  const availableReviewIds = reviewRecords.map((record) => record.meta.id);
+  const availableReviewKey = availableReviewIds.join("\u0000");
+  useEffect(() => {
+    if (page !== "review") {
+      setReviewQueue(null);
+      return;
+    }
+    // Retain the current pass in its original order. Items that leave review
+    // disappear; newly submitted items join at the end for a later pass.
+    setReviewQueue((previous) => {
+      const available = new Set(availableReviewIds);
+      const retained = (previous ?? []).filter((id) => available.has(id));
+      const retainedIds = new Set(retained);
+      return [
+        ...retained,
+        ...availableReviewIds.filter((id) => !retainedIds.has(id)),
+      ];
+    });
+  }, [page, availableReviewKey]);
 
   if (!state || !ctx || !prefsReady)
     return (
@@ -246,20 +288,17 @@ export function App() {
     ? (state.records.find((r) => r.meta.id === selected) ??
       (createdRecord?.meta.id === selected ? createdRecord : null))
     : null;
-  const reviewRecords = state.records
-    .filter(
-      (record) =>
-        record.meta.kind === "ticket" &&
-        !record.meta.archived &&
-        state.config.columns.find((column) => column.id === record.meta.status)
-          ?.role === "review",
-    )
-    .sort(
-      (a, b) =>
-        a.meta.updatedAt.localeCompare(b.meta.updatedAt) ||
-        (a.meta.number ?? 0) - (b.meta.number ?? 0),
-    );
-  const reviewQueueIds = reviewRecords.map((record) => record.meta.id);
+  const reviewQueueIds =
+    page === "review"
+      ? (reviewQueue ?? availableReviewIds)
+      : availableReviewIds;
+  const recordsById = new Map(
+    reviewRecords.map((record) => [record.meta.id, record]),
+  );
+  const queuedReviewRecords = reviewQueueIds.flatMap((id) => {
+    const record = recordsById.get(id);
+    return record ? [record] : [];
+  });
   const reviewPosition = active ? reviewQueueIds.indexOf(active.meta.id) : -1;
   const views = viewsOf(state);
   const currentViewId = views.some((v) => v.id === viewId)
@@ -384,7 +423,7 @@ export function App() {
               />
             )}
             {page === "review" && (
-              <ReviewQueue records={reviewRecords} open={setSelected} />
+              <ReviewQueue records={queuedReviewRecords} open={setSelected} />
             )}
             {(page === "decisions" || page === "rulebook") && (
               <KnowledgePage
@@ -486,9 +525,15 @@ export function App() {
                     return rest;
                   });
                   const index = reviewQueueIds.indexOf(id);
+                  const stillInReview = new Set(availableReviewIds);
                   setSelected(
-                    reviewQueueIds[index + 1] ??
-                      reviewQueueIds[index - 1] ??
+                    reviewQueueIds
+                      .slice(index + 1)
+                      .find((candidate) => stillInReview.has(candidate)) ??
+                      reviewQueueIds
+                        .slice(0, index)
+                        .reverse()
+                        .find((candidate) => stillInReview.has(candidate)) ??
                       null,
                   );
                 }
