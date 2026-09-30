@@ -27,6 +27,53 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("approval filter composes with saved board and table views", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const label = `approval-filter-${suffix}`;
+  const parent = await create(page, `Approved parent ${suffix}`, {
+    labels: [label],
+    scopeApproved: true,
+  });
+  await create(page, `Inherited child ${suffix}`, {
+    labels: [label],
+    parent: parent.meta.id,
+  });
+  await create(page, `Unchecked ticket ${suffix}`, { labels: [label] });
+
+  await page.goto("/");
+  const filter = page.getByLabel("Filter tickets");
+  const approval = page.getByLabel("Approval filter");
+  await filter.fill(`label:${label}`);
+  await approval.selectOption("approved");
+  await expect(filter).toHaveValue(`label:${label} is:approved`);
+  await expect(approval).toHaveValue("approved");
+  await expect(
+    page.locator(".board-ticket").filter({ hasText: label }),
+  ).toHaveCount(1);
+  await page.getByRole("button", { name: "Save view", exact: true }).click();
+
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await filter.fill(`label:${label}`);
+  await approval.selectOption("not-approved");
+  await expect(filter).toHaveValue(`label:${label} -is:approved`);
+  await expect(approval).toHaveValue("not-approved");
+  await expect(page.locator("tbody tr").filter({ hasText: label })).toHaveCount(
+    2,
+  );
+  await page.getByRole("button", { name: "Save view", exact: true }).click();
+
+  await page.getByRole("button", { name: "Board", exact: true }).click();
+  await expect(filter).toHaveValue(`label:${label} is:approved`);
+  await expect(approval).toHaveValue("approved");
+
+  await filter.fill(`label:${label} is:approved,blocked`);
+  await expect(approval).toHaveValue("custom");
+  await approval.selectOption("all");
+  await expect(filter).toHaveValue(`label:${label} is:blocked`);
+});
+
 for (const layout of ["Board", "Table"] as const) {
   test(`${layout.toLowerCase()} quick actions approve scope and accept review from the keyboard`, async ({
     page,

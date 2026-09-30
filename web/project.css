@@ -446,6 +446,19 @@ body,
   width: 14px;
   height: 14px;
 }
+.approval-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.approval-filter select {
+  min-width: 108px;
+  height: 30px;
+}
 
 /* ----------------------------------------------------------------- stages */
 
@@ -2040,6 +2053,9 @@ body,
   }
   .filter-input {
     min-width: 200px;
+  }
+  .approval-filter {
+    margin-left: auto;
   }
   .feed-filters {
     display: grid;
