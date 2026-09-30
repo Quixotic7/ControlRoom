@@ -3,6 +3,19 @@ import { test, expect, type Page } from "@playwright/test";
 const actor = { name: "Typing performance fixture", kind: "human" };
 const sample = " responsive typing sample";
 
+test.beforeEach(async ({ page }) => {
+  const response = await page.request.get("/");
+  expect(response.ok()).toBeTruthy();
+});
+
+async function createTicket(page: Page, title: string, body: string) {
+  const response = await page.request.post("/api/records", {
+    data: { kind: "ticket", meta: { title }, body, actor },
+  });
+  expect(response.ok()).toBeTruthy();
+  return response.json();
+}
+
 async function measureKeyToFrame(page: Page, label: string) {
   await page.evaluate(() => {
     (window as any).keyToFrame = [];
@@ -49,17 +62,12 @@ test("title and description stay responsive on a large ticket without per-key ac
   page,
 }) => {
   test.setTimeout(90_000);
-  const ticket = await (
-    await page.request.post("/api/records", {
-      data: {
-        kind: "ticket",
-        meta: { title: "Large editable ticket" },
-        body: "Existing description.",
-        actor,
-      },
-    })
-  ).json();
-  await Promise.all([
+  const ticket = await createTicket(
+    page,
+    "Large editable ticket",
+    "Existing description.",
+  );
+  const fixtureResponses = await Promise.all([
     ...Array.from({ length: 80 }, (_, index) =>
       page.request.post("/api/records", {
         data: {
@@ -79,6 +87,7 @@ test("title and description stay responsive on a large ticket without per-key ac
       }),
     ),
   ]);
+  for (const response of fixtureResponses) expect(response.ok()).toBeTruthy();
 
   let activations = 0;
   await page.route("**/api/active", async (route) => {
@@ -105,9 +114,63 @@ test("title and description stay responsive on a large ticket without per-key ac
 
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.locator(".record-dialog")).toHaveCount(0);
-  const saved = await (
-    await page.request.get(`/api/records/${ticket.meta.id}`)
-  ).json();
+  const savedResponse = await page.request.get(
+    `/api/records/${ticket.meta.id}`,
+  );
+  expect(savedResponse.ok()).toBeTruthy();
+  const saved = await savedResponse.json();
   expect(saved.meta.title).toBe(`Large editable ticket${sample}`);
   expect(saved.body).toBe(`Existing description.${sample}`);
+});
+
+test("open Markdown keeps microtask changes through focused keyboard saves", async ({
+  page,
+}) => {
+  const ticket = await createTicket(
+    page,
+    "Synchronized Markdown draft",
+    "Existing prose.\n\n- [ ] Preserve this task",
+  );
+  await page.goto(`/#ticket=${ticket.meta.id}`);
+  await page.getByRole("button", { name: "Edit Markdown" }).click();
+
+  const description = page.getByRole("textbox", { name: "Markdown body" });
+  await page.getByLabel("Complete microtask 1", { exact: true }).check();
+  await expect(description).toHaveValue(
+    "Existing prose.\n\n- [x] Preserve this task",
+  );
+  await description.focus();
+  await description.evaluate((element: HTMLTextAreaElement) =>
+    element.setSelectionRange(element.value.length, element.value.length),
+  );
+  await description.pressSequentially("\nTyped after checking.");
+  await expect(description).toBeFocused();
+  await description.press("Control+s");
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
+
+  let saved = await page.request.get(`/api/records/${ticket.meta.id}`);
+  expect(saved.ok()).toBeTruthy();
+  let record = await saved.json();
+  expect(record.body).toBe(
+    "Existing prose.\n\n- [x] Preserve this task\nTyped after checking.",
+  );
+
+  await page.goto(`/#ticket=${ticket.meta.id}`);
+  await page.getByRole("button", { name: "Edit Markdown" }).click();
+  const reopened = page.getByRole("textbox", { name: "Markdown body" });
+  await reopened.focus();
+  await reopened.evaluate((element: HTMLTextAreaElement) =>
+    element.setSelectionRange(element.value.length, element.value.length),
+  );
+  await reopened.pressSequentially("\nSaved on keyboard close.");
+  await expect(reopened).toBeFocused();
+  await reopened.press("Escape");
+  await expect(page.locator(".record-dialog")).toHaveCount(0);
+
+  saved = await page.request.get(`/api/records/${ticket.meta.id}`);
+  expect(saved.ok()).toBeTruthy();
+  record = await saved.json();
+  expect(record.body).toBe(
+    "Existing prose.\n\n- [x] Preserve this task\nTyped after checking.\nSaved on keyboard close.",
+  );
 });
