@@ -152,9 +152,14 @@ test("grouped parent headers expose scope approval and Review acceptance", async
     });
 
     await page.goto("/");
-    await page.getByLabel("Filter tickets").fill(`label:${label}`);
     if (layout === "Table")
       await page.getByRole("button", { name: "Table", exact: true }).click();
+    // Saved views have independent filters and grouping. Configure the view
+    // whose parent headers this scenario actually exercises.
+    await page.getByLabel("Filter tickets").fill(`label:${label}`);
+    await page.getByRole("button", { name: "View options", exact: true }).click();
+    await page.getByLabel("Group by").selectOption("parent");
+    await page.keyboard.press("Escape");
 
     const plannedHeader = page
       .locator(".group-header")
