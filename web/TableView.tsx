@@ -91,6 +91,7 @@ export function TableView({
   ctx,
   claims,
   canReorder,
+  priorityPlanning,
   previousPeer,
   collapsed,
   onToggleGroup,
@@ -101,6 +102,7 @@ export function TableView({
   onMove,
   onPriority,
   onPlace,
+  onPlaceInPriority,
   reload,
   writesDisabled,
 }: {
@@ -109,6 +111,7 @@ export function TableView({
   ctx: Context;
   claims: Map<string, Claim>;
   canReorder: boolean;
+  priorityPlanning: boolean;
   previousPeer: (r: RecordFile) => RecordFile | undefined;
   collapsed: Set<string>;
   onToggleGroup: (key: string) => void;
@@ -118,7 +121,17 @@ export function TableView({
   onOpen: (id: string) => void;
   onMove: (record: RecordFile, status: string) => void;
   onPriority: (record: RecordFile, priority: number) => void;
-  onPlace: (draggedId: string, target: RecordFile) => void;
+  onPlace: (
+    draggedId: string,
+    target: RecordFile,
+    placement: "before" | "after",
+  ) => void;
+  onPlaceInPriority: (
+    draggedId: string,
+    priority: number,
+    position?: "first" | "last" | "before" | "after",
+    anchor?: RecordFile,
+  ) => void;
   reload: () => Promise<void>;
   writesDisabled: boolean;
 }) {
@@ -468,6 +481,16 @@ export function TableView({
                     tableSlot(g.key, after ? "$end" : target.meta.id),
                   );
                   e.dataTransfer.dropEffect = "move";
+                } else if (
+                  priorityPlanning &&
+                  ticketDrag?.session &&
+                  g.defaults.priority !== undefined
+                ) {
+                  ticketDrag.previewInPriority(
+                    g.defaults.priority,
+                    tableSlot(g.key, "$end"),
+                  );
+                  e.dataTransfer.dropEffect = "move";
                 } else {
                   ticketDrag?.clearPreview();
                   e.dataTransfer.dropEffect = "none";
@@ -503,6 +526,11 @@ export function TableView({
                       writesDisabled={writesDisabled}
                     />
                   </td>
+                </tr>
+              )}
+              {priorityPlanning && groupBy === "priority" && (
+                <tr className="priority-boundary">
+                  <td colSpan={columns}>Start of {g.title} priority</td>
                 </tr>
               )}
               {!isCollapsed &&
@@ -544,6 +572,24 @@ export function TableView({
                         </td>
                         <td className="row-number">{++row}</td>
                         <td className="title-cell">
+                          {canReorder && (
+                            <span
+                              className="drag-handle"
+                              draggable
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`Drag ${r.meta.title} to reorder`}
+                              title="Drag to reorder"
+                              onDragStart={(e) =>
+                                e.dataTransfer.setData(
+                                  "text/workboard-ticket",
+                                  r.meta.id,
+                                )
+                              }
+                            >
+                              ⠿
+                            </span>
+                          )}
                           <button
                             className="ticket-link"
                             draggable={canReorder}
@@ -662,11 +708,23 @@ export function TableView({
                             aria-label={`Priority of ${r.meta.title}`}
                             value={priorityOf(r)}
                             onChange={(e) =>
-                              void changeSelected(
-                                r,
-                                "priority",
-                                Number(e.target.value),
+                              priorityPlanning &&
+                              !(
+                                isCellSelected(r.meta.id, "priority") &&
+                                selectedCells().filter(
+                                  (cell) => cell.column === "priority",
+                                ).length > 1
                               )
+                                ? onPlaceInPriority(
+                                    r.meta.id,
+                                    Number(e.target.value),
+                                    "last",
+                                  )
+                                : void changeSelected(
+                                    r,
+                                    "priority",
+                                    Number(e.target.value),
+                                  )
                             }
                           >
                             {priorities.map((p, i) => (
@@ -718,7 +776,99 @@ export function TableView({
                             reload={reload}
                           />
                         </td>
-                        {canReorder && (
+                        {priorityPlanning ? (
+                          <td>
+                            {(() => {
+                              const position = g.items.findIndex(
+                                (item) => item.meta.id === r.meta.id,
+                              );
+                              const earlier = g.items[position - 1];
+                              const later = g.items[position + 1];
+                              return (
+                                <div className="order-controls">
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} to first position`}
+                                    disabled={!earlier}
+                                    onClick={() =>
+                                      onPlaceInPriority(
+                                        r.meta.id,
+                                        priorityOf(r),
+                                        "first",
+                                      )
+                                    }
+                                  >
+                                    ⇤
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} earlier`}
+                                    disabled={!earlier}
+                                    onClick={() => {
+                                      if (earlier)
+                                        onPlaceInPriority(
+                                          r.meta.id,
+                                          priorityOf(r),
+                                          "before",
+                                          earlier,
+                                        );
+                                    }}
+                                  >
+                                    <ArrowUpIcon />
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} later`}
+                                    disabled={!later}
+                                    onClick={() => {
+                                      if (later)
+                                        onPlaceInPriority(
+                                          r.meta.id,
+                                          priorityOf(r),
+                                          "after",
+                                          later,
+                                        );
+                                    }}
+                                  >
+                                    ↓
+                                  </button>
+                                  <button
+                                    className="icon-button"
+                                    aria-label={`Move ${r.meta.title} to last position`}
+                                    disabled={!later}
+                                    onClick={() =>
+                                      onPlaceInPriority(
+                                        r.meta.id,
+                                        priorityOf(r),
+                                        "last",
+                                      )
+                                    }
+                                  >
+                                    ⇥
+                                  </button>
+                                  <select
+                                    className="order-priority"
+                                    aria-label={`Move ${r.meta.title} to priority`}
+                                    value={priorityOf(r)}
+                                    onChange={(e) =>
+                                      onPlaceInPriority(
+                                        r.meta.id,
+                                        Number(e.target.value),
+                                        "last",
+                                      )
+                                    }
+                                  >
+                                    {priorities.map((priority, index) => (
+                                      <option value={index} key={priority}>
+                                        {priority}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              );
+                            })()}
+                          </td>
+                        ) : canReorder ? (
                           <td>
                             <button
                               className="icon-button"
@@ -726,13 +876,14 @@ export function TableView({
                               disabled={!previousPeer(r)}
                               onClick={() => {
                                 const target = previousPeer(r);
-                                if (target) onPlace(r.meta.id, target);
+                                if (target)
+                                  onPlace(r.meta.id, target, "before");
                               }}
                             >
                               <ArrowUpIcon />
                             </button>
                           </td>
-                        )}
+                        ) : null}
                       </DragRow>
                     </Fragment>
                   );
@@ -746,6 +897,11 @@ export function TableView({
                   columns={columns}
                   slot={tableSlot(g.key, "$end")}
                 />
+              )}
+              {priorityPlanning && groupBy === "priority" && (
+                <tr className="priority-boundary">
+                  <td colSpan={columns}>End of {g.title} priority</td>
+                </tr>
               )}
               {!isCollapsed && (
                 <tr className="add-row">

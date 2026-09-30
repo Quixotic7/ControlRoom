@@ -32,9 +32,25 @@ export const defaultViews: ProjectView[] = [
     groupBy: "none",
     sort: "number",
   },
+  {
+    id: "priority-planning",
+    name: "Priority planning",
+    layout: "table",
+    filter: "",
+    groupBy: "priority",
+    sort: "priority",
+  },
 ];
-export const viewsOf = (state: ProjectState) =>
-  state.config.views?.length ? state.config.views : defaultViews;
+// Projects created before Priority planning saved their own view list. Keep
+// that list intact, but surface the new built-in preset alongside it instead
+// of making an existing project recreate its views to discover planning.
+export const viewsOf = (state: ProjectState) => {
+  const views = state.config.views?.length ? state.config.views : defaultViews;
+  const planning = defaultViews.find((view) => view.id === "priority-planning")!;
+  return views.some((view) => view.id === planning.id)
+    ? views
+    : [...views, planning];
+};
 
 export const groupByOptions: Record<GroupBy, string> = {
   none: "No grouping",
@@ -46,7 +62,7 @@ export const groupByOptions: Record<GroupBy, string> = {
 };
 export const sortOptions: Record<SortBy, string> = {
   manual: "Manual order",
-  priority: "Priority, then manual",
+  priority: "Priority, then rank",
   number: "Ticket number",
   updated: "Recently updated",
   title: "Title",

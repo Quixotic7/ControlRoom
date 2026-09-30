@@ -928,9 +928,10 @@ test("saved views: create, rename, change layout and grouping, save, delete", as
   expect(state.config.views.map((v: any) => v.name)).toEqual([
     "Board",
     "Table",
+    "Priority planning",
     "By owner",
   ]);
-  expect(state.config.views[2]).toMatchObject({
+  expect(state.config.views[3]).toMatchObject({
     layout: "board",
     groupBy: "owner",
   });
@@ -944,6 +945,7 @@ test("saved views: create, rename, change layout and grouping, save, delete", as
   expect(state.config.views.map((v: any) => v.name)).toEqual([
     "Board",
     "Table",
+    "Priority planning",
   ]);
 });
 

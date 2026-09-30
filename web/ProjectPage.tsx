@@ -27,6 +27,7 @@ import {
   groupTickets,
   matches,
   parseFilter,
+  priorities,
   priorityOf,
   showsArchived,
   sortOptions,
@@ -199,17 +200,35 @@ export function ProjectPage({
     [tickets, filter, ctx, view.sort],
   );
   const filtering = filter.text.length + filter.terms.length > 0;
-  const groups = useMemo(
-    () =>
-      groupTickets(visible, view.groupBy, ctx).filter(
-        // Empty groups stay as drop targets, but are noise while filtering.
-        (g) =>
-          g.items.length ||
-          !filtering ||
-          (g.record && visible.some((r) => r.meta.id === g.record!.meta.id)),
-      ),
-    [visible, view.groupBy, ctx, filtering],
-  );
+  // A table grouped and sorted by priority is the planning interaction:
+  // priority is the bucket and order is the rank within it. It intentionally
+  // never inherits board placement's status or parent semantics.
+  const priorityPlanning =
+    view.layout === "table" &&
+    view.groupBy === "priority" &&
+    view.sort === "priority";
+  const groups = useMemo(() => {
+    const grouped = groupTickets(visible, view.groupBy, ctx).filter(
+      // Empty groups stay as drop targets, but are noise while filtering.
+      (g) =>
+        g.items.length ||
+        !filtering ||
+        (g.record && visible.some((r) => r.meta.id === g.record!.meta.id)),
+    );
+    if (priorityPlanning && view.groupBy === "priority") {
+      const byKey = new Map(grouped.map((group) => [group.key, group]));
+      return priorities.map(
+        (title, priority) =>
+          byKey.get(`p${priority}`) ?? {
+            key: `p${priority}`,
+            title,
+            items: [],
+            defaults: { priority },
+          },
+      );
+    }
+    return grouped;
+  }, [visible, view.groupBy, ctx, filtering, priorityPlanning]);
   const collapseScope = `${savedView.id}/${view.layout}/${view.groupBy}`;
   const [collapseState, setCollapseState] = useState<{
     scope: string;
@@ -294,33 +313,45 @@ export function ProjectPage({
       await reload();
     } catch (e) {
       onError(String(e));
+      void reload();
     }
   }
   const move = (r: RecordFile, status: string) =>
     r.meta.status !== status && void patch(r, { status });
   const setPriority = (r: RecordFile, priority: number) =>
     priorityOf(r) !== priority && void patch(r, { priority });
+  // Filters deliberately supply the anchors. Hidden tickets are not patched,
+  // so their relative order is retained when a visible ticket is moved.
   // Tickets that share an ordering slot with `target` in this view.
   const peersOf = (target: RecordFile, exclude?: string) =>
     visible.filter(
       (r) =>
         r.meta.id !== exclude &&
-        r.meta.status === target.meta.status &&
-        (view.sort !== "priority" || priorityOf(r) === priorityOf(target)) &&
-        (view.groupBy !== "parent" ||
-          (r.meta.parent ?? null) === (target.meta.parent ?? null)),
+        (priorityPlanning
+          ? priorityOf(r) === priorityOf(target)
+          : r.meta.status === target.meta.status &&
+            (view.sort !== "priority" ||
+              priorityOf(r) === priorityOf(target)) &&
+            (view.groupBy !== "parent" ||
+              (r.meta.parent ?? null) === (target.meta.parent ?? null))),
     );
   const previousPeer = (r: RecordFile) => {
     const peers = peersOf(r);
     return peers[peers.findIndex((p) => p.meta.id === r.meta.id) - 1];
   };
-  function place(draggedId: string, target: RecordFile, insertAfter = false) {
+  function place(
+    draggedId: string,
+    target: RecordFile,
+    placement: "before" | "after" = "before",
+  ) {
     const r = ticketDrag?.records.get(draggedId) ?? ctx.byId.get(draggedId);
     if (!r || r.meta.id === target.meta.id) return;
     const role = ctx.columns.find((c) => c.id === target.meta.status)?.role;
     if (
       !canReorder ||
-      (role === "review" && r.meta.status !== target.meta.status)
+      (!priorityPlanning &&
+        role === "review" &&
+        r.meta.status !== target.meta.status)
     ) {
       if (r.meta.status !== target.meta.status) move(r, target.meta.status);
       else if (!canReorder)
@@ -330,6 +361,7 @@ export function ProjectPage({
       return;
     }
     if (
+      !priorityPlanning &&
       view.groupBy === "parent" &&
       (r.meta.parent ?? null) !== (target.meta.parent ?? null)
     ) {
@@ -340,7 +372,7 @@ export function ProjectPage({
     }
     const peers = peersOf(target, r.meta.id);
     const index = peers.findIndex((p) => p.meta.id === target.meta.id);
-    const slot = index + Number(insertAfter);
+    const slot = index + Number(placement === "after");
     const before = slot > 0 ? orderOf(peers[slot - 1]) : orderOf(target) - 1024;
     const after = slot < peers.length ? orderOf(peers[slot]) : before + 1024;
     const expected = peers.map((p) => ({
@@ -364,9 +396,57 @@ export function ProjectPage({
       expected,
       actor,
       patch: {
-        status: target.meta.status,
+        // Priority planning must not silently move workflow stage or parent.
+        status: priorityPlanning ? r.meta.status : target.meta.status,
         order: (before + after) / 2,
         ...(view.sort === "priority" ? { priority: priorityOf(target) } : {}),
+      },
+    })
+      .then(reload)
+      .catch((e) => {
+        onError(String(e));
+        void reload();
+      });
+  }
+
+  function placeInPriority(
+    draggedId: string,
+    priority: number,
+    position: "first" | "last" | "before" | "after" = "last",
+    anchor?: RecordFile,
+  ) {
+    const r = ticketDrag?.records.get(draggedId) ?? ctx.byId.get(draggedId);
+    if (!r || !priorityPlanning) return;
+    const peers = visible.filter(
+      (item) => item.meta.id !== r.meta.id && priorityOf(item) === priority,
+    );
+    const target =
+      anchor && priorityOf(anchor) === priority
+        ? anchor
+        : position === "first"
+          ? peers[0]
+          : peers.at(-1);
+    if (target) {
+      place(
+        r.meta.id,
+        target,
+        position === "first" || position === "before" ? "before" : "after",
+      );
+      return;
+    }
+    // An empty visible bucket has no target revision to guard. Its new rank
+    // is placed beyond all visible anchors; a concurrent write still receives
+    // the source revision check and is reconciled by reload on failure.
+    const orders = visible.map(orderOf);
+    void api(`/records/${r.meta.id}/placement`, "POST", {
+      revision: r.revision,
+      expected: [],
+      actor,
+      patch: {
+        status: r.meta.status,
+        priority,
+        order: (position === "first" ? Math.min(...orders) : Math.max(...orders)) +
+          (position === "first" ? -1024 : 1024),
       },
     })
       .then(reload)
@@ -397,11 +477,16 @@ export function ProjectPage({
             current?.preview ? { ...current, preview: null } : current,
           ),
         commit: () => {
-          if (ticketDrag?.preview)
+          if (ticketDrag?.preview?.target)
             place(
               ticketDrag.source.meta.id,
               ticketDrag.preview.target,
-              ticketDrag.preview.after,
+              ticketDrag.preview.after ? "after" : "before",
+            );
+          else if (ticketDrag?.preview?.priority !== undefined)
+            placeInPriority(
+              ticketDrag.source.meta.id,
+              ticketDrag.preview.priority,
             );
           setTicketDrag(null);
         },
@@ -422,24 +507,33 @@ export function ProjectPage({
               ? current
               : { ...current, preview: { target, after, slot } };
           }),
+        previewInPriority: (priority, slot) =>
+          setTicketDrag((current) =>
+            !current ||
+            (current.preview?.priority === priority &&
+              current.preview.slot === slot)
+              ? current
+              : { ...current, preview: { after: true, priority, slot } },
+          ),
         shift: (r, by) => {
           if (!canReorder) return;
           const peers = peersOf(r),
             index = peers.findIndex((p) => p.meta.id === r.meta.id),
             target = peers[index + by];
-          if (target) place(r.meta.id, target, by > 0);
+          if (target) place(r.meta.id, target, by > 0 ? "after" : "before");
         },
         canPlace: (target) =>
           !!ticketDrag &&
           canReorder &&
           target.meta.id !== ticketDrag.source.meta.id &&
-          (view.groupBy !== "parent" ||
+          (priorityPlanning ||
+            view.groupBy !== "parent" ||
             (target.meta.parent ?? null) ===
               (ticketDrag.source.meta.parent ?? null)) &&
-          !(
+          (priorityPlanning || !(
             ctx.columns.find((c) => c.id === target.meta.status)?.role ===
               "review" && ticketDrag.source.meta.status !== target.meta.status
-          ),
+          )),
       }}
     >
       <div
@@ -745,6 +839,15 @@ export function ProjectPage({
             {visibility.error}
           </p>
         )}
+        {view.layout === "table" && (
+          <p className="reorder-status" role="status">
+            {priorityPlanning
+              ? "Priority planning is active: priority is the urgency bucket and rank is the order within it. Dragging never changes status or parent; filtered moves use the visible tickets as anchors."
+              : canReorder
+                ? "Manual reordering is active for this saved view."
+                : "Manual reordering is inactive for this saved sort."}
+          </p>
+        )}
         {!!tickets.length && (
           <BulkEditBar
             selected={selectedRecords}
@@ -806,6 +909,7 @@ export function ProjectPage({
             ctx={ctx}
             claims={claims}
             canReorder={canReorder}
+            priorityPlanning={priorityPlanning}
             previousPeer={previousPeer}
             collapsed={collapsed}
             onToggleGroup={toggleGroup}
@@ -818,6 +922,7 @@ export function ProjectPage({
             onMove={move}
             onPriority={setPriority}
             onPlace={place}
+            onPlaceInPriority={placeInPriority}
             reload={reload}
             writesDisabled={state.branchChanged}
           />

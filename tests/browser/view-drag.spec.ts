@@ -43,7 +43,12 @@ test("view tabs drag in both directions, retain active drafts, and persist after
     .dragTo(page.locator('[data-view-id="board"]'), {
       targetPosition: { x: 3, y: 12 },
     });
-  await expect.poll(order).toEqual(["third", "board", "table"]);
+  await expect.poll(order).toEqual([
+    "third",
+    "board",
+    "table",
+    "priority-planning",
+  ]);
   await expect(
     page.getByRole("button", { name: "Board", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -59,15 +64,30 @@ test("view tabs drag in both directions, retain active drafts, and persist after
     .dragTo(target, {
       targetPosition: { x: (await target.boundingBox())!.width - 3, y: 12 },
     });
-  await expect.poll(order).toEqual(["board", "table", "third"]);
+  await expect.poll(order).toEqual([
+    "board",
+    "table",
+    "third",
+    "priority-planning",
+  ]);
   await page.reload();
-  await expect.poll(order).toEqual(["board", "table", "third"]);
+  await expect.poll(order).toEqual([
+    "board",
+    "table",
+    "third",
+    "priority-planning",
+  ]);
   await page.getByRole("button", { name: "Third view", exact: true }).click();
   await page
     .getByRole("button", { name: "Options for Third view view" })
     .click();
   await page.getByRole("button", { name: "Move left", exact: true }).click();
-  await expect.poll(order).toEqual(["board", "third", "table"]);
+  await expect.poll(order).toEqual([
+    "board",
+    "third",
+    "table",
+    "priority-planning",
+  ]);
 });
 test("a configuration change during dragging is rejected without overwriting newer views", async ({
   page,
@@ -98,9 +118,10 @@ test("a configuration change during dragging is rejected without overwriting new
   expect(latest.config.views.map((v: any) => v.id)).toEqual([
     "board",
     "table",
+    "priority-planning",
     "third",
   ]);
-  expect(latest.config.views[2].name).toBe("Renamed elsewhere");
+  expect(latest.config.views[3].name).toBe("Renamed elsewhere");
   await transfer.dispose();
 });
 test("dropping on the same view does not write configuration", async ({

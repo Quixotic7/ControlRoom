@@ -4,7 +4,10 @@ import type { RecordFile } from "../src/types";
 export type DragPreview = {
   after: boolean;
   slot: string;
-  target: RecordFile;
+  target?: RecordFile;
+  // Empty priority buckets have no ticket to act as a target. Keep the
+  // destination explicit so dropping there still changes only priority/rank.
+  priority?: number;
 };
 export type DragSession = {
   height: number;
@@ -19,6 +22,7 @@ type DragContext = {
   session: DragSession | null;
   start: (r: RecordFile, height: number) => void;
   previewAt: (target: RecordFile, after: boolean, slot: string) => void;
+  previewInPriority: (priority: number, slot: string) => void;
   canPlace: (r: RecordFile) => boolean;
   shift: (r: RecordFile, by: number) => void;
 };
@@ -29,7 +33,7 @@ export function useTicketDrag(record: RecordFile) {
   const preview = ctx?.session?.preview;
   return {
     edge:
-      preview?.target.meta.id === record.meta.id
+      preview?.target?.meta.id === record.meta.id
         ? preview.after
           ? ("after" as const)
           : ("before" as const)
