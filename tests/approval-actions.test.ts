@@ -139,3 +139,45 @@ test("agents cannot approve scope through approval actions", async (t) => {
   );
   assert.equal(store.get(ticket.meta.id).meta.scopeApproved, undefined);
 });
+
+test("identical bulk acceptance retries use the review receipt before stale and stage checks", async (t) => {
+  const store = fixture(t);
+  const review = await store.create(
+    "ticket",
+    {
+      title: "Retry acceptance",
+      status: "review",
+      handoff: "Ready to accept",
+      evidence: "Checks passed",
+    },
+    "Keep this body",
+    human,
+  );
+  const requestId = randomUUID();
+  const input = {
+    action: "accept-review" as const,
+    target: "done",
+    items: [{ id: review.meta.id, revision: review.revision, requestId }],
+  };
+
+  const first = await store.approvalActions(input, human);
+  assert.equal(first.results[0].outcome, "succeeded");
+  const accepted = store.get(review.meta.id);
+
+  const replay = await store.approvalActions(input, human);
+  assert.equal(replay.results[0].outcome, "succeeded");
+  assert.equal(replay.results[0].record?.revision, accepted.revision);
+  assert.equal(
+    store.comments().filter((comment) => comment.ticket === review.meta.id)
+      .length,
+    1,
+  );
+
+  const changed = await store.approvalActions(
+    { ...input, items: [{ ...input.items[0], revision: accepted.revision }] },
+    human,
+  );
+  assert.equal(changed.results[0].outcome, "failed");
+  assert.equal(changed.results[0].status, 409);
+  assert.match(changed.results[0].error ?? "", /different content/);
+});

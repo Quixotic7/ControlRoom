@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Column, RecordFile } from "../src/types";
 import { actor, api, recordId } from "./api";
+import { randomUUID } from "./browserUtils";
 import type { Context } from "./model";
 
 export type ApprovalAction = "approve-scope" | "accept-review";
@@ -72,9 +73,7 @@ export async function applyApprovalAction(
       items: records.map((record) => ({
         id: record.meta.id,
         revision: record.revision,
-        ...(action === "accept-review"
-          ? { requestId: crypto.randomUUID() }
-          : {}),
+        ...(action === "accept-review" ? { requestId: randomUUID() } : {}),
       })),
       actor,
     },

@@ -1783,41 +1783,23 @@ export class Store {
         .parse(input);
       if (action.action === "accept-review") {
         if (!action.target) throw new Problem(422, "Choose a Done destination");
-        if (
-          this.config().columns.find((column) => column.id === action.target)
-            ?.role !== "done"
-        )
-          throw new Problem(422, "Choose a destination with the done role");
       }
       const results = action.items.map((item) => {
         try {
-          const current = this.get(item.id);
-          if (current.revision !== item.revision)
-            throw new Problem(
-              409,
-              "This record changed. Review the current version before deciding.",
-              { current },
-            );
-          if (action.action === "approve-scope") {
-            if (current.meta.kind !== "ticket")
-              throw new Problem(422, "Only tickets can have approved scope");
-            if (current.meta.scopeApproved)
-              throw new Problem(422, "Scope is already explicitly approved");
-            const inherited = this.scope(current);
-            if (inherited)
-              throw new Problem(
-                422,
-                `Scope is inherited from #${inherited.meta.number ?? inherited.meta.id}`,
-              );
-            const record = this.updateNow(
-              current.meta.id,
-              current.revision,
+          if (action.action === "accept-review") {
+            // reviewOutcomeNow must see retries before any revision or stage
+            // precheck. Its durable receipt makes a lost-response retry
+            // succeed without writing a second review comment, while its
+            // fingerprint still rejects request IDs reused with new content.
+            const record = this.reviewOutcomeNow(
+              item.id,
               {
-                scopeApproved: true,
-                scopeApprovedAt: now(),
-                scopeApprovedBy: actor,
+                requestId: item.requestId ?? crypto.randomUUID(),
+                revision: item.revision,
+                outcome: "accept",
+                target: action.target,
+                feedback: "Accepted from the board or table.",
               },
-              undefined,
               actor,
             );
             return {
@@ -1826,23 +1808,32 @@ export class Store {
               record,
             };
           }
-          const role = this.config().columns.find(
-            (column) => column.id === current.meta.status,
-          )?.role;
-          if (current.meta.kind !== "ticket" || role !== "review")
+          const current = this.get(item.id);
+          if (current.revision !== item.revision)
+            throw new Problem(
+              409,
+              "This record changed. Review the current version before deciding.",
+              { current },
+            );
+          if (current.meta.kind !== "ticket")
+            throw new Problem(422, "Only tickets can have approved scope");
+          if (current.meta.scopeApproved)
+            throw new Problem(422, "Scope is already explicitly approved");
+          const inherited = this.scope(current);
+          if (inherited)
             throw new Problem(
               422,
-              "Only a ticket in Review can be accepted into Done",
+              `Scope is inherited from #${inherited.meta.number ?? inherited.meta.id}`,
             );
-          const record = this.reviewOutcomeNow(
+          const record = this.updateNow(
             current.meta.id,
+            current.revision,
             {
-              requestId: item.requestId ?? crypto.randomUUID(),
-              revision: current.revision,
-              outcome: "accept",
-              target: action.target,
-              feedback: "Accepted from the board or table.",
+              scopeApproved: true,
+              scopeApprovedAt: now(),
+              scopeApprovedBy: actor,
             },
+            undefined,
             actor,
           );
           return {
