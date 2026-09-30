@@ -764,16 +764,19 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 .column-setting {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 46fr) minmax(0, 30fr) repeat(3, 30px);
+  grid-template-rows: auto auto auto;
   gap: 6px;
   margin-bottom: 8px;
-  align-items: end;
+  align-items: start;
 }
 .column-display-name,
 .column-role {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+  display: grid;
+  grid-row: 1 / -1;
+  grid-template-rows: subgrid;
+  gap: 6px;
   font-family: var(--display);
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -781,14 +784,18 @@ textarea::placeholder {
   color: var(--muted);
 }
 .column-display-name {
-  width: 46%;
+  min-width: 0;
 }
 .column-role {
-  width: 30%;
+  min-width: 0;
 }
 .column-setting input,
 .column-setting select {
   width: 100%;
+}
+.column-setting > .icon-button {
+  grid-row: 2;
+  margin-top: 0;
 }
 .column-setting small {
   font-family: var(--body);
@@ -2166,6 +2173,10 @@ dialog::backdrop {
   }
   .fields.two {
     grid-template-columns: 1fr;
+  }
+  .column-setting {
+    grid-template-columns: minmax(0, 46fr) minmax(0, 30fr) repeat(3, 28px);
+    gap: 4px;
   }
   .record-dialog {
     width: 94vw;
