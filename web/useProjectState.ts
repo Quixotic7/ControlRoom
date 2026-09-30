@@ -51,17 +51,17 @@ export function useProjectState() {
     active();
     window.addEventListener("focus", active);
     document.addEventListener("visibilitychange", active);
-    // Two windows can both be visible. Actual interaction, not background
+    // Two windows can both be visible. Pointer/focus interaction, not background
     // refreshes or mounting a tab, determines the next capture destination.
+    // Focus already covers keyboard-only window switching, while posting here on
+    // every key makes ordinary typing rewrite capture metadata per keystroke.
     window.addEventListener("pointerdown", activate);
-    window.addEventListener("keydown", activate);
     return () => {
       events.close();
       clearInterval(interval);
       window.removeEventListener("focus", active);
       document.removeEventListener("visibilitychange", active);
       window.removeEventListener("pointerdown", activate);
-      window.removeEventListener("keydown", activate);
     };
   }, [reload]);
   return { state, reload, loadError };

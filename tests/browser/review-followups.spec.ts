@@ -64,7 +64,7 @@ test("review instructions appear beside review actions without searching the thr
     page.getByRole("button", { name: "Accept into Done", exact: true }),
   ).toBeVisible();
 });
-test("actual interaction activates capture; background refresh and unfocused events do not", async ({
+test("pointer or focus interaction activates capture; typing and background events do not", async ({
   page,
 }) => {
   let activations = 0;
@@ -88,8 +88,8 @@ test("actual interaction activates capture; background refresh and unfocused eve
   await page.evaluate(() =>
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift" })),
   );
-  await expect.poll(() => activations).toBeGreaterThan(second);
-  const final = activations;
+  await page.request.get("/api/state");
+  expect(activations).toBe(second);
   await page.evaluate(() => {
     (window as any).testFocused = false;
     window.dispatchEvent(new Event("focus"));
@@ -99,5 +99,5 @@ test("actual interaction activates capture; background refresh and unfocused eve
   // Wait through a real state read initiated by the synthetic focus event.
   await page.request.get("/api/state");
   await expect(page.locator(".board-head")).toBeVisible();
-  expect(activations).toBe(final);
+  expect(activations).toBe(second);
 });
