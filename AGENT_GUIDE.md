@@ -18,6 +18,12 @@ Launch from your code checkout or pass `--worktree /absolute/code/checkout`. `--
 
 Existing projects may still keep records in `.workboard/`; after upgrading, use `.workboard/controlroom` until explicitly migrated. The legacy `workboard` command and `WORKBOARD_ACTOR` / `WORKBOARD_ACTOR_KIND` variables remain aliases. Follow the README migration steps; do not rename a live board or create a second data directory.
 
+### Optional conversation aliases
+
+Control Room does not register slash commands in arbitrary coding-agent chats. A human may teach an agent short text conventions for the current conversation, or save the conventions in that project's agent instructions so later chats learn them. Treat an unknown `/cr...` phrase as ordinary text until its meaning has been defined; never infer that shorthand grants permission to write.
+
+A recommended read-only convention is `/crrefresh`: read the latest board state, compare ticket `updatedAt` values, revisions and conversations with the previous board check in the conversation, then summarize every changed ticket with its status, new human feedback or questions, blockers and next safe action. On first use, establish a baseline and summarize currently actionable updates. `/crnext` can mean inspect and summarize the next approved ticket without claiming it. Run these reads from the intended project's checkout using its Control Room MCP connection or project-local launcher. Aliases do not claim, move, assign or implement tickets and do not replace the managed-worker instructions below.
+
 The service defaults to loopback. When the human enables LAN mode (`serve --lan`), CLI/MCP discovery still uses `127.0.0.1` and the existing local token. Host Settings controls whether remote browsers require pairing and how long newly paired access lasts; never send the local token to another device. Preserve the saved network/authentication settings and launcher port on upgrades. `serve --local` explicitly returns to local-only mode. See the README for pairing, restart requirements, HTTP limitations, and host-only controls.
 
 ## Identity
