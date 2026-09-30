@@ -48,18 +48,26 @@ export function ProgressReport({
         flowing ? "verified-running" : recent ? "recent-reported" : undefined
       }
     >
-      {signal && (
+      {role === "progress" && !record.meta.blocked && (
         <span
-          className="activity-signal"
-          aria-label="Verified running agent"
-          title="The local service verified this managed worker process. Checked every five seconds."
+          className={`activity-signal${signal ? "" : " signal-stale"}`}
+          aria-label={signal ? "Verified running agent" : "Idle waveform"}
+          title={
+            signal
+              ? "The local service verified this managed worker process. Checked every five seconds."
+              : "The waveform stays still until the local service verifies a running worker. Work from external chats is not process-verified."
+          }
         >
           <span className="activity-waveform" aria-hidden="true">
             {Array.from({ length: 32 }, (_, index) => (
               <i key={index} />
             ))}
           </span>
-          <span>{activity?.worker} · verified running</span>
+          <span>
+            {signal
+              ? `${activity?.worker} · verified running`
+              : "No verified running agent"}
+          </span>
         </span>
       )}
       {role === "progress" && (
@@ -67,7 +75,7 @@ export function ProgressReport({
           {stageName || record.meta.status} · {elapsed} in stage
         </span>
       )}
-      {role === "progress" && !signal && (
+      {role === "progress" && record.meta.blocked && !signal && (
         <span className="muted">No verified running agent</span>
       )}
       {claim && (

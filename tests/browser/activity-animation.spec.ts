@@ -128,7 +128,7 @@ test("only verified running workers animate; reports and claims remain distinct"
       .evaluate((element) => getComputedStyle(element).animationName),
   ).toBe("activity-wave");
 
-  for (const record of [blocked, review, expired]) {
+  for (const record of [blocked, review]) {
     await expect(
       page.locator(
         `.ticket-card[data-id="${record.meta.id}"] .activity-signal`,
@@ -136,9 +136,15 @@ test("only verified running workers animate; reports and claims remain distinct"
     ).toHaveCount(0);
   }
 
-  for (const record of [noReport, claimOnly, stale]) {
+  for (const record of [noReport, claimOnly, stale, expired]) {
     const idle = page.locator(`.ticket-card[data-id="${record.meta.id}"]`);
-    await expect(idle.locator(".activity-signal")).toHaveCount(0);
+    await expect(idle.getByLabel("Idle waveform")).toBeVisible();
+    expect(
+      await idle
+        .locator(".activity-waveform i")
+        .first()
+        .evaluate((node) => getComputedStyle(node).animationName),
+    ).toBe("none");
     await expect(idle.getByText("No verified running agent")).toBeVisible();
     expect(
       await idle.evaluate((node) => getComputedStyle(node).animationName),
@@ -146,7 +152,7 @@ test("only verified running workers animate; reports and claims remain distinct"
   }
   // Stop telemetry must remove animation even when the record/report is unchanged.
   live = false;
-  await expect(card.locator(".activity-signal")).toHaveCount(0, {
+  await expect(card.getByLabel("Idle waveform")).toBeVisible({
     timeout: 10000,
   });
   await expect(card.getByText("No verified running agent")).toBeVisible();
@@ -155,7 +161,7 @@ test("only verified running workers animate; reports and claims remain distinct"
     timeout: 10000,
   });
   unavailable = true;
-  await expect(card.locator(".activity-signal")).toHaveCount(0, {
+  await expect(card.getByLabel("Idle waveform")).toBeVisible({
     timeout: 10000,
   });
   unavailable = false;
@@ -228,5 +234,11 @@ test("custom progress-role statuses keep their own name without implying live wo
   await expect(card.getByText(/Failed Review · .* in stage/)).toBeVisible();
   await expect(card.getByText(/In Progress/)).toHaveCount(0);
   await expect(card.getByText("No verified running agent")).toBeVisible();
-  await expect(card.locator(".activity-signal")).toHaveCount(0);
+  await expect(card.getByLabel("Idle waveform")).toBeVisible();
+  expect(
+    await card
+      .locator(".activity-waveform i")
+      .first()
+      .evaluate((node) => getComputedStyle(node).animationName),
+  ).toBe("none");
 });
