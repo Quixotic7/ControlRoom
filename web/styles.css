@@ -767,13 +767,90 @@ textarea::placeholder {
   display: flex;
   gap: 6px;
   margin-bottom: 8px;
-  align-items: center;
+  align-items: end;
 }
-.column-setting input {
-  width: 45%;
+.column-display-name,
+.column-role {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--display);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  color: var(--muted);
 }
+.column-display-name {
+  width: 46%;
+}
+.column-role {
+  width: 30%;
+}
+.column-setting input,
 .column-setting select {
-  width: 32%;
+  width: 100%;
+}
+.column-setting small {
+  font-family: var(--body);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+}
+.workflow-defaults {
+  margin-bottom: 6px;
+}
+.workflow-default-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+  font-size: 12px;
+}
+.workflow-default-list li {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.workflow-default-list span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.workflow-message {
+  display: block;
+  margin-bottom: 12px;
+}
+.workflow-reconciliation {
+  background: var(--warning-soft, var(--subtle));
+  border: 1px solid var(--warning, var(--accent));
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.workflow-reconciliation p {
+  margin: 5px 0 10px;
+}
+.workflow-removal {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+.workflow-removal p {
+  margin: 5px 0 10px;
+}
+.project-workflow-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.project-workflow-actions .help {
+  margin: 0;
 }
 .settings-actions {
   grid-column: 1/-1;

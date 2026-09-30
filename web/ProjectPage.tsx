@@ -58,6 +58,7 @@ export function ProjectPage({
   reload,
   onError,
   onNotice,
+  onCustomizeStatuses,
 }: {
   state: ProjectState;
   ctx: Context;
@@ -68,6 +69,7 @@ export function ProjectPage({
   reload: () => Promise<void>;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
+  onCustomizeStatuses: () => void;
 }) {
   const saved = viewsOf(state);
   const savedView = saved.find((v) => v.id === viewId) ?? saved[0];
@@ -449,6 +451,21 @@ export function ProjectPage({
         }
       >
         <h1 className="sr-only">{state.config.name} views</h1>
+        {view.layout === "board" && (
+          <div className="project-workflow-actions">
+            <button
+              className="button small"
+              onClick={onCustomizeStatuses}
+              aria-describedby="customize-statuses-help"
+            >
+              <SlidersIcon />
+              Customize statuses
+            </button>
+            <span id="customize-statuses-help" className="help">
+              Add, rename, reorder, or safely remove board statuses.
+            </span>
+          </div>
+        )}
         <nav className="view-tabs" aria-label="Project views">
           {saved.map((v) => {
             const active = v.id === savedView.id;
