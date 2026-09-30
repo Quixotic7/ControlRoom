@@ -858,12 +858,24 @@ export class Store {
           "This record changed. Reload it before taking over the assignment.",
           { current: old },
         );
+      const role = this.config().columns.find(
+        (c) => c.id === old.meta.status,
+      )?.role;
+      if (old.meta.archived || role === "done" || role === "review")
+        throw new Problem(
+          409,
+          "Reopen the ticket for development before taking over",
+        );
       const assignment = old.meta.assignment as Assignment | undefined;
+      const reopenedSubmission =
+        assignment?.state === "submitted" &&
+        (role === "selected" || role === "progress");
       if (
         !assignment ||
         assignment.runId !== expected.runId ||
         assignment.worker !== expected.worker ||
-        !["assigned", "acknowledged"].includes(assignment.state)
+        (!reopenedSubmission &&
+          !["assigned", "acknowledged"].includes(assignment.state))
       )
         throw new Problem(
           409,

@@ -941,3 +941,58 @@ test("takeover refuses active and uncertain original worker processes", async (t
     "run-reassigned-elsewhere",
   );
 });
+
+test("takeover of submitted work requires reopened development and no other live run", async (t) => {
+  const f = await fixture(t);
+  const ticket = await f.create("Reopened submission");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () =>
+      f.store.get(ticket.meta.id).meta.status === "done" &&
+      (f.manager as any).active.size === 0,
+  );
+  await f.manager.stop(run.id, human);
+  const reviewer: Actor = { name: f.config.reviewer.name, kind: "agent" };
+  const take = () =>
+    f.manager.takeover(run.id, f.store.get(ticket.meta.id).revision, reviewer);
+  const patch = (fields: Record<string, unknown>) =>
+    f.store.update(
+      ticket.meta.id,
+      f.store.get(ticket.meta.id).revision,
+      fields,
+      undefined,
+      human,
+    );
+  await assert.rejects(take(), /Reopen the ticket/);
+  await patch({ status: "review" });
+  await assert.rejects(take(), /Reopen the ticket/);
+  await patch({ status: "progress", archived: true });
+  await assert.rejects(take(), /Reopen the ticket/);
+  await patch({ archived: false });
+  const other = {
+    ...run,
+    id: "another-review",
+    kind: "review",
+    state: "awaiting_review",
+  };
+  (f.manager as any).runs.push(other);
+  await assert.rejects(take(), /Another managed run/);
+  (f.manager as any).runs.pop();
+  const original = f.store.get(ticket.meta.id);
+  assert.equal(original.meta.assignment?.state, "submitted");
+  const taken = await take();
+  assert.equal(taken.ticket.meta.assignment?.worker, reviewer.name);
+  assert.equal(taken.ticket.meta.assignment?.mode, "takeover");
+  assert.equal(taken.ticket.meta.status, "progress");
+  assert.equal(taken.run.attempt, run.attempt);
+  assert.deepEqual(taken.ticket.meta.agentReview, original.meta.agentReview);
+  await f.store.claim(ticket.meta.id, reviewer, run.worktree!);
+  await assert.rejects(f.manager.resume(run.id, human), /can no longer resume/);
+});
