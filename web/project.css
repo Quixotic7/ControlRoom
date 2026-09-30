@@ -855,6 +855,65 @@ body,
   border-left-color: var(--signal);
   box-shadow: var(--shadow-md);
 }
+.ticket-card:has(.recent-report) {
+  border-color: color-mix(in srgb, var(--cyan) 68%, var(--line));
+  border-left-color: var(--cyan);
+  background:
+    linear-gradient(
+      105deg,
+      transparent 28%,
+      color-mix(in srgb, var(--cyan) 12%, transparent) 50%,
+      transparent 72%
+    ),
+    var(--surface);
+  background-size:
+    240% 100%,
+    auto;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--cyan) 22%, transparent),
+    0 0 18px color-mix(in srgb, var(--cyan) 24%, transparent),
+    var(--shadow-sm);
+  animation: activity-highlight 3.2s ease-in-out infinite;
+}
+.ticket-card:has(.recent-report):hover {
+  border-color: var(--cyan);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--cyan) 35%, transparent),
+    0 0 24px color-mix(in srgb, var(--cyan) 32%, transparent),
+    var(--shadow-md);
+}
+@keyframes activity-highlight {
+  0%,
+  100% {
+    background-position:
+      115% 0,
+      0 0;
+  }
+  50% {
+    background-position:
+      -15% 0,
+      0 0;
+  }
+}
+.record-content > .progress-report.recent-report {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 58%, var(--line));
+  border-left: 3px solid var(--cyan);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(
+      105deg,
+      transparent 28%,
+      color-mix(in srgb, var(--cyan) 12%, transparent) 50%,
+      transparent 72%
+    ),
+    color-mix(in srgb, var(--cyan) 5%, var(--surface));
+  background-size:
+    240% 100%,
+    auto;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--cyan) 18%, transparent);
+  animation: activity-highlight 3.2s ease-in-out infinite;
+}
 .ticket-card:active {
   cursor: grabbing;
 }
@@ -1026,6 +1085,26 @@ body,
 .project-table tbody tr[data-stage] td:first-child {
   box-shadow: inset 2px 0 0 var(--signal);
 }
+.project-table tbody tr:has(.recent-report) > td {
+  background:
+    linear-gradient(
+      100deg,
+      transparent 35%,
+      color-mix(in srgb, var(--cyan) 11%, transparent) 50%,
+      transparent 65%
+    ),
+    color-mix(in srgb, var(--cyan) 5%, var(--surface));
+  background-size:
+    240% 100%,
+    auto;
+  animation: activity-highlight 3.2s ease-in-out infinite;
+}
+.project-table tbody tr:has(.recent-report) > td:first-child {
+  box-shadow:
+    inset 3px 0 0 var(--cyan),
+    inset 0 1px 0 color-mix(in srgb, var(--cyan) 22%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--cyan) 22%, transparent);
+}
 .row-number {
   width: 48px;
   color: var(--faint);
@@ -1149,6 +1228,16 @@ body,
   border-radius: var(--radius);
   background: var(--accent-soft);
   box-shadow: var(--glow);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ticket-card:has(.recent-report),
+  .project-table tbody tr:has(.recent-report) > td,
+  .record-content > .progress-report.recent-report {
+    animation: none;
+    background-position:
+      50% 0,
+      0 0;
+  }
 }
 /* Shared board/table selection and bulk editing. */
 .bulk-editor {

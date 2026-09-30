@@ -19,7 +19,9 @@ export function ProgressReport({
     start = record.meta.progressStartedAt;
   const expired = !!claim && Date.parse(claim.expiresAt) <= clock;
   const last = [p?.at, claim?.reportedAt].filter(Boolean).sort().at(-1);
-  const stale = !!last && clock - Date.parse(last) > 30 * 60 * 1000;
+  const stale = !!p && clock - Date.parse(p.at) > 30 * 60 * 1000;
+  const recent =
+    role === "progress" && !record.meta.blocked && !expired && !!p && !stale;
   if (!p && !claim && role !== "progress") return null;
   const minutes = start
     ? Math.max(0, Math.floor((clock - Date.parse(start)) / 60000))
@@ -34,8 +36,23 @@ export function ProgressReport({
           : `${Math.floor(minutes / 1440)}d ${Math.floor((minutes % 1440) / 60)}h`;
   return (
     <span
-      className={`progress-report${role === "progress" && !record.meta.blocked && !expired && last && !stale ? " recent-report" : ""}`}
+      className={`progress-report${recent ? " recent-report" : ""}`}
+      data-activity={recent ? "recent-reported" : undefined}
     >
+      {recent && (
+        <span
+          className="activity-signal"
+          aria-label="Recent reported activity"
+          title="Decorative waveform for a recent progress report; not measured agent activity"
+        >
+          <span className="activity-waveform" aria-hidden="true">
+            {Array.from({ length: 12 }, (_, index) => (
+              <i key={index} />
+            ))}
+          </span>
+          <span>Recent reported activity</span>
+        </span>
+      )}
       {role === "progress" && (
         <span title="Wall-clock time since the current In Progress entry; not active agent time">
           In Progress · {elapsed} elapsed
@@ -50,7 +67,12 @@ export function ProgressReport({
         <span title={last}>
           Last reported {ago(last)}
           {p && p.at === last ? ` by ${p.actor.name}` : ""}
-          {stale ? " · stale report" : ""}
+          {p && p.at === last && stale ? " · stale report" : ""}
+        </span>
+      )}
+      {p && p.at !== last && stale && (
+        <span title={p.at}>
+          Progress report {ago(p.at)} by {p.actor.name} · stale report
         </span>
       )}
       {p && (

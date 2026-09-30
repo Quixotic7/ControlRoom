@@ -2123,6 +2123,68 @@ dialog::backdrop {
   overflow-wrap: anywhere;
   margin: 6px 0;
 }
+.activity-signal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--cyan);
+  font-family: var(--display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+.activity-waveform {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 58px;
+  height: 16px;
+  padding: 2px 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cyan) 55%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--cyan) 9%, transparent);
+  box-shadow: inset 0 0 8px color-mix(in srgb, var(--cyan) 18%, transparent);
+}
+.activity-waveform i {
+  display: block;
+  width: 2px;
+  height: 3px;
+  flex: 1 1 2px;
+  border-radius: 1px;
+  background: var(--cyan);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--cyan) 75%, transparent);
+  transform-origin: center;
+  animation: activity-wave 920ms ease-in-out infinite alternate;
+}
+.activity-waveform i:nth-child(3n + 1) {
+  animation-delay: -540ms;
+  animation-duration: 780ms;
+}
+.activity-waveform i:nth-child(3n + 2) {
+  animation-delay: -260ms;
+  animation-duration: 1050ms;
+}
+.activity-waveform i:nth-child(4n) {
+  animation-delay: -710ms;
+  animation-duration: 650ms;
+}
+@keyframes activity-wave {
+  0% {
+    transform: scaleY(0.35);
+    opacity: 0.55;
+  }
+  45% {
+    transform: scaleY(3.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleY(1.2);
+    opacity: 0.72;
+  }
+}
 .progress-meter {
   height: 4px;
   display: block;
@@ -2222,7 +2284,8 @@ dialog::backdrop {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .recent-report > span:first-child::before {
+  .recent-report > span:first-child::before,
+  .activity-waveform i {
     animation: none;
   }
 }
