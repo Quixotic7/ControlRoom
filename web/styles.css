@@ -2322,3 +2322,29 @@ dialog::backdrop {
 .pairing-code input { font-family: var(--mono); }
 .pairing-dialog { width: min(580px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; padding: 0; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
 .pairing-dialog::backdrop { background: var(--bg); }
+
+.question-choices .question-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.question-choice input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.question-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.question-choice:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.questionnaire textarea {
+  min-height: 2.5em;
+}

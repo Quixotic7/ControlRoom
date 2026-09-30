@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { ChoiceAnswers } from "../src/questionnaire";
 import type { Comment } from "../src/types";
 import { actor, api } from "./api";
 export function Questionnaire({
@@ -13,15 +14,40 @@ export function Questionnaire({
   reload: () => Promise<void>;
 }) {
   const key = `questionnaire:${projectId}:${question.id}`;
+  function hydrate(values: Record<string, string>, choices?: ChoiceAnswers) {
+    const next = {
+      values: { ...values },
+      selected: {} as Record<string, string[]>,
+    };
+    for (const q of question.questions ?? []) {
+      if (q.type !== "choice") continue;
+      const structured = choices?.[q.id];
+      const legacy = values[q.id] ?? "";
+      next.selected[q.id] = structured
+        ? [...structured.selected]
+        : q.choices?.includes(legacy)
+          ? [legacy]
+          : [];
+      next.values[q.id] = structured
+        ? structured.custom
+        : q.choices?.includes(legacy)
+          ? ""
+          : legacy;
+    }
+    return next;
+  }
   const [draft, setDraft] = useState<{
+    version: 2;
     revision: string;
     values: Record<string, string>;
+    selected: Record<string, string[]>;
   }>(() => {
-    // A submitted answer is the natural starting point for an amendment. A
-    // browser draft still wins field-by-field, including an intentionally
-    // cleared field, so reopening the ticket never discards in-progress work.
-    const submitted = question.answers?.at(-1)?.values ?? {};
-    const initial = { revision: question.revision, values: { ...submitted } };
+    const answer = question.answers?.at(-1);
+    const initial = {
+      version: 2 as const,
+      revision: question.revision,
+      ...hydrate(answer?.values ?? {}, answer?.choiceAnswers),
+    };
     try {
       const saved = JSON.parse(localStorage.getItem(key) || "null");
       if (
@@ -31,17 +57,42 @@ export function Questionnaire({
         typeof saved.values === "object" &&
         !Array.isArray(saved.values) &&
         Object.values(saved.values).every((v) => typeof v === "string")
-      )
+      ) {
+        const parts =
+          saved.version === 2 &&
+          saved.selected &&
+          typeof saved.selected === "object" &&
+          !Array.isArray(saved.selected) &&
+          Object.values(saved.selected).every(
+            (v) => Array.isArray(v) && v.every((c) => typeof c === "string"),
+          )
+            ? { values: saved.values, selected: saved.selected }
+            : hydrate(saved.values);
         return {
+          version: 2,
           revision: saved.revision,
           values:
             saved.revision === question.revision
-              ? { ...initial.values, ...saved.values }
-              : saved.values,
+              ? { ...initial.values, ...parts.values }
+              : parts.values,
+          selected:
+            saved.revision === question.revision
+              ? { ...initial.selected, ...parts.selected }
+              : parts.selected,
         };
+      }
     } catch {}
     return initial;
   });
+  const answered = (q: NonNullable<Comment["questions"]>[number]) =>
+    !!draft.values[q.id]?.trim() ||
+    (q.type === "choice" && !!draft.selected[q.id]?.length);
+  const invalidChoices = question.questions!.some(
+    (q) =>
+      q.type === "choice" &&
+      (draft.selected[q.id]?.some((value) => !q.choices!.includes(value)) ||
+        (!q.multiple && (draft.selected[q.id]?.length ?? 0) > 1)),
+  );
   const [error, setError] = useState(""),
     [pending, setPending] = useState(false),
     [posted, setPosted] = useState(false);
@@ -58,7 +109,7 @@ export function Questionnaire({
     }
   }
   async function submit() {
-    if (busy.current || changed || disabled) return;
+    if (busy.current || changed || disabled || invalidChoices) return;
     busy.current = true;
     setPending(true);
     setError("");
@@ -66,13 +117,30 @@ export function Questionnaire({
       const saved = await api<Comment>(
         `/comments/${question.id}/answers`,
         "POST",
-        { actor, revision: draft.revision, answers: draft.values },
+        {
+          actor,
+          revision: draft.revision,
+          answers: draft.values,
+          choiceAnswers: Object.fromEntries(
+            question
+              .questions!.filter((q) => q.type === "choice")
+              .map((q) => [
+                q.id,
+                {
+                  selected: draft.selected[q.id] ?? [],
+                  custom: draft.values[q.id] ?? "",
+                },
+              ]),
+          ),
+        },
       );
       // Retain the submitted values locally as well as in the comment. This
       // covers both reopening this ticket and returning after a refresh.
+      const answer = saved.answers!.at(-1)!;
       change({
+        version: 2,
         revision: saved.revision,
-        values: { ...(saved.answers?.at(-1)?.values ?? draft.values) },
+        ...hydrate(answer.values, answer.choiceAnswers),
       });
       setPosted(true);
       await reload();
@@ -98,7 +166,7 @@ export function Questionnaire({
         "PATCH",
         { actor, revision: question.revision, resolved: false },
       );
-      change({ revision: result.comment.revision, values: draft.values });
+      change({ ...draft, revision: result.comment.revision });
       await reload();
     } catch (e) {
       setError(String(e));
@@ -126,32 +194,75 @@ export function Questionnaire({
             {q.prompt} {q.required ? "(required)" : "(optional)"}
           </legend>
           {q.type === "choice" && (
-            <div className="question-choices">
-              {q.choices!.map((choice) => (
+            <>
+              <p className="muted">
+                {q.multiple ? "Select all that apply" : "Select one option"}.
+                Custom notes below are kept separately.
+              </p>
+              <div className="question-choices">
+                {[
+                  ...new Set([...q.choices!, ...(draft.selected[q.id] ?? [])]),
+                ].map((choice) => (
+                  <label className="question-choice" key={choice}>
+                    <input
+                      type={q.multiple ? "checkbox" : "radio"}
+                      name={`${question.id}:${q.id}`}
+                      checked={draft.selected[q.id]?.includes(choice) ?? false}
+                      onChange={() =>
+                        change({
+                          ...draft,
+                          selected: {
+                            ...draft.selected,
+                            [q.id]: q.multiple
+                              ? draft.selected[q.id]?.includes(choice)
+                                ? draft.selected[q.id].filter(
+                                    (c) => c !== choice,
+                                  )
+                                : [...(draft.selected[q.id] ?? []), choice]
+                              : [choice],
+                          },
+                        })
+                      }
+                    />
+                    <span>
+                      {choice}
+                      {q.recommended === choice ? " (recommended)" : ""}
+                      {!q.choices!.includes(choice)
+                        ? " (no longer offered)"
+                        : ""}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              {!!draft.selected[q.id]?.length && (
                 <button
                   type="button"
-                  className="button"
-                  aria-pressed={draft.values[q.id] === choice}
-                  key={choice}
+                  className="button subtle"
                   onClick={() =>
                     change({
                       ...draft,
-                      values: { ...draft.values, [q.id]: choice },
+                      selected: { ...draft.selected, [q.id]: [] },
                     })
                   }
                 >
-                  {choice}
-                  {q.recommended === choice ? " (recommended)" : ""}
+                  Clear selection for {q.prompt}
                 </button>
-              ))}
-            </div>
+              )}
+            </>
           )}
           <label className="field">
-            {q.type === "choice" ? "Your answer or custom text" : "Your answer"}
+            {q.type === "choice" ? "Custom notes (optional)" : "Your answer"}
             <textarea
               aria-label={`Answer: ${q.prompt}`}
               value={draft.values[q.id] ?? ""}
-              rows={2}
+              rows={Math.min(
+                6,
+                Math.max(
+                  1,
+                  (draft.values[q.id] ?? "").split("\n").length,
+                  Math.ceil((draft.values[q.id]?.length ?? 0) / 90),
+                ),
+              )}
               onChange={(e) =>
                 change({
                   ...draft,
@@ -170,6 +281,14 @@ export function Questionnaire({
             className="button"
             onClick={() =>
               change({
+                ...draft,
+                selected: Object.fromEntries(
+                  Object.entries(draft.selected).filter(([id]) =>
+                    question.questions!.some(
+                      (q) => q.id === id && q.type === "choice",
+                    ),
+                  ),
+                ),
                 revision: question.revision,
                 values: Object.fromEntries(
                   Object.entries(draft.values).filter(([id]) =>
@@ -182,6 +301,13 @@ export function Questionnaire({
             I reviewed the updated questions
           </button>
         </div>
+      )}
+      {invalidChoices && (
+        <p role="alert" className="banner">
+          Some selected options are no longer offered, or this question now
+          allows only one choice. Clear the selection and choose again; your
+          notes are retained.
+        </p>
       )}
       {error && (
         <p className="banner error" role="alert">
@@ -225,10 +351,9 @@ export function Questionnaire({
           disabled ||
           pending ||
           changed ||
-          question.questions!.some(
-            (q) => q.required && !draft.values[q.id]?.trim(),
-          ) ||
-          !Object.values(draft.values).some((v) => v.trim())
+          invalidChoices ||
+          question.questions!.some((q) => q.required && !answered(q)) ||
+          !question.questions!.some(answered)
         }
         onClick={() => void submit()}
       >

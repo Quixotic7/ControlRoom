@@ -69,7 +69,7 @@ For example, choosing a shared service to serialize worktree writes deserves a d
 
 Small steps stay inside a ticket's `## Microtasks` section as ordinary `- [ ]` / `- [x]` lines. Read them in context and update the body with the current ticket etag. Preserve other prose and acceptance criteria. They are not child tickets and do not authorize completion.
 
-For structured human input, write a JSON array to a file and call `questionnaire ID --file questions.json --json` (MCP `ask_questionnaire`). Each item has a stable `id`, `prompt`, `type` (`text` or `choice`), optional `required` (defaults true), and for choices a `choices` array plus optional `recommended` choice. Humans can supply custom text. Example:
+For structured human input, write a JSON array to a file and call `questionnaire ID --file questions.json --json` (MCP `ask_questionnaire`). Each item has a stable `id`, `prompt`, `type` (`text` or `choice`), optional `required` (defaults true), and for choices a `choices` array plus optional `recommended` choice and `multiple: true` for checkboxes (the default is a single choice). Humans can select options and supply separate custom notes; changing a selection never replaces their notes. Submitted answers preserve readable `values` and structured `choiceAnswers` with `selected` options and `custom` notes. Example:
 
 ```json
 [{"id":"layout","prompt":"Which layout?","type":"choice","choices":["Compact","Spacious"],"recommended":"Compact"},{"id":"reason","prompt":"What should guide the choice?","type":"text"}]

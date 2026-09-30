@@ -213,3 +213,84 @@ test("placement is serialized against target revisions and preserves source on c
   );
   assert.equal(s.get(a.meta.id).revision, a.revision);
 });
+
+test("questionnaire choice selections and custom notes round trip independently with immutable amendments", async (t) => {
+  const s = fixture(t);
+  const ticket = await s.create(
+    "ticket",
+    { title: "Choice details" },
+    "",
+    human,
+  );
+  const q = await s.questionnaire(
+    ticket.meta.id,
+    [
+      {
+        id: "single",
+        prompt: "One option",
+        type: "choice",
+        choices: ["A", "B"],
+      },
+      {
+        id: "multi",
+        prompt: "Several options",
+        type: "choice",
+        multiple: true,
+        choices: ["X", "Y", "Z"],
+      },
+    ],
+    agent,
+  );
+  const choiceAnswers = {
+    single: { selected: ["A"], custom: "My separate note" },
+    multi: { selected: ["X", "Z"], custom: "Keep this too" },
+  };
+  for (const single of [
+    { selected: ["A", "B"], custom: "" },
+    { selected: ["A", "A"], custom: "" },
+    { selected: ["Unknown"], custom: "" },
+  ]) {
+    await assert.rejects(
+      s.answerQuestionnaire(q.id, q.revision, {}, human, {
+        ...choiceAnswers,
+        single,
+      }),
+      /valid options/,
+    );
+  }
+  await assert.rejects(
+    s.answerQuestionnaire(q.id, q.revision, {}, human, {
+      unknown: { selected: [], custom: "No" },
+    }),
+    /Unknown choice/,
+  );
+  await assert.rejects(
+    s.answerQuestionnaire(q.id, q.revision, {}, agent, choiceAnswers),
+    /human/,
+  );
+  const saved = await s.answerQuestionnaire(
+    q.id,
+    q.revision,
+    {},
+    human,
+    choiceAnswers,
+  );
+  assert.deepEqual(saved.answers?.[0].choiceAnswers, choiceAnswers);
+  assert.equal(saved.answers?.[0].values.multi, "X\n\nZ\n\nKeep this too");
+  await assert.rejects(
+    s.answerQuestionnaire(q.id, q.revision, {}, human, choiceAnswers),
+    /changed/,
+  );
+  const amended = await s.answerQuestionnaire(q.id, saved.revision, {}, human, {
+    ...choiceAnswers,
+    single: { selected: ["B"], custom: "My separate note" },
+  });
+  const disk = new Store(s.root).comments().find((c) => c.id === q.id)!;
+  assert.deepEqual(disk.answers, amended.answers);
+  assert.deepEqual(disk.answers?.[0].choiceAnswers, choiceAnswers);
+  assert.deepEqual(disk.answers?.[1].choiceAnswers?.single, {
+    selected: ["B"],
+    custom: "My separate note",
+  });
+  assert.match(s.contextMarkdown(ticket.meta.id).markdown, /Keep this too/);
+});

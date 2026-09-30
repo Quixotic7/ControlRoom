@@ -206,6 +206,7 @@ export async function buildServer(
       req.body.revision,
       req.body.answers,
       actor(req.body),
+      req.body.choiceAnswers,
     ),
   );
   app.patch("/api/comments/:id", async (req: any) => {

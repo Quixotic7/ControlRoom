@@ -78,6 +78,7 @@ export type Comment = {
     at: string;
     questions: import("./questionnaire.js").QuestionSpec;
     values: Record<string, string>;
+    choiceAnswers?: import("./questionnaire.js").ChoiceAnswers;
   }[];
   revision: string;
 };
