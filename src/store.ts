@@ -872,6 +872,11 @@ export class Store {
         403,
         "Managed assignments and review receipts are service-owned",
       );
+    if ("exceptionHistory" in input)
+      throw new Problem(
+        422,
+        "Exception history is recorded from attributed exception edits and cannot be supplied",
+      );
     if (
       kind === "ticket" &&
       ["related", "duplicateOf", "mergedFrom", "duplicateMerge"].some(
@@ -905,6 +910,14 @@ export class Store {
     } as Meta;
     if (kind === "ticket" && meta.progress)
       meta.progress = { ...meta.progress, at: stamp, actor };
+    if (
+      kind === "ticket" &&
+      typeof meta.exceptions === "string" &&
+      meta.exceptions.trim()
+    )
+      meta.exceptionHistory = [
+        { rationale: meta.exceptions.trim(), actor, at: stamp },
+      ];
     this.validate(meta);
     this.authority(actor, meta);
     if (kind === "ticket") meta.number = this.reserveTicketNumber();
@@ -2081,10 +2094,19 @@ export class Store {
   }
   referenceChecks(record: RecordFile, records = this.list()): ReferenceCheck[] {
     const byId = new Map(
-      records.map((candidate) => [candidate.meta.id, candidate]),
-    );
+        records.map((candidate) => [candidate.meta.id, candidate]),
+      ),
+      byPublicTicket = new Map(
+        records
+          .filter(
+            (candidate) =>
+              candidate.meta.kind === "ticket" &&
+              candidate.meta.number !== undefined,
+          )
+          .map((candidate) => [`#${candidate.meta.number}`, candidate]),
+      );
     return (record.meta.references ?? []).map((reference) => {
-      const linked = byId.get(reference);
+      const linked = byId.get(reference) ?? byPublicTicket.get(reference);
       if (linked)
         return {
           reference,
@@ -2092,6 +2114,12 @@ export class Store {
           status: "available" as const,
           target: linked.meta.id,
           archived: !!linked.meta.archived,
+        };
+      if (/^#\d+$/.test(reference))
+        return {
+          reference,
+          kind: "record" as const,
+          status: "missing" as const,
         };
       if (/^https?:\/\//i.test(reference))
         return {

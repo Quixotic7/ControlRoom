@@ -317,7 +317,13 @@ test("rule context explains applicability and validates canonical references wit
       title: "Use the canonical action token",
       status: "active",
       scope: ["ui"],
-      references: [origin.meta.id, "tokens.css#L1", "missing/Button.tsx"],
+      references: [
+        origin.meta.id,
+        `#${origin.meta.number}`,
+        "tokens.css#L1",
+        "#999",
+        "missing/Button.tsx",
+      ],
     },
     "## Rule\n\nUse the existing action token.\n\n## Why\n\nOne source stays authoritative.",
     a,
@@ -350,19 +356,60 @@ test("rule context explains applicability and validates canonical references wit
     ]),
     [
       [archivedOrigin.meta.id, "available", true],
+      [`#${archivedOrigin.meta.number}`, "available", true],
       ["tokens.css#L1", "available", false],
+      ["#999", "missing", false],
       ["missing/Button.tsx", "missing", false],
     ],
   );
   const markdown = s.contextMarkdown(work.meta.id).markdown;
   assert.match(markdown, /Applies because: scope matched label: ui/);
   assert.match(markdown, /tokens\.css#L1` \(available\)/);
+  assert.match(markdown, /#999` \(missing\)/);
   assert.match(markdown, /missing\/Button\.tsx` \(missing\)/);
   assert.match(markdown, /archived record retained/);
   assert.equal(
     s.state().referenceChecks?.[rule.meta.id].at(-1)?.status,
     "missing",
   );
+});
+test("ticket creation owns initial exception attribution and rejects supplied history", async (t) => {
+  const s = fixture(t);
+  await assert.rejects(
+    s.create(
+      "ticket",
+      {
+        title: "Fabricated exception attribution",
+        exceptions: "Keep the legacy spacing.",
+        exceptionHistory: [
+          {
+            rationale: "Keep the legacy spacing.",
+            actor: { name: "Someone else", kind: "human" },
+            at: "2020-01-01T00:00:00.000Z",
+          },
+        ],
+      },
+      "",
+      a,
+    ),
+    /cannot be supplied/,
+  );
+  const created = await s.create(
+    "ticket",
+    {
+      title: "Attributed initial exception",
+      exceptions: "  Keep the legacy spacing until migration.  ",
+    },
+    "",
+    a,
+  );
+  assert.deepEqual(created.meta.exceptionHistory, [
+    {
+      rationale: "Keep the legacy spacing until migration.",
+      actor: a,
+      at: created.meta.createdAt,
+    },
+  ]);
 });
 test("reviewed exceptions retain rationale and submitting-agent attribution", async (t) => {
   const s = fixture(t);
