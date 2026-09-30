@@ -153,6 +153,7 @@ export function BoardView({
   onToggleGroup,
   selected,
   onSelectRange,
+  onToggleSelected,
 }: {
   groups: Group[];
   groupBy: GroupBy;
@@ -171,6 +172,7 @@ export function BoardView({
   onToggleGroup: (key: string) => void;
   selected: Set<string>;
   onSelectRange: (ids: string[]) => void;
+  onToggleSelected: (id: string, on: boolean) => void;
 }) {
   const ticketDrag = useTicketDragContext();
   // The cell a dragged card is currently over, for the drop highlight.
@@ -465,7 +467,13 @@ export function BoardView({
                                     `${g.key}/${r.meta.id}` === tabStop ? 0 : -1
                                   }
                                   onOpen={onOpen}
-                                  onShiftSelect={() => shiftSelect(r.meta.id)}
+                                  onShiftSelect={() => {
+                                    onToggleSelected(
+                                      r.meta.id,
+                                      !selected.has(r.meta.id),
+                                    );
+                                    setSelectionAnchor(r.meta.id);
+                                  }}
                                 />
                               </div>
                             </React.Fragment>

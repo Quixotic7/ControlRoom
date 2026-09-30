@@ -45,11 +45,11 @@ export function Shortcuts({
           ],
           [
             "Shift + click / Shift + arrows",
-            "Select a range of visible board tickets; Esc clears selection",
+            "Shift-click toggles a ticket; Shift-arrows extend a range; Esc clears selection",
           ],
           [
             "Table: click + Shift + arrows, ⌘ / Ctrl + C / V",
-            "Select editable Status/Priority cells, then copy or fill compatible values",
+            "Select Status/Priority cells, then copy/paste or change a dropdown to fill selected cells in that column",
           ],
           [
             "Alt / Option + ↑ / ↓",

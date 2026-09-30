@@ -772,6 +772,7 @@ export function ProjectPage({
             onToggleGroup={toggleGroup}
             selected={bulkSelected}
             onSelectRange={selectRange}
+            onToggleSelected={toggleSelected}
             onArchive={(column, records) =>
               setArchiveScope({
                 column: column.name,

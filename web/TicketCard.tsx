@@ -85,7 +85,7 @@ export function TicketCard({
       onKeyDown={drag.key}
       {...navigation}
       onClick={(e) => {
-        // Cmd/Ctrl retain new-tab navigation. Shift alone is range selection.
+        // Cmd/Ctrl retain new-tab navigation. Shift alone toggles this ticket.
         if (e.shiftKey && !e.metaKey && !e.ctrlKey && onShiftSelect) {
           e.preventDefault();
           e.stopPropagation();
