@@ -21,11 +21,17 @@ export function Playbook({
 }) {
   const [search, setSearch] = useState("");
   const [ticketNumber, setTicketNumber] = useState("");
+  const [useCurrentProject, setUseCurrentProject] = useState(true);
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState("");
   const prompts = useRef(new Map<string, HTMLTextAreaElement>());
   const ticket = publicTicketNumber(ticketNumber);
-  const context: PlaybookContext = { project, branch, ticket };
+  const context: PlaybookContext = {
+    project,
+    branch,
+    ticket,
+    useCurrentProject,
+  };
   const shown = useMemo(() => {
     const query = search.trim().toLowerCase();
     return playbookRecipes.filter(
@@ -35,7 +41,7 @@ export function Playbook({
           .toLowerCase()
           .includes(query),
     );
-  }, [search, project, branch, ticket]);
+  }, [search, project, branch, ticket, useCurrentProject]);
 
   async function copy(recipeId: string, prompt: string) {
     setCopyError("");
@@ -63,9 +69,24 @@ export function Playbook({
         <div>
           <strong>Current context</strong>
           <span>
-            {project} · {branch}
+            {useCurrentProject
+              ? `${project} · ${branch}`
+              : "Reusable template · PROJECT_NAME / PROJECT_BRANCH"}
           </span>
         </div>
+        <label className="playbook-ticket">
+          Project context
+          <select
+            aria-label="Project context"
+            value={useCurrentProject ? "current" : "template"}
+            onChange={(event) =>
+              setUseCurrentProject(event.target.value === "current")
+            }
+          >
+            <option value="current">Use this project</option>
+            <option value="template">Reusable project template</option>
+          </select>
+        </label>
         <label className="playbook-ticket">
           Ticket number <span className="muted">(optional)</span>
           <input
@@ -100,7 +121,8 @@ export function Playbook({
       <p className="playbook-safety">
         Recipes are available offline and never include local tokens or hidden
         secrets. They do not claim work, start an agent, or change a ticket on
-        copy.
+        copy. Short commands are conventions you teach an agent; arbitrary chat
+        tools do not recognize them automatically.
       </p>
       <p className="sr-only" aria-live="polite">
         {copied ? "Prompt copied successfully." : copyError}

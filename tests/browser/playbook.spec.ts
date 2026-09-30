@@ -36,6 +36,35 @@ test("playbook searches recipes and uses stable labelled group headings", async 
   );
 });
 
+test("prompts can switch from the open project to a reusable template", async ({
+  page,
+}) => {
+  await openPlaybook(page);
+  const connect = recipe(page, "Connect a coding agent").getByRole("textbox");
+  await expect(connect).not.toHaveValue(/PROJECT_NAME/);
+  await page.getByLabel("Project context").selectOption("template");
+  await expect(connect).toHaveValue(
+    /PROJECT_NAME project on branch PROJECT_BRANCH/,
+  );
+  await expect(connect).toHaveValue(/that project's checkout/);
+});
+
+test("short command recipe states the alias boundary and read-only behavior", async ({
+  page,
+}) => {
+  await openPlaybook(page);
+  const prompt = recipe(page, "Teach short conversation commands").getByRole(
+    "textbox",
+  );
+  await expect(prompt).toHaveValue(
+    /\/crrefresh means read the latest board state/,
+  );
+  await expect(prompt).toHaveValue(/not native slash commands/);
+  await expect(prompt).toHaveValue(
+    /not permission to write, claim, move, assign, or implement/,
+  );
+});
+
 test("keyboard copy substitutes public ticket context without running writes", async ({
   page,
 }) => {

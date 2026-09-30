@@ -15,7 +15,18 @@ export type PlaybookContext = {
   project: string;
   branch: string;
   ticket: string;
+  useCurrentProject: boolean;
 };
+
+function projectContext({
+  project,
+  branch,
+  useCurrentProject,
+}: PlaybookContext) {
+  return useCurrentProject
+    ? `the ${project} project on branch ${branch}`
+    : `the PROJECT_NAME project on branch PROJECT_BRANCH`;
+}
 
 export const playbookGroups = [
   { id: "connect-orient", label: "Connect & orient" },
@@ -34,8 +45,8 @@ export const playbookRecipes: PlaybookRecipe[] = [
       "Give an existing coding agent the project protocol and a safe connection path.",
     prerequisites:
       "A checkout of this project and an agent that can use MCP or run shell commands.",
-    prompt: ({ project, branch }) =>
-      `I am working in the ${project} project on branch ${branch}. In this project checkout, read .controlroom/AGENT_GUIDE.md first and use the installed project launcher: ./.controlroom/controlroom help (or ./.controlroom/controlroom mcp). If I am instead in the Control Room tool source checkout, read AGENT_GUIDE.md and use ./controlroom help or ./controlroom mcp; this is a separate alternative, not a global command. Set CONTROLROOM_ACTOR to your agent name and CONTROLROOM_ACTOR_KIND=agent. Do not expose, copy, or send any local authentication token. Explain the next safe board action before making a write.`,
+    prompt: (context) =>
+      `I am working in ${projectContext(context)}. Run board commands from that project's checkout. Read its .controlroom/AGENT_GUIDE.md first and use its installed launcher: ./.controlroom/controlroom help (or ./.controlroom/controlroom mcp). If this project is itself the Control Room tool source checkout, read AGENT_GUIDE.md and use ./controlroom help or ./controlroom mcp. Set CONTROLROOM_ACTOR to your agent name and CONTROLROOM_ACTOR_KIND=agent. Do not expose, copy, or send any local authentication token. Explain the next safe board action before making a write.`,
   },
   {
     id: "orient",
@@ -44,8 +55,19 @@ export const playbookRecipes: PlaybookRecipe[] = [
     purpose:
       "Ask an agent to identify work that is ready without claiming or changing anything yet.",
     prerequisites: "Connected to the board and familiar with AGENT_GUIDE.md.",
-    prompt: ({ project, branch }) =>
-      `I am working in ${project} on ${branch}. Read .controlroom/AGENT_GUIDE.md, then inspect the board's next approved ticket using the MCP next_ticket tool or ./.controlroom/controlroom next. Summarize the ticket's approved scope, acceptance criteria, dependencies, applicable decisions, and current revision. Do not claim, move, edit, assign, or start work until I explicitly choose the ticket.`,
+    prompt: (context) =>
+      `I am working in ${projectContext(context)}. From that project's checkout, read .controlroom/AGENT_GUIDE.md, then inspect its board's next approved ticket using the MCP next_ticket tool or ./.controlroom/controlroom next. Summarize the ticket's approved scope, acceptance criteria, dependencies, applicable decisions, and current revision. Do not claim, move, edit, assign, or start work until I explicitly choose the ticket.`,
+  },
+  {
+    id: "teach-aliases",
+    group: "Connect & orient",
+    title: "Teach short conversation commands",
+    purpose:
+      "Teach an agent a memorable shorthand such as /crrefresh for this chat or project.",
+    prerequisites:
+      "A connected coding agent; save the convention in project agent instructions if it should survive new chats.",
+    prompt: (context) =>
+      `For ${projectContext(context)}, use these conversation aliases when I type them: /crrefresh means read the latest board state, compare ticket updatedAt/revisions and conversations with the last board check in this chat, and summarize every ticket that changed, including status, new human feedback or questions, blockers, and the next safe action. On first use, establish a baseline and summarize currently actionable updates. /crnext means inspect and summarize the next approved ticket without claiming it. These are text conventions for this conversation, not native slash commands and not permission to write, claim, move, assign, or implement. Run reads from the named project's checkout using Control Room MCP tools or its ./.controlroom/controlroom launcher. Confirm the aliases you learned. If I want them in future chats, help me add this same convention to that project's agent instructions.`,
   },
   {
     id: "refine-concept",
