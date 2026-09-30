@@ -14,7 +14,7 @@ import { atomic, canonicalProject, now, read, uid } from "./files.js";
 import { buildServer, toolRoot } from "./server.js";
 import { registerCapture, startCompanion } from "./capture.js";
 import {
-  api,
+  api as clientApi,
   ApiError,
   commitsSince,
   currentBranch,
@@ -28,6 +28,8 @@ import {
   waitForChange,
 } from "./client.js";
 import { startMcp } from "./mcp.js";
+import { installSkills, packageSkills } from "./skills.js";
+import { boardSnapshot } from "./boardSnapshot.js";
 import type { Actor } from "./types.js";
 
 const parsed = parseArgs(process.argv.slice(2));
@@ -41,6 +43,13 @@ const identity = resolveActor({
 });
 const who: Actor = identity.actor;
 const json = has("json");
+const api = <T = any>(
+  store: Store,
+  url: string,
+  method = "GET",
+  body?: unknown,
+  signal?: AbortSignal,
+) => clientApi<T>(store, url, method, body, signal, !has("no-start"));
 function output(value: any) {
   if (json) {
     console.log(JSON.stringify(value, null, 2));
@@ -227,6 +236,7 @@ async function install(destination: string) {
     path.join(toolRoot, "AGENT_GUIDE.md"),
     path.join(target, "AGENT_GUIDE.md"),
   );
+  packageSkills(path.join(toolRoot, "skills"), target);
   copyRuntimeModules(target);
   // Runtime is copied into the project, so the user’s global Node is never modified.
   const bundled = path.join(
@@ -277,6 +287,7 @@ Reading
   list [--status S] [--owner O] [--label L] [--mine] [--open] [--archived] [--kind ticket|decision|rule]
   show ID                      the record and its etag
   context ID [--markdown] [--brief]   everything an agent needs, as JSON or a prompt-ready brief
+  snapshot                    compact read-only board state for refresh skills
   merge-preview SURVIVOR SOURCE        review conflicts, preserved content, incoming links, and required etags
   next                         the ticket this agent should pick up next, with its brief
   wait ID [--for comment|status|any] [--timeout SECONDS]   block until the ticket changes
@@ -304,10 +315,11 @@ Service and data
   export --output FILE | restore --file FILE
   import brief --file PATHS_JSON | import stage --file PROPOSALS_JSON
   install DESTINATION | upgrade DESTINATION
+  skills install [DIR]           install bundled agent skills in DIR (defaults to --worktree or the current directory)
   migrate                      rename stopped project .workboard to .controlroom
 
 Identity: set CONTROLROOM_ACTOR (name) and CONTROLROOM_ACTOR_KIND (human|agent) in the environment, or pass --actor NAME with --agent or --human. A known agent harness or a non-interactive terminal counts as an agent.
-All commands accept --project PATH and --json. --project selects the board; --worktree selects the execution checkout (defaults to the caller directory). IDs may be numbers, quoted '#numbers', or record IDs. Claims expire after 30 minutes; repeat claim to renew.
+All commands accept --project PATH and --json. --no-start prevents automatic project initialization and service startup; it is not a read-only permission mode. --project selects the board; --worktree selects the execution checkout (defaults to the caller directory). IDs may be numbers, quoted '#numbers', or record IDs. Claims expire after 30 minutes; repeat claim to renew.
 `;
 async function main() {
   const [command, id, extra] = positional;
@@ -320,11 +332,44 @@ async function main() {
     await install(id);
     return;
   }
+  if (command === "skills") {
+    if (id !== "install") throw new Error("Use skills install [DIR]");
+    const result = installSkills(
+      path.resolve(extra || executionDirectory),
+      path.join(toolRoot, "skills"),
+    );
+    output(
+      json
+        ? result
+        : `Installed ${result.skills.join(", ")} in .agents/skills and .claude/skills (${result.copied} file(s) copied).`,
+    );
+    return;
+  }
   if (command === "migrate") {
     output(migrateProject(cwd));
     return;
   }
-  const store = new Store(cwd).initialize();
+  const store = new Store(cwd);
+  if (command === "snapshot") {
+    if (!fs.existsSync(path.join(store.dir, "config.yml")))
+      throw new Error(
+        `No Control Room project exists at ${store.root}; choose an existing project before requesting a snapshot.`,
+      );
+    output(
+      boardSnapshot(
+        await clientApi(
+          store,
+          "/api/state",
+          "GET",
+          undefined,
+          undefined,
+          false,
+        ),
+      ),
+    );
+    return;
+  }
+  if (!has("no-start")) store.initialize();
   if (command === "init") {
     output({ project: store.root, records: store.dir, actor: who });
     return;
@@ -334,7 +379,7 @@ async function main() {
     return;
   }
   if (command === "mcp") {
-    await startMcp(store, who, executionDirectory);
+    await startMcp(store, who, executionDirectory, !has("no-start"));
     return;
   }
   if (command === "agents") {
@@ -506,7 +551,14 @@ async function main() {
       | "any";
     if (!["comment", "status", "any"].includes(waitFor))
       throw new Error("--for must be comment, status, or any");
-    const r = await waitForChange(store, id, waitFor, seconds * 1000);
+    const r = await waitForChange(
+      store,
+      id,
+      waitFor,
+      seconds * 1000,
+      undefined,
+      !has("no-start"),
+    );
     if (!r) {
       output(json ? { change: null } : `No change within ${seconds}s.`);
       process.exitCode = 2;

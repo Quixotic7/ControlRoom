@@ -1,0 +1,4 @@
+interface:
+  display_name: "Next Control Room ticket"
+  short_description: "Inspect approved work without claiming a ticket"
+  default_prompt: "Use $crnext to inspect the next approved Control Room ticket without claiming or starting it."

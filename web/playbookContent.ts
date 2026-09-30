@@ -61,13 +61,13 @@ export const playbookRecipes: PlaybookRecipe[] = [
   {
     id: "teach-aliases",
     group: "Connect & orient",
-    title: "Teach short conversation commands",
+    title: "Install short command skills",
     purpose:
-      "Teach an agent a memorable shorthand such as /crrefresh for this chat or project.",
+      "Install reusable refresh and next-ticket skills for Codex and Claude Code.",
     prerequisites:
-      "A connected coding agent; save the convention in project agent instructions if it should survive new chats.",
+      "A Control Room installation with bundled skills, and the code checkout where your agent runs.",
     prompt: (context) =>
-      `For ${projectContext(context)}, use these conversation aliases when I type them: /crrefresh means read the latest board state, compare ticket updatedAt/revisions and conversations with the last board check in this chat, and summarize every ticket that changed, including status, new human feedback or questions, blockers, and the next safe action. On first use, establish a baseline and summarize currently actionable updates. /crnext means inspect and summarize the next approved ticket without claiming it. These are text conventions for this conversation, not native slash commands and not permission to write, claim, move, assign, or implement. Run reads from the named project's checkout using Control Room MCP tools or its ./.controlroom/controlroom launcher. Confirm the aliases you learned. If I want them in future chats, help me add this same convention to that project's agent instructions.`,
+      `For ${projectContext(context)}, install the bundled Control Room skills into the code checkout where this agent runs. Read the existing agent guide and use that project's installed launcher: ./.controlroom/controlroom skills install /absolute/path/to/code-checkout (or ./controlroom skills install . in the Control Room tool source checkout). Replace the destination with the actual intended checkout; do not create a new board or overwrite customized skills. Codex invokes $crrefresh, $crnext or $ccrefresh through its skill picker; Claude Code invokes /crrefresh, /crnext or /ccrefresh. crrefresh reads the latest board state and conversations, including Done and archived tickets; crnext inspects the next eligible approved ticket without claiming it. ccrefresh is a compatibility alias for crrefresh. These are read-only skills, not permission to write, claim, move, assign, or implement. Explain which files were installed and the correct invocation for this agent.`,
   },
   {
     id: "refine-concept",

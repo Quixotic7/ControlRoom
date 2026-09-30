@@ -49,17 +49,19 @@ test("prompts can switch from the open project to a reusable template", async ({
   await expect(connect).toHaveValue(/that project's checkout/);
 });
 
-test("short command recipe states the alias boundary and read-only behavior", async ({
+test("short command recipe gives native invocation and preserves read-only behavior", async ({
   page,
 }) => {
   await openPlaybook(page);
-  const prompt = recipe(page, "Teach short conversation commands").getByRole(
+  const prompt = recipe(page, "Install short command skills").getByRole(
     "textbox",
   );
   await expect(prompt).toHaveValue(
-    /\/crrefresh means read the latest board state/,
+    /skills install \/absolute\/path\/to\/code-checkout/,
   );
-  await expect(prompt).toHaveValue(/not native slash commands/);
+  await expect(prompt).toHaveValue(/Codex invokes \$crrefresh/);
+  await expect(prompt).toHaveValue(/Claude Code invokes \/crrefresh/);
+  await expect(prompt).toHaveValue(/without claiming it/);
   await expect(prompt).toHaveValue(
     /not permission to write, claim, move, assign, or implement/,
   );

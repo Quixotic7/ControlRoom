@@ -18,11 +18,26 @@ Launch from your code checkout or pass `--worktree /absolute/code/checkout`. `--
 
 Existing projects may still keep records in `.workboard/`; after upgrading, use `.workboard/controlroom` until explicitly migrated. The legacy `workboard` command and `WORKBOARD_ACTOR` / `WORKBOARD_ACTOR_KIND` variables remain aliases. Follow the README migration steps; do not rename a live board or create a second data directory.
 
-### Optional conversation aliases
+### Short command skills
 
-Control Room does not register slash commands in arbitrary coding-agent chats. A human may teach an agent short text conventions for the current conversation, or save the conventions in that project's agent instructions so later chats learn them. Treat an unknown `/cr...` phrase as ordinary text until its meaning has been defined; never infer that shorthand grants permission to write.
+Install the bundled skills explicitly into the code checkout where your agent runs:
 
-A recommended read-only convention is `/crrefresh`: read the latest board state, compare ticket `updatedAt` values, revisions and conversations with the previous board check in the conversation, then summarize every changed ticket with its status, new human feedback or questions, blockers and next safe action. On first use, establish a baseline and summarize currently actionable updates. `/crnext` can mean inspect and summarize the next approved ticket without claiming it. Run these reads from the intended project's checkout using its Control Room MCP connection or project-local launcher. Aliases do not claim, move, assign or implement tickets and do not replace the managed-worker instructions below.
+```sh
+./.controlroom/controlroom skills install /absolute/path/to/code-checkout
+# In the Control Room source checkout: ./controlroom skills install .
+```
+
+With no destination, installation targets the current execution directory (or `--worktree`), not the canonical board selected by `--project`. It does not initialize a board. The command copies portable skills to `.agents/skills/` for Codex and `.claude/skills/` for Claude Code; these can be committed with the project. Run it in another checkout if that checkout does not contain the skills. Application upgrades package the latest skills but do not overwrite installed project skills. Repeating the skill installation is safe when files match; differing existing files are refused so you can review and reconcile customizations first. Agent instruction files are not changed.
+
+| Action | Codex skill | Claude Code command |
+| --- | --- | --- |
+| Refresh tickets and conversations | `$crrefresh` | `/crrefresh` |
+| Inspect the next eligible approved ticket | `$crnext` | `/crnext` |
+| Refresh compatibility alias | `$ccrefresh` | `/ccrefresh` |
+
+Select the skill in Codex's skill picker or type its `$name`; these are not custom Codex slash commands. If the host has not discovered new skills, reopen the project session. In Claude Code, use `/name`. The same instructions run through the project's existing CLI or matching MCP connection, with your agent identity. Both commands are read-only: they do not claim, move, assign, accept or implement tickets.
+
+Refresh compares record and conversation revisions, including edited comments and Done/archived tickets. On first use it reports a baseline, not invented changes. `snapshot --json --no-start` supplies a compact read-only receipt for this comparison; full `context ID --json --no-start` contains feedback and scope details. A service failure is reported rather than treated as an empty board. Skills use `--no-start` for CLI reads, or a matching MCP connection launched with `mcp --no-start`. This mode reports missing/stopped services without launching them or initializing a missing board. Existing command behavior is unchanged without that flag; `snapshot` always avoids startup.
 
 The service defaults to loopback. When the human enables LAN mode (`serve --lan`), CLI/MCP discovery still uses `127.0.0.1` and the existing local token. Host Settings controls whether remote browsers require pairing and how long newly paired access lasts; never send the local token to another device. Preserve the saved network/authentication settings and launcher port on upgrades. `serve --local` explicitly returns to local-only mode. See the README for pairing, restart requirements, HTTP limitations, and host-only controls.
 

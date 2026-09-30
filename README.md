@@ -112,6 +112,27 @@ The interface is laid out like GitHub Projects and styled after Juice Machine La
 
 See [AGENT_GUIDE.md](AGENT_GUIDE.md) for the participation protocol. Add a short reference to that guide to your existing coding-agent instructions; setup deliberately does not overwrite them.
 
+### Short command skills
+
+Install the bundled skills explicitly into the code checkout where your agent runs:
+
+```sh
+./.controlroom/controlroom skills install /absolute/path/to/code-checkout
+# In the Control Room source checkout: ./controlroom skills install .
+```
+
+With no destination, installation targets the current execution directory (or `--worktree`), not the canonical board selected by `--project`. It does not initialize a board. The command copies portable skills to `.agents/skills/` for Codex and `.claude/skills/` for Claude Code; these can be committed with the project. Run it in another checkout if that checkout does not contain the skills. Application upgrades package the latest skills but do not overwrite installed project skills. Repeating the skill installation is safe when files match; differing existing files are refused so you can review and reconcile customizations first. Agent instruction files are not changed.
+
+| Action | Codex skill | Claude Code command |
+| --- | --- | --- |
+| Refresh tickets and conversations | `$crrefresh` | `/crrefresh` |
+| Inspect the next eligible approved ticket | `$crnext` | `/crnext` |
+| Refresh compatibility alias | `$ccrefresh` | `/ccrefresh` |
+
+Select the skill in Codex's skill picker or type its `$name`; these are not custom Codex slash commands. If the host has not discovered new skills, reopen the project session. In Claude Code, use `/name`. The same instructions run through the project's existing CLI or matching MCP connection, with your agent identity. Both commands are read-only: they do not claim, move, assign, accept or implement tickets.
+
+Refresh compares record and conversation revisions, including edited comments and Done/archived tickets. On first use it reports a baseline, not invented changes. `snapshot --json --no-start` supplies a compact read-only receipt for this comparison; full `context ID --json --no-start` contains feedback and scope details. A service failure is reported rather than treated as an empty board. Skills use `--no-start` for CLI reads, or a matching MCP connection launched with `mcp --no-start`. This mode reports missing/stopped services without launching them or initializing a missing board. Existing command behavior is unchanged without that flag; `snapshot` always avoids startup.
+
 **MCP.** `./controlroom mcp` serves the board as Model Context Protocol tools over stdio, so agents call it natively with typed arguments. For Claude Code:
 
 ```sh
