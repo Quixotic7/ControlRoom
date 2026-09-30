@@ -1472,6 +1472,18 @@ body,
   right: 0;
   width: min(380px, 80vw);
 }
+/* Card paint containment clips floating descendants. Keep review content in
+   flow so the card grows, without disabling off-screen board optimizations. */
+.board-ticket .quick-review[open] {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.board-ticket .quick-review-panel {
+  position: static;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .approval-cell .quick-review-panel {
   position: static;
   width: min(380px, 60vw);

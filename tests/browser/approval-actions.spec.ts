@@ -68,6 +68,8 @@ for (const layout of ["Board", "Table"] as const) {
           .getByText("Approved scope"),
       ).toBeVisible();
 
+    if (layout === "Board") await expect(plannedActions).toHaveCount(0);
+
     const reviewActions = page.getByLabel(`Actions for ${review.meta.title}`);
     const disclosure = reviewActions.locator("summary");
     await disclosure.focus();
@@ -96,6 +98,7 @@ for (const layout of ["Board", "Table"] as const) {
     await expect
       .poll(async () => (await record(page, review.meta.id)).meta.status)
       .toBe("done");
+    if (layout === "Board") await expect(reviewActions).toHaveCount(0);
 
     const approved = await record(page, planned.meta.id);
     expect(approved.meta.status).toBe(planned.meta.status);
@@ -157,7 +160,9 @@ test("grouped parent headers expose scope approval and Review acceptance", async
     // Saved views have independent filters and grouping. Configure the view
     // whose parent headers this scenario actually exercises.
     await page.getByLabel("Filter tickets").fill(`label:${label}`);
-    await page.getByRole("button", { name: "View options", exact: true }).click();
+    await page
+      .getByRole("button", { name: "View options", exact: true })
+      .click();
     await page.getByLabel("Group by").selectOption("parent");
     await page.keyboard.press("Escape");
 
@@ -335,4 +340,48 @@ test("selected scope approval reports success, ineligible items, and a stale fai
   expect(
     (await record(page, inherited.meta.id)).meta.scopeApproved,
   ).toBeUndefined();
+});
+
+test("board review evidence expands inside its card and is reachable by pointer", async ({
+  page,
+}) => {
+  const suffix = `pointer-${Date.now()}`;
+  const review = await create(page, `Review ${suffix}`, {
+    labels: [suffix],
+    status: "review",
+    scopeApproved: true,
+    handoff: `Summary ${suffix}`,
+    evidence:
+      `Evidence ${suffix} ` + "Verified acceptance criteria. ".repeat(80),
+  });
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(`label:${suffix}`);
+  const actions = page.getByLabel(`Actions for ${review.meta.title}`);
+  await actions.locator("summary").click();
+  await expect(
+    actions.getByText(`Summary ${suffix}`, { exact: true }),
+  ).toBeVisible();
+  // Layout visibility alone misses paint containment clipping. The panel must
+  // occupy space inside the card, and a real pointer click must reach acceptance.
+  const panel = actions.locator(".quick-review-panel");
+  const card = page.locator(".board-ticket").filter({ has: actions });
+  const panelBounds = await panel.boundingBox();
+  const cardBounds = await card.boundingBox();
+  expect(panelBounds).not.toBeNull();
+  expect(cardBounds).not.toBeNull();
+  expect(panelBounds!.x).toBeGreaterThanOrEqual(cardBounds!.x);
+  expect(panelBounds!.x + panelBounds!.width).toBeLessThanOrEqual(
+    cardBounds!.x + cardBounds!.width,
+  );
+  expect(panelBounds!.y + panelBounds!.height).toBeLessThanOrEqual(
+    cardBounds!.y + cardBounds!.height,
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await actions
+    .getByRole("button", { name: "Accept into Done", exact: true })
+    .click();
+  await expect
+    .poll(async () => (await record(page, review.meta.id)).meta.status)
+    .toBe("done");
+  await expect(actions).toHaveCount(0);
 });

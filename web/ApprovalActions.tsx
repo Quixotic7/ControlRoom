@@ -97,6 +97,7 @@ export function QuickApprovalActions({
 }) {
   const role = columns.find((column) => column.id === record.meta.status)?.role;
   const scope = approvedScope(record, ctx.byId);
+  const canApproveScope = !scope && role !== "done";
   const done = columns.filter((column) => column.role === "done");
   const [doneId, setDoneId] = useState(done.length === 1 ? done[0].id : "");
   const [busy, setBusy] = useState<ApprovalAction | null>(null);
@@ -125,7 +126,15 @@ export function QuickApprovalActions({
     }
   }
 
-  if (!showScopeState && scope && role !== "review" && !result) return null;
+  // Card footers only stay while an action or an error needs attention.
+  // Successful results must not leave an empty "Saved" footer behind.
+  if (
+    !showScopeState &&
+    !canApproveScope &&
+    role !== "review" &&
+    (!result || result.outcome === "succeeded")
+  )
+    return null;
 
   return (
     <div
@@ -133,7 +142,7 @@ export function QuickApprovalActions({
       aria-label={`Actions for ${record.meta.title}`}
     >
       {showScopeState && <ScopeState record={record} ctx={ctx} />}
-      {!scope && (
+      {canApproveScope && (
         <button
           className="button small"
           disabled={disabled || !!busy}
