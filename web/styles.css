@@ -786,6 +786,10 @@ textarea::placeholder {
 .column-role {
   width: 30%;
 }
+.column-role::after {
+  content: "";
+  min-height: 15px;
+}
 .column-setting input,
 .column-setting select {
   width: 100%;

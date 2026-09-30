@@ -23,6 +23,18 @@ test("status customization preserves a local draft through a concurrent update",
       page.getByRole("heading", { name: "Customize statuses", exact: true }),
     ).toBeVisible();
 
+    const displayNameBox = await page
+      .getByLabel("Name for stage-muj0to06")
+      .boundingBox();
+    const workflowRoleBox = await page
+      .getByLabel("Role for stage-muj0to06")
+      .boundingBox();
+    expect(displayNameBox).not.toBeNull();
+    expect(workflowRoleBox).not.toBeNull();
+    expect(
+      Math.abs(displayNameBox!.y - workflowRoleBox!.y),
+    ).toBeLessThanOrEqual(1);
+
     await page.getByLabel("Name for backlog").fill("Local intake");
     const beforeRemoteChange = await state(page);
     const remoteColumns = beforeRemoteChange.config.columns.map(
