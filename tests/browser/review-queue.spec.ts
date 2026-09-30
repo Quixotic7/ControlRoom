@@ -57,7 +57,13 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
   await page.getByRole("button", { name: "Request changes" }).click();
   const feedback = page.getByRole("textbox", { name: "Review feedback" });
   await feedback.fill("Keep this feedback while I inspect the next item.");
+  // Preserve native Option+Arrow word navigation while feedback is being
+  // typed. The visible navigation buttons remain keyboard-operable.
   await feedback.press("Alt+ArrowRight");
+  await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(
+    first.meta.title,
+  );
+  await page.getByRole("button", { name: "Next" }).press("Alt+ArrowRight");
 
   await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(
     second.meta.title,
@@ -66,7 +72,7 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
   await expect(
     page.getByRole("region", { name: "What to review" }),
   ).toContainText("not linked to this review submission");
-  await page.keyboard.press("Alt+ArrowLeft");
+  await page.getByRole("button", { name: "Previous" }).press("Alt+ArrowLeft");
   await expect(feedback).toHaveValue(
     "Keep this feedback while I inspect the next item.",
   );
@@ -76,4 +82,53 @@ test("review queue keeps feedback while keyboard navigation exposes evidence and
     page.getByRole("navigation", { name: "Review queue navigation" }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Next" })).toBeVisible();
+});
+
+test("queue navigation saves ticket drafts, retains them on failure, and waits for review outcomes", async ({
+  page,
+}) => {
+  const first = await create(page, "Draft-safe queued review");
+  const second = await create(page, "Second draft-safe review");
+  await page.goto("/");
+  await page.getByRole("button", { name: "Review queue" }).click();
+  const queue = page.getByRole("region", { name: "Review queue" });
+  await queue.getByRole("button").filter({ hasText: first.meta.title }).click();
+
+  const title = page.getByRole("textbox", { name: "Title" });
+  await title.fill("Saved before moving on");
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(title).toHaveValue(second.meta.title);
+  await expect
+    .poll(async () => {
+      const response = await page.request.get(`/api/records/${first.meta.id}`);
+      return (await response.json()).meta.title;
+    })
+    .toBe("Saved before moving on");
+
+  await page.getByRole("button", { name: "Previous" }).click();
+  await title.fill("Keep this unsaved title");
+  await page.route(`**/api/records/${first.meta.id}`, (route) => route.abort());
+  await page.getByRole("button", { name: "Next" }).click();
+  await expect(title).toHaveValue("Keep this unsaved title");
+  await expect(page.getByText("Review 1 of 2", { exact: true })).toBeVisible();
+  await page.unroute(`**/api/records/${first.meta.id}`);
+
+  let releaseOutcome!: () => void;
+  const outcomeBlocked = new Promise<void>((resolve) => {
+    releaseOutcome = resolve;
+  });
+  await page.route(
+    `**/api/records/${first.meta.id}/review-outcome`,
+    async (route) => {
+      await outcomeBlocked;
+      await route.continue();
+    },
+  );
+  await page.getByRole("button", { name: "Request changes" }).click();
+  await page.getByRole("button", { name: "Save feedback & return" }).click();
+  await expect(page.getByRole("button", { name: "Next" })).toBeDisabled();
+  await page.keyboard.press("Alt+ArrowRight");
+  await expect(title).toHaveValue("Keep this unsaved title");
+  releaseOutcome();
+  await expect(title).toHaveValue(second.meta.title);
 });

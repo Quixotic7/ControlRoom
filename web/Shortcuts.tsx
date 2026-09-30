@@ -61,7 +61,7 @@ export function Shortcuts({
           ["⌘ / Ctrl + S", "Save and close ticket or screenshot"],
           [
             "Review queue: Alt / Option + ← →",
-            "Previous / next review (feedback drafts stay with each ticket)",
+            "Previous / next review when focus is outside a text field (feedback drafts stay with each ticket)",
           ],
           ["Esc", "Save and close ticket"],
           [

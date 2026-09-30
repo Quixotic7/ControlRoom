@@ -558,6 +558,14 @@ export function RecordDetail({
     }
     if (!(await save())) setCloseFailed(true);
   }
+  // Queue changes remount this editor. Save through the same conflict-aware
+  // path as Close before handing control to App, so local ticket edits cannot
+  // disappear between reviews.
+  async function navigateReview(move?: () => void) {
+    if (!move || pending.current) return;
+    if (isDraftDirty() && !(await save(false, false))) return;
+    move();
+  }
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (
@@ -576,12 +584,21 @@ export function RecordDetail({
     if (!reviewQueue) return;
     const key = (e: KeyboardEvent) => {
       if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      // Option+Arrow is native word navigation in text controls on macOS.
+      // Keep it there; reviewers can focus the visible queue buttons instead.
+      if (
+        (e.target as HTMLElement | null)?.closest(
+          "input, textarea, select, [contenteditable=true]",
+        )
+      )
+        return;
+      if (pending.current) return;
       if (e.key === "ArrowLeft" && reviewQueue.previous) {
         e.preventDefault();
-        reviewQueue.previous();
+        void navigateReview(reviewQueue.previous);
       } else if (e.key === "ArrowRight" && reviewQueue.next) {
         e.preventDefault();
-        reviewQueue.next();
+        void navigateReview(reviewQueue.next);
       }
     };
     window.addEventListener("keydown", key);
@@ -1036,7 +1053,7 @@ export function RecordDetail({
             <button
               className="button subtle small"
               disabled={!reviewQueue.previous || saving}
-              onClick={reviewQueue.previous}
+              onClick={() => void navigateReview(reviewQueue.previous)}
               title="Previous review (Alt / Option + Left Arrow)"
             >
               Previous
@@ -1044,7 +1061,7 @@ export function RecordDetail({
             <button
               className="button subtle small"
               disabled={!reviewQueue.next || saving}
-              onClick={reviewQueue.next}
+              onClick={() => void navigateReview(reviewQueue.next)}
               title="Next review (Alt / Option + Right Arrow)"
             >
               Next
