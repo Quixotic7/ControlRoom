@@ -36,7 +36,8 @@ test("standalone ticket saves when returning through its logo and omits the boar
     await page.request.get(`/api/records/${r.meta.id}`)
   ).json();
   expect(saved.meta.title).toBe("Standalone saved");
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\?page=project&view=board$/);
+  await expect(page).not.toHaveURL(/ticketOnly=1|#ticket=/);
 });
 test("review instructions appear beside review actions without searching the thread", async ({
   page,
