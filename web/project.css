@@ -762,6 +762,11 @@ body,
 }
 .board-ticket {
   position: relative;
+  /* Keep large boards in the DOM for keyboard navigation and drag/drop while
+     letting the browser skip layout and paint work for off-screen cards. The
+     auto intrinsic size is replaced by each card's measured height once seen. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 140px;
 }
 .board-ticket-list {
   display: flex;
