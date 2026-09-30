@@ -97,9 +97,14 @@ test("hidden columns persist by project/view, preserve filters and records, and 
   await expect(page.locator(".board-cell")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Show all columns" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Show Backlog column", exact: true }),
   ).toBeVisible();
   await page.screenshot({ path: "test-results/all-columns-hidden.png" });
-  await page.getByRole("button", { name: "Show all columns" }).click();
+  await page
+    .getByRole("button", { name: "Show Backlog column", exact: true })
+    .click();
   await expect(
     page.getByRole("button", { name: "Hide Backlog column", exact: true }),
   ).toBeVisible();

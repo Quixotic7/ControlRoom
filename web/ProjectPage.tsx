@@ -74,9 +74,6 @@ export function ProjectPage({
   const visibility = useColumnVisibility(state.config.projectId, savedView.id);
   const [archiveView, setArchiveView] = useState(false);
   const [archiveScope, setArchiveScope] = useState<ArchiveScope | null>(null);
-  const hiddenCount = ctx.columns.filter((c) =>
-    visibility.hidden.has(c.id),
-  ).length;
   // Unsaved edits per view, like GitHub's "Save changes" on a modified view.
   const [drafts, setDrafts] = useState<Record<string, ProjectView>>({});
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -726,13 +723,6 @@ export function ProjectPage({
             Archived tickets
           </button>
         </div>
-        {view.layout === "board" && hiddenCount > 0 && (
-          <div className="column-visibility-bar" role="status">
-            <button className="text-button" onClick={visibility.showAll}>
-              Show all columns
-            </button>
-          </div>
-        )}
         {visibility.error && (
           <p className="banner error" role="alert">
             {visibility.error}
