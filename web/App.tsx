@@ -16,6 +16,7 @@ import {
 } from "./model";
 import { AttentionPage, KnowledgePage, PageHeader } from "./Pages";
 import { ProjectPage } from "./ProjectPage";
+import { Playbook } from "./Playbook";
 import { RecordDetail } from "./RecordDetail";
 import { Screenshots } from "./Screenshots";
 import { Settings } from "./Settings";
@@ -396,6 +397,9 @@ export function App() {
             {page === "insights" && <Insights state={state} ctx={ctx} />}
             {page === "agents" && (
               <Agents state={state} onOpen={setSelected} reload={reload} />
+            )}
+            {page === "playbook" && (
+              <Playbook project={state.config.name} branch={state.branch} />
             )}
             {page === "imports" && (
               <>

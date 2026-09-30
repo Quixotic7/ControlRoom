@@ -1834,6 +1834,135 @@ dialog::backdrop {
   color: var(--muted);
 }
 
+/* --------------------------------------------------------------- playbook */
+
+.playbook-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 20px;
+  align-items: end;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--subtle);
+}
+.playbook-intro > div {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+}
+.playbook-intro > div span,
+.playbook-intro small,
+.playbook-safety,
+.playbook-card dd {
+  color: var(--muted);
+}
+.playbook-intro small {
+  grid-column: 1 / -1;
+  font-size: 12px;
+}
+.playbook-ticket {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.playbook-ticket input {
+  width: 116px;
+  height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+.playbook-safety {
+  margin: 0 0 18px;
+  font-size: 13px;
+}
+.playbook-group {
+  margin: 26px 0;
+}
+.playbook-group h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.playbook-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 12px;
+}
+.playbook-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.playbook-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.playbook-card dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  font-size: 13px;
+}
+.playbook-card dl > div {
+  display: grid;
+  gap: 3px;
+}
+.playbook-card dt,
+.playbook-prompt > span {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.playbook-card dd {
+  margin: 0;
+}
+.playbook-placeholder {
+  margin: 0;
+  color: var(--accent);
+  font-size: 12px;
+}
+.playbook-prompt {
+  display: grid;
+  gap: 5px;
+  margin-top: auto;
+}
+.playbook-prompt textarea {
+  min-height: 154px;
+  resize: vertical;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--subtle);
+  color: var(--ink);
+  font: 12px/1.45 var(--mono, ui-monospace, monospace);
+}
+.playbook-card .button {
+  align-self: start;
+}
+.playbook-copy-fallback {
+  position: fixed;
+  z-index: 10;
+  right: 18px;
+  bottom: 18px;
+  max-width: min(440px, calc(100vw - 36px));
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+}
+
 /* ---------------------------------------------------------------- loading */
 
 .loading {
@@ -1861,6 +1990,10 @@ dialog::backdrop {
   }
   .annotation-layout {
     grid-template-columns: minmax(0, 1fr) 240px;
+  }
+  .playbook-intro {
+    grid-template-columns: 1fr;
+    align-items: start;
   }
   .search kbd {
     display: none;
