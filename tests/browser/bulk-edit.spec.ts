@@ -303,12 +303,23 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
   });
   const third = await create(page, `Frozen third ${suffix}`, {
     labels: [label],
+    priority: 3,
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Table", exact: true }).click();
   await page.getByLabel("Filter tickets").fill(`label:${label}`);
   const cell = (id: string, column: "status" | "priority") =>
     page.locator(`tr[data-id="${id}"] td[data-cell-column="${column}"]`);
+
+  // Copy a real displayed Low value, then use that clipboard value to fill a
+  // separate range below. This keeps clipboard coverage on the same keyboard
+  // path users take instead of injecting the fill value directly.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await cell(third.meta.id, "priority").click({ position: { x: 3, y: 3 } });
+  await page.keyboard.press("Meta+c");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("Low");
 
   // Both Shift click and Shift arrow retain the original cell as the anchor.
   await cell(first.meta.id, "priority").click({ position: { x: 3, y: 3 } });
@@ -330,13 +341,24 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
   await expect(
     page.locator("td.cell-selected[data-cell-column='priority']"),
   ).toHaveCount(1);
+
+  // The filter is an ordinary text input: pasting there remains native and
+  // must not trigger table bulk editing. Clear it again before restoring table
+  // focus with Shift, which deliberately preserves the frozen range.
+  const filter = page.getByLabel("Filter tickets");
+  await page.keyboard.press("Meta+v");
+  await expect(filter).toHaveValue(`${first.meta.title}Low`);
   await page.getByLabel("Filter tickets").fill(`label:${label}`);
   await expect(
     page.locator("td.cell-selected[data-cell-column='priority']"),
   ).toHaveCount(2);
-
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.evaluate(() => navigator.clipboard.writeText("Low"));
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
   await page.keyboard.press("Meta+v");
   await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
     "3",
@@ -345,7 +367,7 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
     "3",
   );
   await expect(page.getByLabel(`Priority of ${third.meta.title}`)).toHaveValue(
-    "2",
+    "3",
   );
 
   // A two-column rectangle updates matching Status/Priority cells.
@@ -367,8 +389,19 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
   await expect(page.getByLabel(`Status of ${second.meta.title}`)).toHaveValue(
     "selected",
   );
+  await expect(page.getByLabel(`Priority of ${second.meta.title}`)).toHaveValue(
+    "3",
+  );
 
+  // Reloading after the successful rectangle paste leaves focus outside the
+  // table. Shift-click restores table focus while retaining this rectangle,
+  // so the invalid-value assertion below tests the table paste handler.
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
   const firstBeforeInvalid = await record(page, first.meta.id);
+  const secondBeforeInvalid = await record(page, second.meta.id);
   await page.evaluate(() =>
     navigator.clipboard.writeText("Not a status\tUrgent\nProgress\tLow"),
   );
@@ -378,5 +411,8 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
   );
   expect((await record(page, first.meta.id)).revision).toBe(
     firstBeforeInvalid.revision,
+  );
+  expect((await record(page, second.meta.id)).revision).toBe(
+    secondBeforeInvalid.revision,
   );
 });
