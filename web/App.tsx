@@ -8,6 +8,7 @@ import { AnnotationEditor } from "./AnnotationEditor";
 import { CaptureControl } from "./CaptureControl";
 import { Imports } from "./Imports";
 import { Insights } from "./Insights";
+import { Feed } from "./Feed";
 import {
   attentionReason,
   context,
@@ -72,9 +73,11 @@ export function App() {
     [notice, setNotice] = useState(""),
     [shortcuts, setShortcuts] = useState(false),
     [prefsReady, setPrefsReady] = useState(false),
-    [knowledgeRead, setKnowledgeRead] = useState(0);
+    [knowledgeRead, setKnowledgeRead] = useState(0),
+    [focusComment, setFocusComment] = useState<string | undefined>();
   const { state, reload, loadError } = useProjectState();
   function setSelected(id: string | null) {
+    setFocusComment(undefined);
     setSelectedState(id);
     history.replaceState(
       null,
@@ -363,6 +366,20 @@ export function App() {
                 onMarkSeen={() => setKnowledgeRead(Date.now())}
               />
             )}
+            {page === "feed" && (
+              <Feed
+                revision={state.revision}
+                onOpen={(id, comment) => {
+                  setFocusComment(comment);
+                  setSelectedState(id);
+                  history.replaceState(
+                    null,
+                    "",
+                    location.pathname + location.search + ticketUrl(id),
+                  );
+                }}
+              />
+            )}
             {(page === "decisions" || page === "rulebook") && (
               <KnowledgePage
                 key={page}
@@ -429,12 +446,17 @@ export function App() {
       </main>
       {(active || creating) && (
         <RecordDetail
-          key={active?.meta.id ?? `new-${creating}`}
+          key={
+            active
+              ? `${active.meta.id}-${focusComment ?? "record"}`
+              : `new-${creating}`
+          }
           record={active ?? undefined}
           kind={creating ?? active!.meta.kind}
           state={state}
           standalone={standalone}
           conversationOrder={conversationOrder}
+          initialComment={focusComment}
           onConversationOrder={setConversationOrder}
           onClose={() => {
             if (standalone) {
