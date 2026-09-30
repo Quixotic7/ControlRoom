@@ -421,7 +421,7 @@ test("board Shift-click toggles individual tickets without selecting intervening
   page,
 }) => {
   const label = `individual-${Date.now()}`;
-  const tickets = [];
+  const tickets: Array<{ meta: { id: string } }> = [];
   for (let index = 0; index < 3; index++)
     tickets.push(
       await create(page, `Individual ${index} ${label}`, {
