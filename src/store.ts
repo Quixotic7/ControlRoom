@@ -1122,6 +1122,7 @@ export class Store {
         before,
         { ...before, resolved },
       );
+      return this.loadComment(p);
     });
   }
   claim(ticket: string, actor: Actor, worktree: string, release = false) {

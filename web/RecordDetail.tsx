@@ -562,7 +562,7 @@ export function RecordDetail({
                   reload={() => onSaved(baseline.meta.id)}
                 />
               )}
-              {c.kind === "question" && (
+              {c.kind === "question" && !c.questions && (
                 <button
                   className="button subtle"
                   onClick={async () => {

@@ -17,6 +17,11 @@ export function Questionnaire({
     revision: string;
     values: Record<string, string>;
   }>(() => {
+    // A submitted answer is the natural starting point for an amendment. A
+    // browser draft still wins field-by-field, including an intentionally
+    // cleared field, so reopening the ticket never discards in-progress work.
+    const submitted = question.answers?.at(-1)?.values ?? {};
+    const initial = { revision: question.revision, values: { ...submitted } };
     try {
       const saved = JSON.parse(localStorage.getItem(key) || "null");
       if (
@@ -27,9 +32,15 @@ export function Questionnaire({
         !Array.isArray(saved.values) &&
         Object.values(saved.values).every((v) => typeof v === "string")
       )
-        return saved;
+        return {
+          revision: saved.revision,
+          values:
+            saved.revision === question.revision
+              ? { ...initial.values, ...saved.values }
+              : saved.values,
+        };
     } catch {}
-    return { revision: question.revision, values: {} };
+    return initial;
   });
   const [error, setError] = useState(""),
     [pending, setPending] = useState(false),
@@ -57,8 +68,37 @@ export function Questionnaire({
         "POST",
         { actor, revision: draft.revision, answers: draft.values },
       );
-      change({ revision: saved.revision, values: {} });
+      // Retain the submitted values locally as well as in the comment. This
+      // covers both reopening this ticket and returning after a refresh.
+      change({
+        revision: saved.revision,
+        values: { ...(saved.answers?.at(-1)?.values ?? draft.values) },
+      });
       setPosted(true);
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      busy.current = false;
+      setPending(false);
+    }
+  }
+  async function reopen() {
+    if (busy.current || disabled) return;
+    busy.current = true;
+    setPending(true);
+    setError("");
+    try {
+      // Reopening itself changes the comment revision.  Acknowledge the exact
+      // revision returned by that deliberate action, while retaining every
+      // draft field (including fields intentionally cleared by the human).
+      // Other edits still leave the draft stale and require reconciliation.
+      const result = await api<{ comment: Comment }>(
+        `/comments/${question.id}`,
+        "PATCH",
+        { actor, revision: question.revision, resolved: false },
+      );
+      change({ revision: result.comment.revision, values: draft.values });
       await reload();
     } catch (e) {
       setError(String(e));
@@ -148,6 +188,31 @@ export function Questionnaire({
           {error}
         </p>
       )}
+      {question.answers?.length ? (
+        <section
+          className="questionnaire-history"
+          aria-label="Submitted answers"
+        >
+          <h4>Submitted answers</h4>
+          {question.answers.map((answer, index) => (
+            <article key={`${answer.at}:${index}`} className="submitted-answer">
+              <div className="comment-heading">
+                <strong>{answer.actor.name}</strong>
+                <span className="tag">{answer.actor.kind}</span>
+                <time className="muted" dateTime={answer.at} title={answer.at}>
+                  {new Date(answer.at).toLocaleString()}
+                </time>
+              </div>
+              {answer.questions.map((q) => (
+                <div key={q.id} className="submitted-answer-value">
+                  <strong>{q.prompt}</strong>
+                  <p>{answer.values[q.id]?.trim() || "(No answer supplied)"}</p>
+                </div>
+              ))}
+            </article>
+          ))}
+        </section>
+      ) : null}
       {posted && (
         <p role="status">
           Answers saved with your attribution and question wording.
@@ -169,6 +234,16 @@ export function Questionnaire({
       >
         {question.answers?.length ? "Submit amended answers" : "Submit answers"}
       </button>
+      {question.resolved && (
+        <button
+          type="button"
+          className="button subtle"
+          disabled={disabled || pending}
+          onClick={() => void reopen()}
+        >
+          Reopen questionnaire
+        </button>
+      )}
       <p className="muted">
         Nothing is submitted until you press this button. Drafts have no time
         limit.

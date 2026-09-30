@@ -2095,6 +2095,25 @@ dialog::backdrop {
   outline: 2px solid var(--accent);
   background: var(--accent-soft);
 }
+.questionnaire-history {
+  margin: 18px 0;
+}
+.questionnaire-history h4 {
+  margin-bottom: 10px;
+}
+.submitted-answer {
+  border-left: 3px solid var(--accent);
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: var(--inset);
+}
+.submitted-answer-value {
+  margin-top: 10px;
+}
+.submitted-answer-value p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
 .progress-report {
   display: flex;
   flex-direction: column;
