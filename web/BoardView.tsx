@@ -206,10 +206,14 @@ export function BoardView({
     ];
   };
   const tabStop = focused && shown.includes(focused) ? focused : shown[0];
-  const shiftSelect = (id: string) => {
+  const shiftSelect = (id: string, originId?: string) => {
     const ids = [...new Set(shown.map((key) => key.split("/").at(-1)!))];
     const anchor =
-      selectionAnchor && ids.includes(selectionAnchor) ? selectionAnchor : id;
+      selectionAnchor && ids.includes(selectionAnchor)
+        ? selectionAnchor
+        : originId && ids.includes(originId)
+          ? originId
+          : id;
     const start = ids.indexOf(anchor);
     const end = ids.indexOf(id);
     if (start < 0 || end < 0) return;
@@ -231,7 +235,7 @@ export function BoardView({
     e.preventDefault();
     next.focus();
     next.scrollIntoView({ block: "nearest", inline: "nearest" });
-    if (e.shiftKey) shiftSelect(next.dataset.id!);
+    if (e.shiftKey) shiftSelect(next.dataset.id!, card.dataset.id);
   };
   const lanes = groupBy === "none";
   return (

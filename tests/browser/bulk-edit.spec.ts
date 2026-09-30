@@ -273,3 +273,110 @@ test("table Shift ranges copy displayed values and report a stale paste conflict
     "2",
   );
 });
+
+test("board Shift-arrow starts a range at the focused card", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const label = `arrow-range-${suffix}`;
+  await create(page, `Arrow range one ${suffix}`, { labels: [label] });
+  await create(page, `Arrow range two ${suffix}`, { labels: [label] });
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+
+  const cards = page.locator(".ticket-card");
+  await cards.nth(0).focus();
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+});
+
+test("table ranges freeze ticket IDs across filtering and validate clipboard rectangles", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const label = `frozen-range-${suffix}`;
+  const first = await create(page, `Frozen first ${suffix}`, {
+    labels: [label],
+  });
+  const second = await create(page, `Frozen second ${suffix}`, {
+    labels: [label],
+  });
+  const third = await create(page, `Frozen third ${suffix}`, {
+    labels: [label],
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  const cell = (id: string, column: "status" | "priority") =>
+    page.locator(`tr[data-id="${id}"] td[data-cell-column="${column}"]`);
+
+  // Both Shift click and Shift arrow retain the original cell as the anchor.
+  await cell(first.meta.id, "priority").click({ position: { x: 3, y: 3 } });
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+
+  // Hide and restore an endpoint. Restoring it must restore the frozen IDs,
+  // not select the third row which happens to be adjacent after a refresh.
+  await page.getByLabel("Filter tickets").fill(first.meta.title);
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(1);
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => navigator.clipboard.writeText("Low"));
+  await page.keyboard.press("Meta+v");
+  await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
+    "3",
+  );
+  await expect(page.getByLabel(`Priority of ${second.meta.title}`)).toHaveValue(
+    "3",
+  );
+  await expect(page.getByLabel(`Priority of ${third.meta.title}`)).toHaveValue(
+    "2",
+  );
+
+  // A two-column rectangle updates matching Status/Priority cells.
+  await cell(first.meta.id, "status").click({ position: { x: 3, y: 3 } });
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await page.evaluate(() =>
+    navigator.clipboard.writeText("Progress\tHigh\nSelected\tLow"),
+  );
+  await page.keyboard.press("Meta+v");
+  await expect(page.getByLabel(`Status of ${first.meta.title}`)).toHaveValue(
+    "progress",
+  );
+  await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
+    "1",
+  );
+  await expect(page.getByLabel(`Status of ${second.meta.title}`)).toHaveValue(
+    "selected",
+  );
+
+  const firstBeforeInvalid = await record(page, first.meta.id);
+  await page.evaluate(() =>
+    navigator.clipboard.writeText("Not a status\tUrgent\nProgress\tLow"),
+  );
+  await page.keyboard.press("Meta+v");
+  await expect(page.locator(".table-paste-feedback")).toContainText(
+    "not a valid status value. Nothing was changed.",
+  );
+  expect((await record(page, first.meta.id)).revision).toBe(
+    firstBeforeInvalid.revision,
+  );
+});

@@ -66,6 +66,14 @@ function DragRow({
 
 type EditableColumn = "status" | "priority";
 type TableCell = { id: string; column: EditableColumn };
+type CellSelection = {
+  active: TableCell;
+  anchor: TableCell;
+  // Keep the IDs which were in the range when it was made. A refresh or a
+  // sort must not turn the next paste into a write to newly-adjacent rows.
+  rows: string[];
+  columns: EditableColumn[];
+};
 const editableColumns: EditableColumn[] = ["status", "priority"];
 
 function matrixFromClipboard(value: string) {
@@ -114,9 +122,24 @@ export function TableView({
   const ticketDrag = useTicketDragContext();
   const backlog = ctx.columns.find((c) => c.role === "backlog")!.id;
   const allBox = useRef<HTMLInputElement>(null);
+  // Label grouping can place one ticket in more than one group. The table is
+  // a spreadsheet-like list, so show each ticket once (in its first group).
+  const renderedIds = new Set<string>();
+  const tableGroups = groups.map((group) => ({
+    ...group,
+    // A collapsed group renders no rows, so it must not prevent the same
+    // labelled ticket from appearing in a later open group.
+    items: collapsed.has(group.key)
+      ? group.items
+      : group.items.filter((record) => {
+          if (renderedIds.has(record.meta.id)) return false;
+          renderedIds.add(record.meta.id);
+          return true;
+        }),
+  }));
   const shown = [
     ...new Map(
-      groups
+      tableGroups
         .filter((g) => !collapsed.has(g.key))
         .flatMap((g) => g.items)
         .map((r) => [r.meta.id, r]),
@@ -131,54 +154,68 @@ export function TableView({
   // Table columns: checkbox, row number, seven fields, and the order control.
   const columns = 9 + (canReorder ? 1 : 0);
   const tableRef = useRef<HTMLDivElement>(null);
-  const [activeCell, setActiveCell] = useState<TableCell | null>(null);
-  const [cellAnchor, setCellAnchor] = useState<TableCell | null>(null);
+  const [cellSelection, setCellSelection] = useState<CellSelection | null>(
+    null,
+  );
+  // Moving focus after a Shift click/arrow must not let td.onFocus turn the
+  // range back into a one-cell selection.
+  const preserveRangeOnFocus = useRef(false);
   const [pasteFeedback, setPasteFeedback] = useState<string | null>(null);
   const rowIds = shown.map((record) => record.meta.id);
   const active =
-    activeCell && rowIds.includes(activeCell.id) ? activeCell : null;
-  const anchor =
-    cellAnchor && rowIds.includes(cellAnchor.id) ? cellAnchor : active;
+    cellSelection && rowIds.includes(cellSelection.active.id)
+      ? cellSelection.active
+      : null;
   const selectedCells = () => {
-    if (!active || !anchor) return [] as TableCell[];
-    const firstRow = Math.min(
-      rowIds.indexOf(active.id),
-      rowIds.indexOf(anchor.id),
-    );
-    const lastRow = Math.max(
-      rowIds.indexOf(active.id),
-      rowIds.indexOf(anchor.id),
-    );
-    const firstColumn = Math.min(
-      editableColumns.indexOf(active.column),
-      editableColumns.indexOf(anchor.column),
-    );
-    const lastColumn = Math.max(
-      editableColumns.indexOf(active.column),
-      editableColumns.indexOf(anchor.column),
-    );
-    return rowIds
-      .slice(firstRow, lastRow + 1)
-      .flatMap((id) =>
-        editableColumns
-          .slice(firstColumn, lastColumn + 1)
-          .map((column) => ({ id, column })),
-      );
+    if (!cellSelection) return [] as TableCell[];
+    // Hidden/filtered rows leave the range rather than being written by a
+    // keyboard paste. The remaining entries retain their original IDs/order.
+    return cellSelection.rows
+      .filter((id) => rowIds.includes(id))
+      .flatMap((id) => cellSelection.columns.map((column) => ({ id, column })));
   };
   const isCellSelected = (id: string, column: EditableColumn) =>
     selectedCells().some((cell) => cell.id === id && cell.column === column);
   const activateCell = (cell: TableCell, extend = false) => {
-    setActiveCell(cell);
-    setCellAnchor((current) => (extend ? (current ?? cell) : cell));
+    setCellSelection((current) => {
+      const anchor =
+        extend && current && rowIds.includes(current.anchor.id)
+          ? current.anchor
+          : cell;
+      const firstRow = Math.min(
+        rowIds.indexOf(anchor.id),
+        rowIds.indexOf(cell.id),
+      );
+      const lastRow = Math.max(
+        rowIds.indexOf(anchor.id),
+        rowIds.indexOf(cell.id),
+      );
+      const firstColumn = Math.min(
+        editableColumns.indexOf(anchor.column),
+        editableColumns.indexOf(cell.column),
+      );
+      const lastColumn = Math.max(
+        editableColumns.indexOf(anchor.column),
+        editableColumns.indexOf(cell.column),
+      );
+      return {
+        active: cell,
+        anchor,
+        rows: rowIds.slice(firstRow, lastRow + 1),
+        columns: editableColumns.slice(firstColumn, lastColumn + 1),
+      };
+    });
   };
-  const focusCell = (cell: TableCell) => {
-    requestAnimationFrame(() =>
+  const focusCell = (cell: TableCell, preserveRange = false) => {
+    requestAnimationFrame(() => {
+      if (preserveRange) preserveRangeOnFocus.current = true;
       tableRef.current
         ?.querySelector<HTMLElement>(
           `td[data-cell-id="${cell.id}"][data-cell-column="${cell.column}"]`,
         )
-        ?.focus(),
-    );
+        ?.focus();
+      preserveRangeOnFocus.current = false;
+    });
   };
   const copiedText = () => {
     const cells = selectedCells();
@@ -321,7 +358,7 @@ export function TableView({
       return;
     const next = { id: rowIds[row], column: editableColumns[column] };
     activateCell(next, e.shiftKey);
-    focusCell(next);
+    focusCell(next, e.shiftKey);
   };
   let row = 0;
   return (
@@ -375,7 +412,7 @@ export function TableView({
             {canReorder && <th aria-label="Order" />}
           </tr>
         </thead>
-        {groups.map((g) => {
+        {tableGroups.map((g) => {
           const isCollapsed = collapsed.has(g.key);
           return (
             <tbody
@@ -519,17 +556,23 @@ export function TableView({
                               ? "cell-selected"
                               : ""
                           }
-                          onFocus={() =>
-                            activateCell({ id: r.meta.id, column: "status" })
-                          }
+                          onFocus={() => {
+                            if (preserveRangeOnFocus.current) {
+                              preserveRangeOnFocus.current = false;
+                              return;
+                            }
+                            activateCell({ id: r.meta.id, column: "status" });
+                          }}
                           onMouseDown={(e) => {
                             if (!e.shiftKey) return;
                             e.preventDefault();
+                            preserveRangeOnFocus.current = true;
                             activateCell(
                               { id: r.meta.id, column: "status" },
                               true,
                             );
                             e.currentTarget.focus();
+                            preserveRangeOnFocus.current = false;
                           }}
                         >
                           <span className="status-cell" data-stage={role}>
@@ -557,17 +600,23 @@ export function TableView({
                               ? "cell-selected"
                               : ""
                           }
-                          onFocus={() =>
-                            activateCell({ id: r.meta.id, column: "priority" })
-                          }
+                          onFocus={() => {
+                            if (preserveRangeOnFocus.current) {
+                              preserveRangeOnFocus.current = false;
+                              return;
+                            }
+                            activateCell({ id: r.meta.id, column: "priority" });
+                          }}
                           onMouseDown={(e) => {
                             if (!e.shiftKey) return;
                             e.preventDefault();
+                            preserveRangeOnFocus.current = true;
                             activateCell(
                               { id: r.meta.id, column: "priority" },
                               true,
                             );
                             e.currentTarget.focus();
+                            preserveRangeOnFocus.current = false;
                           }}
                         >
                           <select
