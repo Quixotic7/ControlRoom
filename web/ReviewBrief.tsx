@@ -10,6 +10,7 @@ export function ReviewBrief({
   const v = meta.verification;
   const current =
     !!v && !!meta.reviewVerificationAt && meta.reviewVerificationAt === v.at;
+  const reviewablePr = !!meta.pr && /^https?:\/\/\S+$/i.test(meta.pr.trim());
   return (
     <section className="review-brief" aria-label="What to review">
       <h3>What to review</h3>
@@ -62,6 +63,41 @@ export function ReviewBrief({
           </div>
         </details>
       )}
+      <section className="review-change-source" aria-label="Change source">
+        <h4>Changes to inspect</h4>
+        {reviewablePr ? (
+          <p>
+            A pull request was supplied. Open it to inspect its diff; this queue
+            does not claim the diff has already been inspected.
+          </p>
+        ) : meta.pr ? (
+          <p>
+            A pull request reference was supplied but cannot be opened here.
+            Change and diff information is unavailable.
+          </p>
+        ) : meta.branch ? (
+          <p>
+            Submitted branch: <code>{meta.branch}</code>. No pull request was
+            supplied, so a reviewable diff is not available here.
+          </p>
+        ) : meta.commits?.length ? (
+          <p>
+            {meta.commits.length} submitted commit
+            {meta.commits.length === 1 ? "" : "s"} recorded. No pull request or
+            diff is available here.
+          </p>
+        ) : (
+          <p>
+            No pull request, branch, or commit range was supplied. Change and
+            diff information is unavailable.
+          </p>
+        )}
+        {reviewablePr && (
+          <a href={meta.pr!.trim()} target="_blank" rel="noreferrer">
+            Open submitted pull request ↗
+          </a>
+        )}
+      </section>
       {meta.exceptions && (
         <div className="banner">
           <div>

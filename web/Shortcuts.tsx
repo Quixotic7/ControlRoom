@@ -59,6 +59,10 @@ export function Shortcuts({
           ["Enter in Add microtask", "Append checklist item and keep typing"],
           ["⌘ / Ctrl + Enter", "Post a comment"],
           ["⌘ / Ctrl + S", "Save and close ticket or screenshot"],
+          [
+            "Review queue: Alt / Option + ← →",
+            "Previous / next review when focus is outside a text field (feedback drafts stay with each ticket)",
+          ],
           ["Esc", "Save and close ticket"],
           [
             "Delete / Backspace",

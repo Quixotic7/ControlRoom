@@ -1,15 +1,26 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Column } from "../src/types";
+
+export type ReviewActionDraft = {
+  outcome: "accept" | "changes" | null;
+  feedback: string;
+  doneId?: string;
+  target?: string;
+};
 
 export function ReviewActions({
   columns,
   disabled,
   hidden,
+  draft,
+  onDraft,
   onDecide,
 }: {
   columns: Column[];
   disabled: boolean;
   hidden: boolean;
+  draft?: ReviewActionDraft;
+  onDraft: (draft: ReviewActionDraft) => void;
   onDecide: (
     outcome: "accept" | "changes",
     target: string,
@@ -21,14 +32,16 @@ export function ReviewActions({
   const failed = progress.filter(
     (c) => c.name.trim().toLowerCase() === "failed review",
   );
-  const [doneId, setDoneId] = useState(done.length === 1 ? done[0].id : "");
-  const [target, setTarget] = useState(failed.length === 1 ? failed[0].id : "");
-  const [outcome, setOutcome] = useState<"accept" | "changes" | null>(null);
+  const doneId = draft?.doneId ?? (done.length === 1 ? done[0].id : "");
+  const target = draft?.target ?? (failed.length === 1 ? failed[0].id : "");
+  const outcome = draft?.outcome ?? null;
+  const feedback = draft?.feedback ?? "";
+  const update = (patch: Partial<ReviewActionDraft>) =>
+    onDraft({ outcome, feedback, doneId, target, ...patch });
   const feedbackInput = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (outcome && !hidden) feedbackInput.current?.focus();
   }, [outcome, hidden]);
-  const [feedback, setFeedback] = useState("");
   const validDone = done.some((c) => c.id === doneId);
   const validTarget = progress.some((c) => c.id === target);
   return (
@@ -45,7 +58,7 @@ export function ReviewActions({
               Done destination
               <select
                 value={validDone ? doneId : ""}
-                onChange={(e) => setDoneId(e.target.value)}
+                onChange={(e) => update({ doneId: e.target.value })}
                 disabled={disabled}
               >
                 <option value="">Choose Done column</option>
@@ -61,7 +74,7 @@ export function ReviewActions({
             className="button primary"
             disabled={disabled}
             aria-expanded={outcome === "accept"}
-            onClick={() => setOutcome("accept")}
+            onClick={() => update({ outcome: "accept" })}
           >
             Accept into Done
           </button>
@@ -69,7 +82,7 @@ export function ReviewActions({
             className="button"
             disabled={disabled}
             aria-expanded={outcome === "changes"}
-            onClick={() => setOutcome("changes")}
+            onClick={() => update({ outcome: "changes" })}
           >
             Request changes
           </button>
@@ -95,7 +108,7 @@ export function ReviewActions({
               ref={feedbackInput}
               rows={2}
               value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
+              onChange={(e) => update({ feedback: e.target.value })}
               placeholder={
                 outcome === "accept"
                   ? "Why does this pass review? (optional)"
@@ -110,7 +123,7 @@ export function ReviewActions({
                 Return to
                 <select
                   value={validTarget ? target : ""}
-                  onChange={(e) => setTarget(e.target.value)}
+                  onChange={(e) => update({ target: e.target.value })}
                   disabled={disabled}
                 >
                   <option value="">Choose a development column</option>

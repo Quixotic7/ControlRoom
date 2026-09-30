@@ -5,6 +5,7 @@ import {
   BookIcon,
   ChartIcon,
   CommentIcon,
+  CheckIcon,
   DecisionIcon,
   GitBranchIcon,
   ImageIcon,
@@ -21,6 +22,7 @@ export type Page =
   | "project"
   | "feed"
   | "attention"
+  | "review"
   | "decisions"
   | "rulebook"
   | "screenshots"
@@ -33,6 +35,7 @@ export const pages: Page[] = [
   "project",
   "feed",
   "attention",
+  "review",
   "decisions",
   "rulebook",
   "screenshots",
@@ -46,6 +49,7 @@ const tabs: [Page, string, () => React.JSX.Element][] = [
   ["project", "Project", ProjectIcon],
   ["feed", "Feed", CommentIcon],
   ["attention", "Needs you", InboxIcon],
+  ["review", "Review queue", CheckIcon],
   ["decisions", "Decisions", DecisionIcon],
   ["rulebook", "Rulebook", BookIcon],
   ["screenshots", "Screenshots", ImageIcon],
@@ -59,6 +63,7 @@ export function TopNav({
   branch,
   page,
   attentionCount,
+  reviewCount,
   density,
   theme,
   setPage,
@@ -72,6 +77,7 @@ export function TopNav({
   branch: string;
   page: Page;
   attentionCount: number;
+  reviewCount: number;
   density: string;
   theme: Theme;
   setPage: (page: Page) => void;
@@ -218,6 +224,9 @@ export function TopNav({
             {title}
             {p === "attention" && attentionCount > 0 && (
               <span className="count attention">{attentionCount}</span>
+            )}
+            {p === "review" && reviewCount > 0 && (
+              <span className="count">{reviewCount}</span>
             )}
           </button>
         ))}

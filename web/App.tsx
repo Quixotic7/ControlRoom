@@ -19,6 +19,8 @@ import { AttentionPage, KnowledgePage, PageHeader } from "./Pages";
 import { ProjectPage } from "./ProjectPage";
 import { Playbook } from "./Playbook";
 import { RecordDetail } from "./RecordDetail";
+import { ReviewQueue } from "./ReviewQueue";
+import type { ReviewActionDraft } from "./ReviewActions";
 import { Screenshots } from "./Screenshots";
 import { Settings } from "./Settings";
 import { Shortcuts } from "./Shortcuts";
@@ -75,6 +77,13 @@ export function App() {
     [prefsReady, setPrefsReady] = useState(false),
     [knowledgeRead, setKnowledgeRead] = useState(0),
     [focusComment, setFocusComment] = useState<string | undefined>();
+  const [reviewDrafts, setReviewDrafts] = useState<
+    Record<string, ReviewActionDraft>
+  >({});
+  // A review pass is a sequence, not a "most recently edited" list. Keep the
+  // IDs encountered when the reviewer opens the queue so saving an item (which
+  // updates `updatedAt`) cannot make Next/Previous jump or revisit an item.
+  const [reviewQueue, setReviewQueue] = useState<string[] | null>(null);
   const { state, reload, loadError } = useProjectState();
   function setSelected(id: string | null) {
     setFocusComment(undefined);
@@ -222,6 +231,44 @@ export function App() {
       .map((r) => [r, attentionReason(r, state, ctx)] as const)
       .filter((x): x is [(typeof x)[0], AttentionReason] => !!x[1]);
   }, [state, ctx]);
+  const reviewRecords = useMemo(
+    () =>
+      (state?.records ?? [])
+        .filter(
+          (record) =>
+            record.meta.kind === "ticket" &&
+            !record.meta.archived &&
+            state?.config.columns.find(
+              (column) => column.id === record.meta.status,
+            )?.role === "review",
+        )
+        .sort(
+          (a, b) =>
+            (a.meta.number ?? Number.MAX_SAFE_INTEGER) -
+              (b.meta.number ?? Number.MAX_SAFE_INTEGER) ||
+            a.meta.id.localeCompare(b.meta.id),
+        ),
+    [state],
+  );
+  const availableReviewIds = reviewRecords.map((record) => record.meta.id);
+  const availableReviewKey = availableReviewIds.join("\u0000");
+  useEffect(() => {
+    if (page !== "review") {
+      setReviewQueue(null);
+      return;
+    }
+    // Retain the current pass in its original order. Items that leave review
+    // disappear; newly submitted items join at the end for a later pass.
+    setReviewQueue((previous) => {
+      const available = new Set(availableReviewIds);
+      const retained = (previous ?? []).filter((id) => available.has(id));
+      const retainedIds = new Set(retained);
+      return [
+        ...retained,
+        ...availableReviewIds.filter((id) => !retainedIds.has(id)),
+      ];
+    });
+  }, [page, availableReviewKey]);
 
   if (!state || !ctx || !prefsReady)
     return (
@@ -245,6 +292,18 @@ export function App() {
     ? (state.records.find((r) => r.meta.id === selected) ??
       (createdRecord?.meta.id === selected ? createdRecord : null))
     : null;
+  const reviewQueueIds =
+    page === "review"
+      ? (reviewQueue ?? availableReviewIds)
+      : availableReviewIds;
+  const recordsById = new Map(
+    reviewRecords.map((record) => [record.meta.id, record]),
+  );
+  const queuedReviewRecords = reviewQueueIds.flatMap((id) => {
+    const record = recordsById.get(id);
+    return record ? [record] : [];
+  });
+  const reviewPosition = active ? reviewQueueIds.indexOf(active.meta.id) : -1;
   const views = viewsOf(state);
   const currentViewId = views.some((v) => v.id === viewId)
     ? viewId
@@ -275,6 +334,7 @@ export function App() {
           branch={state.branch}
           page={page}
           attentionCount={attention.length + changedDocs.length}
+          reviewCount={reviewRecords.length}
           density={density}
           theme={theme}
           setPage={go}
@@ -381,6 +441,9 @@ export function App() {
                 }}
               />
             )}
+            {page === "review" && (
+              <ReviewQueue records={queuedReviewRecords} open={setSelected} />
+            )}
             {(page === "decisions" || page === "rulebook") && (
               <KnowledgePage
                 key={page}
@@ -463,6 +526,52 @@ export function App() {
           kind={creating ?? active!.meta.kind}
           state={state}
           standalone={standalone}
+          reviewQueue={
+            page === "review" && reviewPosition >= 0
+              ? {
+                  position: reviewPosition,
+                  total: reviewQueueIds.length,
+                  previous:
+                    reviewPosition > 0
+                      ? () => setSelected(reviewQueueIds[reviewPosition - 1])
+                      : undefined,
+                  next:
+                    reviewPosition < reviewQueueIds.length - 1
+                      ? () => setSelected(reviewQueueIds[reviewPosition + 1])
+                      : undefined,
+                }
+              : undefined
+          }
+          reviewDraft={active ? reviewDrafts[active.meta.id] : undefined}
+          onReviewDraft={(draft) => {
+            if (!active) return;
+            setReviewDrafts((drafts) => ({
+              ...drafts,
+              [active.meta.id]: draft,
+            }));
+          }}
+          onReviewDone={
+            page === "review" && reviewPosition >= 0
+              ? (id) => {
+                  setReviewDrafts((drafts) => {
+                    const { [id]: _removed, ...rest } = drafts;
+                    return rest;
+                  });
+                  const index = reviewQueueIds.indexOf(id);
+                  const stillInReview = new Set(availableReviewIds);
+                  setSelected(
+                    reviewQueueIds
+                      .slice(index + 1)
+                      .find((candidate) => stillInReview.has(candidate)) ??
+                      reviewQueueIds
+                        .slice(0, index)
+                        .reverse()
+                        .find((candidate) => stillInReview.has(candidate)) ??
+                      null,
+                  );
+                }
+              : undefined
+          }
           conversationOrder={conversationOrder}
           initialComment={focusComment}
           onConversationOrder={setConversationOrder}
