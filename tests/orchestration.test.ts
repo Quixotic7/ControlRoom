@@ -1108,3 +1108,50 @@ test("legacy verification questions recover once with agent attribution", async 
     2,
   );
 });
+
+test("ticket activity requires a verified running work process and clears on stop", async (t) => {
+  const runner: Execute = (options) =>
+    execute({
+      ...options,
+      command: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      input: "",
+    });
+  const { manager, create } = await fixture(t, runner);
+  const ticket = await create("Actual process activity");
+  const run = await manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  assert.deepEqual(manager.activity(), []);
+  await until(manager, () =>
+    manager.status().runs.some((item) => item.verifiedRunning),
+  );
+  assert.deepEqual(manager.activity(), [
+    { ticket: ticket.meta.id, runId: run.id, worker: "Worker 1" },
+  ]);
+  // Even a live process cannot make queued/review/verification activity look
+  // like the coding worker is currently implementing this ticket.
+  for (const state of [
+    "queued",
+    "verifying",
+    "waiting_input",
+    "awaiting_review",
+  ] as const) {
+    run.state = state;
+    assert.deepEqual(manager.activity(), []);
+  }
+  run.state = "running";
+  run.kind = "review";
+  assert.deepEqual(manager.activity(), []);
+  run.kind = "work";
+  const identity = run.processStartedAt;
+  run.processStartedAt = "different process";
+  assert.deepEqual(manager.activity(), []);
+  run.processStartedAt = identity;
+  await manager.stop(run.id, human);
+  assert.deepEqual(manager.activity(), []);
+});

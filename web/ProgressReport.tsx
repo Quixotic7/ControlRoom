@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
 import type { RecordFile, Claim } from "../src/types";
+import { useAgentActivity } from "./AgentActivity";
 import { ago } from "./api";
 export function ProgressReport({
   record,
   claim,
   role,
+  stageName,
 }: {
   record: RecordFile;
   claim?: Claim;
   role?: string;
+  stageName?: string;
 }) {
+  const activity = useAgentActivity(record.meta.id);
   const [clock, setClock] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setClock(Date.now()), 30000);
@@ -22,10 +26,9 @@ export function ProgressReport({
   const stale = !!p && clock - Date.parse(p.at) > 30 * 60 * 1000;
   const recent =
     role === "progress" && !record.meta.blocked && !expired && !!p && !stale;
-  // Stage decoration is independent of telemetry: an ordinary In Progress
-  // ticket should still have motion, without claiming a verified running agent.
-  const signal = role === "progress" && !record.meta.blocked && !expired;
-  const flowing = signal && !stale;
+  // Neither workflow stage, a claim nor a recent report proves a live worker.
+  const signal = role === "progress" && !record.meta.blocked && !!activity;
+  const flowing = signal;
   if (!p && !claim && role !== "progress") return null;
   const minutes = start
     ? Math.max(0, Math.floor((clock - Date.parse(start)) / 60000))
@@ -42,39 +45,30 @@ export function ProgressReport({
     <span
       className={`progress-report${recent ? " recent-report" : ""}${flowing ? " stage-flow" : ""}`}
       data-activity={
-        recent ? "recent-reported" : flowing ? "stage-decoration" : undefined
+        flowing ? "verified-running" : recent ? "recent-reported" : undefined
       }
     >
       {signal && (
         <span
-          className={`activity-signal${stale ? " signal-stale" : ""}`}
-          aria-label={
-            recent
-              ? "Recent reported activity"
-              : stale
-                ? "Awaiting progress update"
-                : "In progress stage animation"
-          }
-          title="Decorative stage visualization, not measured activity or proof that an agent is running. Last reported activity is shown separately."
+          className="activity-signal"
+          aria-label="Verified running agent"
+          title="The local service verified this managed worker process. Checked every five seconds."
         >
           <span className="activity-waveform" aria-hidden="true">
             {Array.from({ length: 32 }, (_, index) => (
               <i key={index} />
             ))}
           </span>
-          <span>
-            {recent
-              ? "Recent reported activity"
-              : stale
-                ? "Awaiting progress update"
-                : "In progress · stage animation"}
-          </span>
+          <span>{activity?.worker} · verified running</span>
         </span>
       )}
       {role === "progress" && (
-        <span title="Wall-clock time since the current In Progress entry; not active agent time">
-          In Progress · {elapsed} elapsed
+        <span title="Wall-clock time since entering a progress-role stage; not active agent time">
+          {stageName || record.meta.status} · {elapsed} in stage
         </span>
+      )}
+      {role === "progress" && !signal && (
+        <span className="muted">No verified running agent</span>
       )}
       {claim && (
         <span className={expired ? "stale" : "muted"}>

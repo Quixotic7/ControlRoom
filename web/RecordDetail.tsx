@@ -1370,6 +1370,11 @@ export function RecordDetail({
                 <ProgressReport
                   record={record}
                   claim={state.claims.find((c) => c.ticket === record.meta.id)}
+                  stageName={
+                    state.config.columns.find(
+                      (c) => c.id === record.meta.status,
+                    )?.name
+                  }
                   role={
                     state.config.columns.find(
                       (c) => c.id === record.meta.status,

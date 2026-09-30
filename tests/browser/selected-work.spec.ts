@@ -289,7 +289,7 @@ test("reported estimates, expired claims and reduced motion remain honest", asyn
   await open(page, r.meta.id);
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByText(/45% estimate/)).toBeVisible();
-  await expect(dialog.getByText(/In Progress · .* elapsed/)).toBeVisible();
+  await expect(dialog.getByText(/In Progress · .* in stage/)).toBeVisible();
   await expect(
     dialog.getByRole("meter", { name: "Reported progress estimate" }),
   ).toHaveAttribute("aria-valuenow", "45");

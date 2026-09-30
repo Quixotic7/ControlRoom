@@ -95,6 +95,10 @@ export async function buildServer(
       ticket: req.query?.ticket,
     }),
   );
+  app.get("/api/activity", async (_req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    return orchestration.activity();
+  });
   app.get("/api/orchestration", async () => orchestration.status());
   app.get("/api/orchestration/:id/log", async (req: any) => ({
     log: orchestration.log(req.params.id),

@@ -107,7 +107,12 @@ export function TicketCard({
         <Avatar name={m.owner} />
       </span>
       <span className="card-title">{m.title}</span>
-      <ProgressReport record={record} claim={claim} role={role} />
+      <ProgressReport
+        record={record}
+        claim={claim}
+        role={role}
+        stageName={ctx.columns.find((c) => c.id === m.status)?.name}
+      />
       <TicketProgress record={record} ctx={ctx} compact />
       {!!m.attachments?.length && (
         <span className="card-images" aria-label="Attached screenshots">
