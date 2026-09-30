@@ -110,7 +110,9 @@ export async function startMcp(
           ticket: id,
           revision: etag,
           kind: { type: "string", enum: ["plan", "work"] },
-          worker: str("Required for work: explicitly choose the configured worker best suited to the task complexity, uncertainty and risk. Omit only for plan."),
+          worker: str(
+            "Required for work: explicitly choose the configured worker best suited to the task complexity, uncertainty and risk. Omit only for plan.",
+          ),
         },
         required: ["ticket", "revision", "kind"],
       },
@@ -198,6 +200,8 @@ export async function startMcp(
           labels: r.meta.labels,
           priority: r.meta.priority ?? 2,
           parent: r.meta.parent,
+          related: r.meta.related,
+          duplicateOf: r.meta.duplicateOf,
           blocked: r.meta.blocked,
           etag: r.revision,
         }));
@@ -213,7 +217,7 @@ export async function startMcp(
     {
       name: "get_context",
       description:
-        "Everything an agent needs before working on a ticket, as a prompt-ready Markdown brief: description, approved scope, applicable decisions and rules, dependencies, conversation, screenshot paths, claim, and the protocol to follow. Includes the etag.",
+        "Everything an agent needs before working on a ticket, as a prompt-ready Markdown brief: description, approved scope, applicable decisions and rules, non-blocking related tickets, preserved duplicate provenance, dependencies, conversation, screenshot paths, claim, and the protocol to follow. Includes the etag.",
       inputSchema: {
         type: "object",
         properties: {
@@ -359,6 +363,105 @@ export async function startMcp(
           actor: who,
         });
       },
+    },
+    {
+      name: "set_related_ticket",
+      description:
+        "Add or remove a reciprocal, non-blocking related-ticket link. Requires current etags for both records so neither side is silently overwritten.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          other: str("Other ticket number or ID"),
+          etag,
+          other_etag: str("Current etag for the other ticket"),
+          action: { type: "string", enum: ["add", "remove"] },
+        },
+        required: ["id", "other", "etag", "other_etag", "action"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/records/${encodeURIComponent(a.id)}/relationships`,
+          "POST",
+          {
+            other: a.other,
+            revision: a.etag,
+            otherRevision: a.other_etag,
+            action: a.action,
+            actor: who,
+          },
+        ),
+    },
+    {
+      name: "preview_ticket_merge",
+      description:
+        "Preview merging a duplicate source into a chosen survivor. Returns preserved content, metadata conflicts, incoming parent/dependency rewrites, and the exact etag set required to apply it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          survivor: id,
+          source: str("Duplicate source number or ID"),
+        },
+        required: ["survivor", "source"],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/records/${encodeURIComponent(a.survivor)}/merge-preview`,
+          "POST",
+          { source: a.source },
+        ),
+    },
+    {
+      name: "merge_duplicate_ticket",
+      description:
+        "Apply a reviewed duplicate merge. The survivor remains active; the source is archived as a duplicate without becoming Done. Supply all revisions from preview_ticket_merge and an explicit resolution for every reported conflict. Retries with the same request_id are idempotent.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          survivor: id,
+          source: str("Duplicate source number or ID"),
+          request_id: str(
+            "Stable unique ID reused only when retrying this merge",
+          ),
+          revisions: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "Exact affected record etags returned by preview_ticket_merge",
+          },
+          resolutions: {
+            type: "object",
+            additionalProperties: {
+              type: "string",
+              enum: ["survivor", "source", "both"],
+            },
+            description:
+              "Explicit choices for parent, status, owner, priority, and acceptanceCriteria conflicts; both is valid only for acceptanceCriteria",
+          },
+        },
+        required: [
+          "survivor",
+          "source",
+          "request_id",
+          "revisions",
+          "resolutions",
+        ],
+      },
+      run: (a) =>
+        api(
+          store,
+          `/api/records/${encodeURIComponent(a.survivor)}/merge`,
+          "POST",
+          {
+            source: a.source,
+            requestId: a.request_id,
+            revisions: a.revisions,
+            resolutions: a.resolutions,
+            actor: who,
+          },
+        ),
     },
     {
       name: "comment",

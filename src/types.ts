@@ -1,6 +1,23 @@
 import type { Assignment, AgentReviewReceipt } from "./orchestration-types.js";
 export type Kind = "ticket" | "decision" | "rule";
 export type Actor = { name: string; kind: "human" | "agent" };
+export type MergeConflictField =
+  | "parent"
+  | "status"
+  | "owner"
+  | "priority"
+  | "acceptanceCriteria";
+export type MergeResolution = "survivor" | "source" | "both";
+export type DuplicateMerge = {
+  requestId: string;
+  fingerprint: string;
+  survivor: string;
+  source: string;
+  at: string;
+  actor: Actor;
+  resolutions: Partial<Record<MergeConflictField, MergeResolution>>;
+  affected: string[];
+};
 export type Meta = {
   schema: number;
   id: string;
@@ -19,6 +36,10 @@ export type Meta = {
   scopeApproved?: boolean;
   blocked?: string;
   dependencies?: string[];
+  related?: string[];
+  duplicateOf?: string;
+  mergedFrom?: string[];
+  duplicateMerge?: DuplicateMerge;
   decisions?: string[];
   rules?: string[];
   attachments?: string[];

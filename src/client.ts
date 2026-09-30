@@ -31,6 +31,7 @@ export const valueOptions = new Set([
   "--revision",
   "--etag",
   "--if-match",
+  "--other-etag",
   "--handoff",
   "--evidence",
   "--review-notes",

@@ -39,6 +39,8 @@ import type {
   RecordFile,
   Comment,
   Verification,
+  MergeConflictField,
+  MergeResolution,
 } from "./types.js";
 
 const actorSchema = z.object({
@@ -97,6 +99,30 @@ const metaSchema = z
     scopeApproved: z.boolean().optional(),
     blocked: z.string().optional(),
     dependencies: strings.optional(),
+    related: strings.optional(),
+    duplicateOf: z.string().optional(),
+    mergedFrom: strings.optional(),
+    duplicateMerge: z
+      .object({
+        requestId: z.string(),
+        fingerprint: z.string(),
+        survivor: z.string(),
+        source: z.string(),
+        at: z.string(),
+        actor: actorSchema,
+        resolutions: z.partialRecord(
+          z.enum([
+            "parent",
+            "status",
+            "owner",
+            "priority",
+            "acceptanceCriteria",
+          ]),
+          z.enum(["survivor", "source", "both"]),
+        ),
+        affected: strings,
+      })
+      .optional(),
     decisions: strings.optional(),
     rules: strings.optional(),
     attachments: strings.optional(),
@@ -187,6 +213,7 @@ export class Store {
       ".local",
     ])
       mkdir(safe(this.dir, d));
+    this.recoverRecordTransaction();
     if (!fs.existsSync(this.file("config.yml")))
       atomic(
         this.file("config.yml"),
@@ -264,6 +291,7 @@ export class Store {
           409,
           "Canonical checkout changed branches. Review the files and reconcile in Settings before writing.",
         );
+      this.recoverRecordTransaction();
       return fn();
     });
     this.queue = run.catch(() => {});
@@ -419,6 +447,29 @@ export class Store {
           !records.some((r) => r.meta.id === id && r.meta.kind === "ticket")
         )
           throw new Problem(422, `Invalid dependency: ${id}`);
+      for (const id of meta.related ?? [])
+        if (
+          id === meta.id ||
+          !records.some((r) => r.meta.id === id && r.meta.kind === "ticket")
+        )
+          throw new Problem(422, `Invalid related ticket: ${id}`);
+      if (
+        meta.duplicateOf &&
+        (meta.duplicateOf === meta.id ||
+          !records.some(
+            (r) => r.meta.id === meta.duplicateOf && r.meta.kind === "ticket",
+          ))
+      )
+        throw new Problem(
+          422,
+          `Invalid duplicate survivor: ${meta.duplicateOf}`,
+        );
+      for (const id of meta.mergedFrom ?? [])
+        if (
+          id === meta.id ||
+          !records.some((r) => r.meta.id === id && r.meta.kind === "ticket")
+        )
+          throw new Problem(422, `Invalid merged source: ${id}`);
     } else if (
       !(
         meta.kind === "decision"
@@ -483,7 +534,223 @@ export class Store {
         resolve(value, "dependency"),
       );
     }
+    if (patch.related !== undefined) {
+      if (!Array.isArray(patch.related))
+        throw new Problem(422, "Related tickets must be a list");
+      patch.related = [
+        ...new Set(
+          patch.related.map((value) => resolve(value, "related ticket")),
+        ),
+      ];
+    }
     return patch;
+  }
+
+  private recoverRecordTransaction() {
+    const journal = this.file(".local/record-transaction.json");
+    if (!fs.existsSync(journal)) return;
+    if (this.branchState().branchChanged)
+      throw new Problem(
+        409,
+        "Reconcile the canonical branch before recovering a record transaction",
+      );
+    const tx = z
+      .object({
+        files: z
+          .array(
+            z.object({
+              path: z
+                .string()
+                .regex(
+                  /^records\/(?:tickets\/[A-Za-z0-9_-]+\.md|history\.jsonl)$/,
+                ),
+              before: z.string(),
+              after: z.string(),
+            }),
+          )
+          .min(1),
+      })
+      .parse(JSON.parse(read(journal)));
+    const states = tx.files.map((entry) => {
+      const current = fs.existsSync(this.file(entry.path))
+        ? read(this.file(entry.path))
+        : "";
+      return current === entry.after
+        ? "after"
+        : current === entry.before
+          ? "before"
+          : "unknown";
+    });
+    if (states.every((state) => state === "after")) {
+      fs.unlinkSync(journal);
+      return;
+    }
+    if (states.some((state) => state === "unknown"))
+      throw new Problem(
+        409,
+        "A record transaction was interrupted and a file changed independently. Inspect .controlroom/.local/record-transaction.json before continuing.",
+      );
+    for (const entry of tx.files) atomic(this.file(entry.path), entry.before);
+    fs.unlinkSync(journal);
+  }
+
+  private recordText(old: RecordFile, meta: Meta, body = old.body) {
+    const parsed = parseMd(read(this.file(old.path)));
+    for (const key of Object.keys(parsed.meta))
+      if (!(key in meta)) parsed.doc.delete(key);
+    for (const [key, value] of Object.entries(meta)) parsed.doc.set(key, value);
+    return `---\n${parsed.doc.toString()}---\n${body}`;
+  }
+
+  private commitRecordTransaction(
+    changes: { old: RecordFile; meta: Meta; body?: string; action: string }[],
+    actor: Actor,
+  ) {
+    const current = this.list();
+    const replacements = new Map(
+      changes.map((change) => [change.old.meta.id, change.meta]),
+    );
+    const planned = current.map((record) => ({
+      ...record,
+      meta: replacements.get(record.meta.id) ?? record.meta,
+    }));
+    for (const change of changes) {
+      if (this.get(change.old.meta.id).revision !== change.old.revision)
+        throw new Problem(
+          409,
+          "An affected ticket changed. Reload the preview and retry.",
+          {
+            current: this.get(change.old.meta.id),
+          },
+        );
+      const assignment = change.old.meta.assignment;
+      if (
+        actor.kind === "agent" &&
+        assignment &&
+        assignment.state !== "released" &&
+        assignment.worker !== actor.name
+      )
+        throw new Problem(
+          409,
+          `Assigned to ${assignment.worker}; request reassignment instead of overwriting their work`,
+        );
+      if (
+        actor.kind === "agent" &&
+        this.claims().some(
+          (claim) =>
+            claim.ticket === change.old.meta.id &&
+            claim.expiresAt > now() &&
+            claim.actor.name !== actor.name,
+        )
+      )
+        throw new Problem(
+          409,
+          "An affected ticket has another agent's live claim",
+        );
+      this.validate(change.meta, planned);
+      // A redirected dependency must not introduce an indirect cycle.
+      const visit = (id: string, seen: Set<string>) => {
+        if (id === change.meta.id)
+          throw new Problem(
+            422,
+            "Dependencies cannot form a cycle after merging",
+          );
+        if (seen.has(id)) return;
+        seen.add(id);
+        for (const dependency of planned.find((record) => record.meta.id === id)
+          ?.meta.dependencies ?? [])
+          visit(dependency, seen);
+      };
+      for (const id of change.meta.dependencies ?? []) visit(id, new Set());
+      this.authority(actor, change.meta, change.old);
+      if (
+        actor.kind === "agent" &&
+        ["selected", "progress", "review"].includes(
+          this.config().columns.find(
+            (column) => column.id === change.meta.status,
+          )?.role ?? "",
+        )
+      ) {
+        let candidate: Meta | undefined = change.meta;
+        const scopeSeen = new Set<string>();
+        while (
+          candidate &&
+          !candidate.scopeApproved &&
+          !scopeSeen.has(candidate.id)
+        ) {
+          scopeSeen.add(candidate.id);
+          candidate = planned.find(
+            (record) => record.meta.id === candidate!.parent,
+          )?.meta;
+        }
+        if (!candidate?.scopeApproved)
+          throw new Problem(
+            403,
+            "Merge would leave active work outside approved scope",
+          );
+      }
+    }
+    const files = changes.map((change) => {
+      const before = read(this.file(change.old.path));
+      return {
+        path: change.old.path,
+        before,
+        after: this.recordText(change.old, change.meta, change.body),
+      };
+    });
+    // Audit entries participate in the same recoverable transaction. A crash
+    // must not leave committed relationships without their attribution.
+    const historyPath = "records/history.jsonl";
+    const historyBefore = fs.existsSync(this.file(historyPath))
+      ? read(this.file(historyPath))
+      : "";
+    const events =
+      changes
+        .map((change) =>
+          JSON.stringify({
+            id: uid("event"),
+            record: change.old.meta.id,
+            actor,
+            action: change.action,
+            at: now(),
+            before: { meta: change.old.meta, body: change.old.body },
+            after: { meta: change.meta, body: change.body ?? change.old.body },
+          }),
+        )
+        .join("\n") + "\n";
+    files.push({
+      path: historyPath,
+      before: historyBefore,
+      after: historyBefore + events,
+    });
+    const journal = this.file(".local/record-transaction.json");
+    atomic(journal, JSON.stringify({ schema: 1, at: now(), files }, null, 2));
+    const written: typeof files = [];
+    try {
+      for (const file of files) {
+        atomic(this.file(file.path), file.after);
+        written.push(file);
+      }
+      fs.unlinkSync(journal);
+    } catch (error) {
+      const recoveryErrors: string[] = [];
+      for (const file of written.reverse())
+        try {
+          atomic(this.file(file.path), file.before);
+        } catch (rollback) {
+          recoveryErrors.push(`${file.path}: ${String(rollback)}`);
+        }
+      if (!recoveryErrors.length && fs.existsSync(journal))
+        fs.unlinkSync(journal);
+      throw new Problem(
+        500,
+        recoveryErrors.length
+          ? "The transaction partially failed and automatic recovery was incomplete. Stop editing and inspect the recovery details."
+          : "The transaction failed; all written records were restored and no merge was retained.",
+        { cause: String(error), recoveryErrors },
+      );
+    }
+    return changes.map((change) => this.get(change.old.meta.id));
   }
   scope(record: RecordFile): RecordFile | undefined {
     const seen = new Set<string>();
@@ -586,6 +853,16 @@ export class Store {
         403,
         "Managed assignments and review receipts are service-owned",
       );
+    if (
+      kind === "ticket" &&
+      ["related", "duplicateOf", "mergedFrom", "duplicateMerge"].some(
+        (key) => key in input,
+      )
+    )
+      throw new Problem(
+        422,
+        "Create ticket relationships through the relationship and merge actions",
+      );
     if (actor.kind === "agent" && input.humanReviewRequired)
       throw new Problem(403, "Human review policy is set by a human");
     if (!["ticket", "decision", "rule"].includes(kind))
@@ -647,6 +924,21 @@ export class Store {
     managed = false,
   ): RecordFile {
     const old = this.get(id);
+    if (old.meta.duplicateOf && patch.archived === false)
+      throw new Problem(
+        422,
+        "Archived duplicate sources cannot be unarchived; open their survivor instead",
+      );
+    if (
+      !managed &&
+      ["related", "duplicateOf", "mergedFrom", "duplicateMerge"].some(
+        (key) => key in patch,
+      )
+    )
+      throw new Problem(
+        422,
+        "Use the relationship or merge action so reciprocal links and revision checks stay consistent",
+      );
     for (const key of ["assignment", "agentReview"])
       if (
         !managed &&
@@ -772,6 +1064,390 @@ export class Store {
     actor: Actor,
   ) {
     return this.write(() => this.updateNow(id, revision, patch, body, actor));
+  }
+
+  relate(id: string, input: unknown, actor: Actor) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      const data = z
+        .object({
+          other: z.union([z.string(), z.number().int().nonnegative()]),
+          revision: z.string().min(1),
+          otherRevision: z.string().min(1),
+          action: z.enum(["add", "remove"]),
+        })
+        .parse(input);
+      const left = this.get(id),
+        right = this.get(String(data.other));
+      if (left.meta.kind !== "ticket" || right.meta.kind !== "ticket")
+        throw new Problem(422, "Related links connect tickets only");
+      if (left.meta.id === right.meta.id)
+        throw new Problem(422, "A ticket cannot relate to itself");
+      const leftHas = (left.meta.related ?? []).includes(right.meta.id),
+        rightHas = (right.meta.related ?? []).includes(left.meta.id);
+      if (
+        (data.action === "add" && leftHas && rightHas) ||
+        (data.action === "remove" && !leftHas && !rightHas)
+      )
+        return { ticket: left, related: right, changed: false };
+      if (
+        left.revision !== data.revision ||
+        right.revision !== data.otherRevision
+      )
+        throw new Problem(
+          409,
+          "A related ticket changed. Reload both tickets and retry.",
+          {
+            records: [left, right],
+          },
+        );
+      const apply = (record: RecordFile, other: string) => {
+        const links = new Set(record.meta.related ?? []);
+        if (data.action === "add") links.add(other);
+        else links.delete(other);
+        return {
+          ...record.meta,
+          related: [...links].sort(),
+          updatedAt: now(),
+        } as Meta;
+      };
+      const [savedLeft, savedRight] = this.commitRecordTransaction(
+        [
+          {
+            old: left,
+            meta: apply(left, right.meta.id),
+            action: `related ticket ${data.action === "add" ? "added" : "removed"}`,
+          },
+          {
+            old: right,
+            meta: apply(right, left.meta.id),
+            action: `related ticket ${data.action === "add" ? "added" : "removed"}`,
+          },
+        ],
+        actor,
+      );
+      return { ticket: savedLeft, related: savedRight, changed: true };
+    });
+  }
+
+  private acceptanceCriteria(body: string) {
+    const match = body.match(
+      /(?:^|\n)#{1,6}\s+Acceptance criteria\s*\n([\s\S]*?)(?=\n#{1,6}\s|$)/i,
+    );
+    return (match?.[1] ?? "").trim();
+  }
+
+  private mergeSources(ticket: RecordFile) {
+    const found: RecordFile[] = [];
+    const seen = new Set<string>([ticket.meta.id]);
+    const visit = (id: string) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      const record = this.get(id);
+      if (record.meta.kind !== "ticket") return;
+      found.push(record);
+      for (const nested of record.meta.mergedFrom ?? []) visit(nested);
+    };
+    for (const id of ticket.meta.mergedFrom ?? []) visit(id);
+    return found;
+  }
+
+  mergePreview(survivorId: string, sourceId: string) {
+    const survivor = this.get(String(survivorId)),
+      source = this.get(String(sourceId));
+    if (survivor.meta.kind !== "ticket" || source.meta.kind !== "ticket")
+      throw new Problem(422, "Only tickets can be merged");
+    if (survivor.meta.id === source.meta.id)
+      throw new Problem(422, "A ticket cannot be merged into itself");
+    if (survivor.meta.duplicateOf)
+      throw new Problem(
+        422,
+        "Choose the canonical survivor, not an archived duplicate",
+      );
+    if (source.meta.duplicateOf && source.meta.duplicateOf !== survivor.meta.id)
+      throw new Problem(
+        422,
+        "The source is already a duplicate of another ticket",
+      );
+    const records = this.list().filter((r) => r.meta.kind === "ticket");
+    const incoming = records.filter(
+      (record) =>
+        record.meta.parent === source.meta.id ||
+        (record.meta.dependencies ?? []).includes(source.meta.id),
+    );
+    const affected = [
+      survivor,
+      source,
+      ...incoming.filter(
+        (record) =>
+          record.meta.id !== survivor.meta.id &&
+          record.meta.id !== source.meta.id,
+      ),
+    ];
+    const uniqueAffected = [
+      ...new Map(affected.map((r) => [r.meta.id, r])).values(),
+    ];
+    const conflicts: Partial<
+      Record<MergeConflictField, { survivor: unknown; source: unknown }>
+    > = {};
+    for (const field of ["parent", "status", "owner", "priority"] as const) {
+      const a = survivor.meta[field] ?? null,
+        b = source.meta[field] ?? null;
+      if (JSON.stringify(a) !== JSON.stringify(b))
+        conflicts[field] = { survivor: a, source: b };
+    }
+    const survivorCriteria = this.acceptanceCriteria(survivor.body),
+      sourceCriteria = this.acceptanceCriteria(source.body);
+    if (
+      survivorCriteria &&
+      sourceCriteria &&
+      survivorCriteria !== sourceCriteria
+    )
+      conflicts.acceptanceCriteria = {
+        survivor: survivorCriteria,
+        source: sourceCriteria,
+      };
+    const sourceComments = this.comments().filter(
+      (comment) => comment.ticket === source.meta.id,
+    );
+    const imageIds = new Set(
+      sourceComments.flatMap((comment) =>
+        [
+          ...comment.body.matchAll(
+            /(?:#image=|\/api\/images\/)(image-[\w-]+)/g,
+          ),
+        ].map((match) => match[1]),
+      ),
+    );
+    return {
+      survivor,
+      source,
+      alreadyMerged: source.meta.duplicateOf === survivor.meta.id,
+      conflicts,
+      content: {
+        description: !!source.body.trim(),
+        comments: sourceComments.length,
+        attachments: new Set([...(source.meta.attachments ?? []), ...imageIds])
+          .size,
+        decisions: source.meta.decisions ?? [],
+        rules: source.meta.rules ?? [],
+      },
+      incoming: incoming.map((record) => ({
+        id: record.meta.id,
+        number: record.meta.number,
+        title: record.meta.title,
+        parent: record.meta.parent === source.meta.id,
+        dependency: (record.meta.dependencies ?? []).includes(source.meta.id),
+      })),
+      affected: Object.fromEntries(
+        uniqueAffected.map((record) => [record.meta.id, record.revision]),
+      ),
+    };
+  }
+
+  merge(survivorId: string, input: unknown, actor: Actor) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      const data = z
+        .object({
+          source: z.union([z.string(), z.number().int().nonnegative()]),
+          requestId: z.string().min(8).max(200),
+          revisions: z.record(z.string(), z.string()),
+          resolutions: z
+            .partialRecord(
+              z.enum([
+                "parent",
+                "status",
+                "owner",
+                "priority",
+                "acceptanceCriteria",
+              ]),
+              z.enum(["survivor", "source", "both"]),
+            )
+            .default({}),
+        })
+        .parse(input);
+      const preview = this.mergePreview(survivorId, String(data.source));
+      const survivor = preview.survivor,
+        source = preview.source;
+      const fingerprint = hash(
+        JSON.stringify({
+          survivor: survivor.meta.id,
+          source: source.meta.id,
+          resolutions: data.resolutions,
+        }),
+      );
+      if (source.meta.duplicateMerge?.requestId === data.requestId) {
+        if (source.meta.duplicateMerge.fingerprint !== fingerprint)
+          throw new Problem(
+            409,
+            "This merge request ID was already used with different choices",
+          );
+        return { survivor, source, changed: false, recovered: true };
+      }
+      if (preview.alreadyMerged)
+        return { survivor, source, changed: false, recovered: true };
+      const conflictKeys = Object.keys(
+        preview.conflicts,
+      ) as MergeConflictField[];
+      const missing = conflictKeys.filter((field) => !data.resolutions[field]);
+      if (missing.length)
+        throw new Problem(
+          422,
+          `Resolve merge conflicts before applying: ${missing.join(", ")}`,
+          preview,
+        );
+      if (
+        Object.entries(data.resolutions).some(
+          ([field, resolution]) =>
+            resolution === "both" && field !== "acceptanceCriteria",
+        )
+      )
+        throw new Problem(
+          422,
+          '"both" is only valid for acceptance criteria conflicts',
+        );
+      for (const [id, revision] of Object.entries(preview.affected))
+        if (data.revisions[id] !== revision)
+          throw new Problem(
+            409,
+            `Missing or stale revision for affected ticket ${id}`,
+            preview,
+          );
+      if (Object.keys(data.revisions).some((id) => !(id in preview.affected)))
+        throw new Problem(
+          409,
+          "The affected ticket set changed. Reload the preview.",
+          preview,
+        );
+
+      const stamp = now();
+      const survivorMeta: Meta = {
+        ...survivor.meta,
+        mergedFrom: [
+          ...new Set([...(survivor.meta.mergedFrom ?? []), source.meta.id]),
+        ],
+        updatedAt: stamp,
+      };
+      for (const field of ["parent", "status", "owner", "priority"] as const)
+        if (data.resolutions[field] === "source") {
+          const value = source.meta[field];
+          if (value === undefined) delete survivorMeta[field];
+          else (survivorMeta as any)[field] = value;
+        }
+      const role = (status: string) =>
+        this.config().columns.find((column) => column.id === status)?.role;
+      if (
+        role(survivorMeta.status) === "done" &&
+        role(survivor.meta.status) !== "done"
+      )
+        throw new Problem(
+          422,
+          "Merging cannot accept work into Done; keep the survivor status and review it separately",
+        );
+      if (
+        role(survivorMeta.status) === "review" &&
+        role(survivor.meta.status) !== "review"
+      )
+        survivorMeta.reviewVerificationAt = "";
+      if (
+        role(survivorMeta.status) === "progress" &&
+        role(survivor.meta.status) !== "progress"
+      )
+        survivorMeta.progressStartedAt = stamp;
+      let survivorBody = survivor.body;
+      const sourceCriteria = this.acceptanceCriteria(source.body);
+      if (
+        sourceCriteria &&
+        ["source", "both"].includes(data.resolutions.acceptanceCriteria ?? "")
+      ) {
+        if (data.resolutions.acceptanceCriteria === "source")
+          survivorBody = this.acceptanceCriteria(survivor.body)
+            ? survivor.body.replace(
+                /((?:^|\n)#{1,6}\s+Acceptance criteria\s*\n)[\s\S]*?(?=\n#{1,6}\s|$)/i,
+                `$1${sourceCriteria}\n`,
+              )
+            : `${survivor.body.trimEnd()}\n\n## Acceptance criteria\n\n${sourceCriteria}\n`;
+        else
+          survivorBody = `${survivor.body.trimEnd()}\n\n## Preserved acceptance criteria from #${source.meta.number ?? source.meta.id}\n\n${sourceCriteria}\n`;
+      }
+      const receipt = {
+        requestId: data.requestId,
+        fingerprint,
+        survivor: survivor.meta.id,
+        source: source.meta.id,
+        at: stamp,
+        actor,
+        resolutions: data.resolutions as Partial<
+          Record<MergeConflictField, MergeResolution>
+        >,
+        affected: Object.keys(preview.affected),
+      };
+      const sourceMeta: Meta = {
+        ...source.meta,
+        archived: true,
+        duplicateOf: survivor.meta.id,
+        duplicateMerge: receipt,
+        updatedAt: stamp,
+      };
+      survivorMeta.duplicateMerge = receipt;
+
+      const changes: {
+        old: RecordFile;
+        meta: Meta;
+        body?: string;
+        action: string;
+      }[] = [
+        {
+          old: survivor,
+          meta: survivorMeta,
+          body: survivorBody,
+          action: "duplicate merged into survivor",
+        },
+        {
+          old: source,
+          meta: sourceMeta,
+          action: "marked as archived duplicate",
+        },
+      ];
+      for (const item of preview.incoming) {
+        const old = this.get(item.id);
+        if (old.meta.id === survivor.meta.id || old.meta.id === source.meta.id)
+          continue;
+        const meta: Meta = { ...old.meta, updatedAt: stamp };
+        if (item.parent) meta.parent = survivor.meta.id;
+        if (item.dependency)
+          meta.dependencies = [
+            ...new Set(
+              (meta.dependencies ?? []).map((dependency) =>
+                dependency === source.meta.id ? survivor.meta.id : dependency,
+              ),
+            ),
+          ].filter((dependency) => dependency !== meta.id);
+        changes.push({
+          old,
+          meta,
+          action: "incoming duplicate link redirected",
+        });
+      }
+      if (survivorMeta.parent === source.meta.id)
+        throw new Problem(
+          422,
+          "The survivor is a child of the source. Choose the source parent in the merge conflicts or reparent it first.",
+          preview,
+        );
+      if ((survivorMeta.dependencies ?? []).includes(source.meta.id))
+        survivorMeta.dependencies = survivorMeta.dependencies!.filter(
+          (dependency) => dependency !== source.meta.id,
+        );
+      const saved = this.commitRecordTransaction(changes, actor);
+      return {
+        survivor: saved.find((record) => record.meta.id === survivor.meta.id),
+        source: saved.find((record) => record.meta.id === source.meta.id),
+        changed: true,
+        recovered: false,
+      };
+    });
   }
   // Internal controller entry point; never exposed as a generic HTTP/CLI patch.
   // All admission checks run again inside the board's serialized writer.
@@ -1336,9 +2012,18 @@ export class Store {
   }
   context(id: string) {
     const ticket = this.get(id),
-      rules = this.applicableRules(ticket),
+      mergedSources = this.mergeSources(ticket),
+      provenance = [ticket, ...mergedSources],
+      rules = [
+        ...new Map(
+          provenance
+            .flatMap((record) => this.applicableRules(record))
+            .map((record) => [record.meta.id, record]),
+        ).values(),
+      ],
       scope = this.scope(ticket);
-    const comments = this.comments().filter((c) => c.ticket === ticket.meta.id);
+    const provenanceIds = new Set(provenance.map((record) => record.meta.id));
+    const comments = this.comments().filter((c) => provenanceIds.has(c.ticket));
     const conversationImages = new Set(
       comments.flatMap((c) =>
         [...c.body.matchAll(/(?:#image=|\/api\/images\/)(image-[\w-]+)/g)].map(
@@ -1347,7 +2032,7 @@ export class Store {
       ),
     );
     const attachmentIds = new Set([
-      ...(ticket.meta.attachments ?? []),
+      ...provenance.flatMap((record) => record.meta.attachments ?? []),
       ...this.attachments()
         .filter((a) => conversationImages.has(a.id))
         .map((a) => a.id),
@@ -1356,6 +2041,11 @@ export class Store {
       ticket,
       workflow: this.config().columns,
       parent: ticket.meta.parent ? this.get(ticket.meta.parent) : null,
+      duplicateSurvivor: ticket.meta.duplicateOf
+        ? this.get(ticket.meta.duplicateOf)
+        : null,
+      mergedSources,
+      related: (ticket.meta.related ?? []).map((related) => this.get(related)),
       approvedScope: scope ?? null,
       decisionProtocol,
       decisions: this.list().filter(
@@ -1368,10 +2058,13 @@ export class Store {
               n.meta.status === "accepted" &&
               n.meta.supersedes === r.meta.id,
           ) &&
-          (!r.meta.scope?.length ||
-            r.meta.scope.includes("*") ||
-            (ticket.meta.decisions ?? []).includes(r.meta.id) ||
-            r.meta.scope.some((s) => (ticket.meta.labels ?? []).includes(s))),
+          provenance.some(
+            (record) =>
+              !r.meta.scope?.length ||
+              r.meta.scope.includes("*") ||
+              (record.meta.decisions ?? []).includes(r.meta.id) ||
+              r.meta.scope.some((s) => (record.meta.labels ?? []).includes(s)),
+          ),
       ),
       rules,
       ruleRevisions: Object.fromEntries(
@@ -1498,6 +2191,10 @@ export class Store {
         (t.meta.labels?.length ? ` · Labels: ${t.meta.labels.join(", ")}` : ""),
       `Record ID: ${t.meta.id} · Revision (use as --etag): ${t.revision}`,
     ];
+    if (c.duplicateSurvivor)
+      lines.push(
+        `Duplicate: this archived ticket points to survivor ${ref(c.duplicateSurvivor)} ${c.duplicateSurvivor.meta.title}. Use the survivor for active work; this record remains available for provenance.`,
+      );
     if (c.parent) lines.push(`Parent: ${ref(c.parent)} ${c.parent.meta.title}`);
     if (t.meta.assignment)
       lines.push(
@@ -1565,6 +2262,32 @@ export class Store {
           })`,
         );
     }
+    if (c.related.length) {
+      lines.push(
+        "",
+        "## Related tickets (context only; not blocking dependencies)",
+        "",
+      );
+      for (const related of c.related)
+        lines.push(
+          `- ${ref(related)} ${related.meta.title} (${
+            c.workflow.find((w) => w.id === related.meta.status)?.name ??
+            related.meta.status
+          })${related.meta.duplicateOf ? " — archived duplicate" : ""}`,
+        );
+    }
+    if (c.mergedSources.length) {
+      lines.push("", "## Preserved duplicate sources", "");
+      for (const source of c.mergedSources)
+        lines.push(
+          `### ${ref(source)} ${source.meta.title}`,
+          "",
+          `Original author: ${source.meta.author.name} (${source.meta.author.kind}) · Created: ${source.meta.createdAt} · Record: ${source.meta.id}`,
+          "",
+          source.body.trim() || "(No description.)",
+          "",
+        );
+    }
     if (c.decisions.length) {
       lines.push("", "## Decisions that apply", "");
       for (const d of c.decisions)
@@ -1586,7 +2309,7 @@ export class Store {
       lines.push("", `## Conversation (${c.comments.length})`, "");
       for (const m of shown)
         lines.push(
-          `- ${m.actor.name} (${m.kind}${m.resolved ? ", resolved" : ""}, ${m.at}): ${m.body.trim().replace(/\s+/g, " ")}`,
+          `- ${m.actor.name} (${m.kind}${m.resolved ? ", resolved" : ""}, ${m.at}, on ${m.ticket === t.meta.id ? ref(t) : ref(c.mergedSources.find((source) => source.meta.id === m.ticket)!)}): ${m.body.trim().replace(/\s+/g, " ")}`,
         );
     }
     if (c.attachments.length) {

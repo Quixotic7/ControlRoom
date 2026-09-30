@@ -15,6 +15,7 @@ import { ReviewBrief } from "./ReviewBrief";
 import { QuickTicket } from "./QuickTicket";
 import { ExistingChild } from "./ExistingChild";
 import { ticketNavigation } from "./ticketNavigation";
+import { TicketRelationships } from "./TicketRelationships";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { TagInput } from "./TagInput";
 import { imageMarkdown, pasteImage, RecordMarkdown } from "./RecordMarkdown";
@@ -931,6 +932,7 @@ export function RecordDetail({
               ) : null;
             })()}
           {m.archived && <span className="tag">Archived</span>}
+          {m.duplicateOf && <span className="tag danger">Duplicate</span>}
           {baseline ? (
             <>
               Created by {baseline.meta.author.name} ·{" "}
@@ -1012,6 +1014,29 @@ export function RecordDetail({
             {error}
           </div>
         )}
+        {kind === "ticket" &&
+          baseline?.meta.duplicateOf &&
+          (() => {
+            const survivor = state.records.find(
+              (candidate) => candidate.meta.id === baseline.meta.duplicateOf,
+            );
+            return (
+              <div className="banner duplicate-banner">
+                <span>
+                  This archived ticket is a duplicate. Its original description,
+                  discussion, images, and history remain here for provenance.
+                </span>
+                {survivor && (
+                  <button
+                    className="button primary"
+                    onClick={() => openRecord(survivor.meta.id)}
+                  >
+                    Open survivor {recordId(survivor)}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
         {closeFailed && (
           <div className="banner" role="alert">
             Your changes were not saved.
@@ -1421,6 +1446,21 @@ export function RecordDetail({
                     }}
                   />
                 </section>
+              )}
+              {kind === "ticket" && baseline && (
+                <TicketRelationships
+                  record={baseline}
+                  state={state}
+                  disabled={saving || state.branchChanged || dirty}
+                  openRecord={openRecord}
+                  onChanged={async (changed) => {
+                    setBaseline(changed);
+                    replaceMeta(changed.meta);
+                    replaceBody(changed.body);
+                    await onSaved(changed.meta.id);
+                  }}
+                  onError={setError}
+                />
               )}
               {kind === "ticket" && conversation}
               {kind === "ticket" ? (

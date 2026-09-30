@@ -176,6 +176,15 @@ export async function buildServer(
       actor(b),
     );
   });
+  app.post("/api/records/:id/relationships", async (req: any) =>
+    store.relate(req.params.id, req.body, actor(req.body)),
+  );
+  app.post("/api/records/:id/merge-preview", async (req: any) =>
+    store.mergePreview(req.params.id, req.body.source),
+  );
+  app.post("/api/records/:id/merge", async (req: any) =>
+    store.merge(req.params.id, req.body, actor(req.body)),
+  );
   app.post("/api/records/:id/placement", async (req: any) =>
     store.placement(
       req.params.id,
