@@ -140,7 +140,14 @@ export function TicketRelationships({
       );
       setPreview(next);
       setMergeQuery("");
-      setResolutions({});
+      setResolutions(
+        Object.fromEntries(
+          (Object.keys(next.conflicts) as MergeConflictField[]).map((field) => [
+            field,
+            "survivor",
+          ]),
+        ) as Partial<Record<MergeConflictField, MergeResolution>>,
+      );
       requestId.current = randomUUID();
     } catch (error) {
       onError(String(error));
