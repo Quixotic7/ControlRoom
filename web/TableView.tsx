@@ -237,6 +237,63 @@ export function TableView({
       )
       .join("\n");
   };
+  const writeCellChanges = async (
+    changes: Map<string, Record<string, unknown>>,
+  ) => {
+    const records = new Map(shown.map((record) => [record.meta.id, record]));
+    const writes = [...changes].filter(([id, patch]) => {
+      const record = records.get(id)!;
+      return Object.entries(patch).some(([field, value]) =>
+        field === "status"
+          ? record.meta.status !== value
+          : priorityOf(record) !== value,
+      );
+    });
+    if (!writes.length) {
+      setPasteFeedback("No cells changed.");
+      return;
+    }
+    const outcomes = await Promise.all(
+      writes.map(async ([id, patch]) => {
+        const record = records.get(id)!;
+        try {
+          await api(`/records/${id}`, "PATCH", {
+            revision: record.revision,
+            patch,
+            actor,
+          });
+          return { ok: true, id };
+        } catch (error) {
+          return {
+            ok: false,
+            id,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+    const failed = outcomes.filter((outcome) => !outcome.ok);
+    setPasteFeedback(
+      failed.length
+        ? `${outcomes.length - failed.length} updated; ${failed.length} conflict${failed.length === 1 ? "" : "s"}: ${failed[0].error}`
+        : `${outcomes.length} ticket${outcomes.length === 1 ? "" : "s"} updated.`,
+    );
+    await reload();
+  };
+  const changeSelected = async (
+    record: RecordFile,
+    column: EditableColumn,
+    value: string | number,
+  ) => {
+    // Freeze only selected, visible cells in this column. A rectangle across
+    // Status and Priority must never interpret a priority as a status value.
+    const cells = isCellSelected(record.meta.id, column)
+      ? selectedCells().filter((cell) => cell.column === column)
+      : [{ id: record.meta.id, column }];
+    await writeCellChanges(
+      new Map(cells.map((cell) => [cell.id, { [column]: value }])),
+    );
+  };
   const pasteCells = async (text: string) => {
     const cells = selectedCells();
     if (!cells.length || !text) return;
@@ -283,45 +340,7 @@ export function TableView({
         changes.set(rows[row], patch);
       }
     }
-    const records = new Map(shown.map((record) => [record.meta.id, record]));
-    const writes = [...changes].filter(([id, patch]) => {
-      const record = records.get(id)!;
-      return Object.entries(patch).some(([field, value]) =>
-        field === "status"
-          ? record.meta.status !== value
-          : priorityOf(record) !== value,
-      );
-    });
-    if (!writes.length) {
-      setPasteFeedback("No cells changed.");
-      return;
-    }
-    const outcomes = await Promise.all(
-      writes.map(async ([id, patch]) => {
-        const record = records.get(id)!;
-        try {
-          await api(`/records/${id}`, "PATCH", {
-            revision: record.revision,
-            patch,
-            actor,
-          });
-          return { ok: true, id };
-        } catch (error) {
-          return {
-            ok: false,
-            id,
-            error: error instanceof Error ? error.message : String(error),
-          };
-        }
-      }),
-    );
-    const failed = outcomes.filter((outcome) => !outcome.ok);
-    setPasteFeedback(
-      failed.length
-        ? `${outcomes.length - failed.length} updated; ${failed.length} conflict${failed.length === 1 ? "" : "s"}: ${failed[0].error}`
-        : `${outcomes.length} ticket${outcomes.length === 1 ? "" : "s"} updated.`,
-    );
-    await reload();
+    await writeCellChanges(changes);
   };
   const onTableKeyDown = (e: React.KeyboardEvent<HTMLTableElement>) => {
     if (
@@ -557,11 +576,16 @@ export function TableView({
                               ? "cell-selected"
                               : ""
                           }
-                          onFocus={() => {
+                          onFocus={(e) => {
                             if (preserveRangeOnFocus.current) {
                               preserveRangeOnFocus.current = false;
                               return;
                             }
+                            if (
+                              e.target instanceof HTMLSelectElement &&
+                              isCellSelected(r.meta.id, "status")
+                            )
+                              return;
                             activateCell({ id: r.meta.id, column: "status" });
                           }}
                           onMouseDown={(e) => {
@@ -582,7 +606,9 @@ export function TableView({
                               className="cell-select status-select"
                               aria-label={`Status of ${r.meta.title}`}
                               value={r.meta.status}
-                              onChange={(e) => onMove(r, e.target.value)}
+                              onChange={(e) =>
+                                void changeSelected(r, "status", e.target.value)
+                              }
                             >
                               {ctx.columns.map((c) => (
                                 <option value={c.id} key={c.id}>
@@ -601,11 +627,16 @@ export function TableView({
                               ? "cell-selected"
                               : ""
                           }
-                          onFocus={() => {
+                          onFocus={(e) => {
                             if (preserveRangeOnFocus.current) {
                               preserveRangeOnFocus.current = false;
                               return;
                             }
+                            if (
+                              e.target instanceof HTMLSelectElement &&
+                              isCellSelected(r.meta.id, "priority")
+                            )
+                              return;
                             activateCell({ id: r.meta.id, column: "priority" });
                           }}
                           onMouseDown={(e) => {
@@ -625,7 +656,11 @@ export function TableView({
                             aria-label={`Priority of ${r.meta.title}`}
                             value={priorityOf(r)}
                             onChange={(e) =>
-                              onPriority(r, Number(e.target.value))
+                              void changeSelected(
+                                r,
+                                "priority",
+                                Number(e.target.value),
+                              )
                             }
                           >
                             {priorities.map((p, i) => (

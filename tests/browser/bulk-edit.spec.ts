@@ -416,3 +416,82 @@ test("table ranges freeze ticket IDs across filtering and validate clipboard rec
     secondBeforeInvalid.revision,
   );
 });
+
+test("board Shift-click toggles individual tickets without selecting intervening cards", async ({
+  page,
+}) => {
+  const label = `individual-${Date.now()}`;
+  const tickets = [];
+  for (let index = 0; index < 3; index++)
+    tickets.push(
+      await create(page, `Individual ${index} ${label}`, {
+        labels: [label],
+        order: index * 10,
+      }),
+    );
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  const card = (index: number) =>
+    page.locator(`.ticket-card[data-id="${tickets[index].meta.id}"]`);
+  await card(0).click({ modifiers: ["Shift"] });
+  await card(2).click({ modifiers: ["Shift"] });
+  await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+  await expect(card(1).locator("..")).not.toHaveClass(/selected/);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await card(0).click({ modifiers: ["Shift"] });
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await expect(card(0).locator("..")).not.toHaveClass(/selected/);
+  await expect(card(2).locator("..")).toHaveClass(/selected/);
+});
+
+test("table dropdown fills only the selected visible column and keeps a rectangular range", async ({
+  page,
+}) => {
+  const label = `dropdown-${Date.now()}`;
+  const first = await create(page, `Dropdown retained first ${label}`, {
+    labels: [label],
+    priority: 2,
+    order: 10,
+  });
+  const second = await create(page, `Dropdown retained second ${label}`, {
+    labels: [label],
+    priority: 2,
+    order: 20,
+  });
+  const hidden = await create(page, `Dropdown hidden third ${label}`, {
+    labels: [label],
+    priority: 2,
+    order: 30,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  const cell = (id: string, column: string) =>
+    page.locator(`td[data-cell-id="${id}"][data-cell-column="${column}"]`);
+  await cell(first.meta.id, "status").focus();
+  await cell(hidden.meta.id, "priority").click({ modifiers: ["Shift"] });
+  await expect(page.locator(".cell-selected")).toHaveCount(6);
+  // Focus the native editor inside the range, as a mouse/keyboard user would.
+  const priority = page.getByLabel(`Priority of ${first.meta.title}`);
+  await priority.focus();
+  await priority.selectOption("0");
+  await expect(page.locator(".cell-selected")).toHaveCount(6);
+  for (const ticket of [first, second, hidden]) {
+    await expect
+      .poll(async () => (await record(page, ticket.meta.id)).meta.priority)
+      .toBe(0);
+    expect((await record(page, ticket.meta.id)).meta.status).toBe("backlog");
+  }
+  // Filtering never transfers the frozen range to an unseen ticket.
+  await page.getByLabel("Filter tickets").fill(`Dropdown retained`);
+  await expect(page.locator(".cell-selected")).toHaveCount(4);
+  const status = page.getByLabel(`Status of ${second.meta.title}`);
+  await status.focus();
+  await status.selectOption("selected");
+  for (const ticket of [first, second])
+    await expect
+      .poll(async () => (await record(page, ticket.meta.id)).meta.status)
+      .toBe("selected");
+  expect((await record(page, hidden.meta.id)).meta.status).toBe("backlog");
+  expect((await record(page, hidden.meta.id)).meta.priority).toBe(0);
+});
