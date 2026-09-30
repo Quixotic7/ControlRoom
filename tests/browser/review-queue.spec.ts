@@ -21,7 +21,7 @@ async function openFromQueue(page: Page, title: string, id: string) {
 
 async function expectOpenTicket(page: Page, title: string, id: string) {
   await expect(page).toHaveURL(new RegExp(`#ticket=${id}$`));
-  await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(title);
+  await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue(title);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -101,7 +101,7 @@ test("queue navigation saves ticket drafts, retains them on failure, and waits f
   await page.getByRole("button", { name: "Review queue" }).click();
   await openFromQueue(page, first.meta.title, first.meta.id);
 
-  const title = page.getByRole("textbox", { name: "Title" });
+  const title = page.getByRole("textbox", { name: "Title", exact: true });
   await title.fill("Saved before moving on");
   await page.getByRole("button", { name: "Next" }).click();
   await expectOpenTicket(page, second.meta.title, second.meta.id);

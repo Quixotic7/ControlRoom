@@ -154,7 +154,7 @@ test("custom review and Done columns are explicit and Failed Review is preferred
     await expect(
       page.getByRole("button", { name: "Accept into Done" }),
     ).toBeEnabled();
-    await page.getByLabel("Done destination").selectOption("done-alt");
+    await page.getByRole("dialog").getByLabel("Done destination").selectOption("done-alt");
     await expect(
       page.getByRole("button", { name: "Accept into Done" }),
     ).toBeEnabled();
