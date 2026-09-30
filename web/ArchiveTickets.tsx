@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { Column, RecordFile } from "../src/types";
 import { actor, api, recordId } from "./api";
 import { StageIcon } from "./Icons";
@@ -9,6 +9,12 @@ export type ArchiveScope = {
   filter: string;
   view: string;
   records: RecordFile[];
+};
+
+type ArchiveLane = {
+  key: string;
+  column?: Column;
+  tickets: RecordFile[];
 };
 
 export function ArchiveTickets({
@@ -195,27 +201,32 @@ export function ArchivedTickets({
   );
   const recordsById = new Map(records.map((r) => [r.meta.id, r]));
   const columnById = new Map(columns.map((column) => [column.id, column]));
-  const archivedLanes = new Map<
-    string,
-    { column?: Column; tickets: RecordFile[] }
-  >();
+  const archivedLanes = new Map<string, RecordFile[]>();
   for (const ticket of shown) {
-    const column = columnById.get(ticket.meta.status);
-    const key = column?.id ?? ticket.meta.status;
-    const lane = archivedLanes.get(key) ?? { column, tickets: [] };
-    lane.tickets.push(ticket);
+    const key = columnById.has(ticket.meta.status)
+      ? ticket.meta.status
+      : `unknown/${ticket.meta.status}`;
+    const lane = archivedLanes.get(key) ?? [];
+    lane.push(ticket);
     archivedLanes.set(key, lane);
   }
-  const lanes = [...archivedLanes.values()].sort((a, b) => {
-    const aIndex = a.column ? columns.indexOf(a.column) : columns.length;
-    const bIndex = b.column ? columns.indexOf(b.column) : columns.length;
-    return (
-      aIndex - bIndex ||
-      (a.column?.name ?? a.tickets[0].meta.status).localeCompare(
-        b.column?.name ?? b.tickets[0].meta.status,
-      )
-    );
-  });
+  // Keep the archive in the same left-to-right workflow order as the board.
+  // Empty lanes stay visible so search never changes what a column means.
+  const lanes: ArchiveLane[] = [
+    ...columns.map((column) => ({
+      key: column.id,
+      column,
+      tickets: archivedLanes.get(column.id) ?? [],
+    })),
+    ...[...archivedLanes.entries()]
+      .filter(([key]) => key.startsWith("unknown/"))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, laneTickets]) => ({
+        key,
+        column: undefined,
+        tickets: laneTickets,
+      })),
+  ];
   async function restore(r: RecordFile) {
     if (busy.current) return;
     busy.current = true;
@@ -245,7 +256,7 @@ export function ArchivedTickets({
         </button>
       </div>
       <p className="help">
-        Archived tickets are grouped by their prior workflow swimlane. Unarchive
+        Archived tickets remain in their prior workflow columns. Unarchive
         restores a ticket in its existing workflow stage; move it into
         development separately when needed.
       </p>
@@ -266,82 +277,117 @@ export function ArchivedTickets({
       <p>
         {shown.length} of {tickets.length} archived tickets
       </p>
-      <div className="archive-lanes" aria-label="Archived ticket swimlanes">
-        {lanes.map(({ column, tickets: laneTickets }) => {
-          const name =
-            column?.name ?? `Unknown stage (${laneTickets[0].meta.status})`;
-          return (
-            <section
-              className="archive-lane"
-              data-stage={column?.role}
-              aria-label={`${name} swimlane`}
-              key={column?.id ?? laneTickets[0].meta.status}
-            >
-              <h3>
-                <StageIcon role={column?.role} />
-                {name}
-                <span className="count">{laneTickets.length}</span>
-              </h3>
-              <ul className="archive-results">
-                {laneTickets.map((r) => {
-                  const parent = r.meta.parent
-                    ? recordsById.get(r.meta.parent)
-                    : undefined;
-                  const survivor = r.meta.duplicateOf
-                    ? recordsById.get(r.meta.duplicateOf)
-                    : undefined;
-                  return (
-                    <li key={r.meta.id}>
-                      <div className="archive-ticket-summary">
-                        <button
-                          className="text-button"
-                          {...ticketNavigation(r.meta.id, onOpen)}
-                        >
-                          {recordId(r)} {r.meta.title}
-                        </button>
-                        {parent && (
-                          <button
-                            className="archive-parent text-button"
-                            {...ticketNavigation(parent.meta.id, onOpen)}
-                          >
-                            Parent: {recordId(parent)} {parent.meta.title}
-                            {parent.meta.archived ? " (Archived)" : ""}
-                          </button>
-                        )}
-                        {r.meta.parent && !parent && (
-                          <span className="archive-parent muted">
-                            Parent unavailable: {r.meta.parent}
-                          </span>
-                        )}
-                        {survivor && (
-                          <button
-                            className="archive-parent text-button"
-                            {...ticketNavigation(survivor.meta.id, onOpen)}
-                          >
-                            Duplicate of {recordId(survivor)}{" "}
-                            {survivor.meta.title}
-                          </button>
-                        )}
-                      </div>
-                      {r.meta.duplicateOf ? (
-                        <span className="tag">Duplicate</span>
-                      ) : (
-                        <button
-                          className="button small"
-                          disabled={pending !== null}
-                          aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
-                          onClick={() => void restore(r)}
-                        >
-                          {pending === r.meta.id ? "Restoring…" : "Unarchive"}
-                        </button>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
+      <div className="archive-board-scroll" aria-label="Archived ticket board">
+        <div
+          className="board archive-board lanes"
+          style={
+            {
+              "--column-tracks": lanes.map(() => "var(--column)").join(" "),
+            } as CSSProperties
+          }
+        >
+          <div className="board-head">
+            {lanes.map(({ key, column, tickets: laneTickets }) => {
+              const name =
+                column?.name ??
+                `Unknown stage (${laneTickets[0]?.meta.status ?? key.slice(8)})`;
+              const headingId = `archive-lane-${encodeURIComponent(key)}`;
+              return (
+                <h3
+                  className="column-head"
+                  data-stage={column?.role}
+                  id={headingId}
+                  key={key}
+                >
+                  <StageIcon role={column?.role} size={16} />
+                  <strong title={name}>{name}</strong>
+                  <span className="count" aria-hidden="true">
+                    {laneTickets.length}
+                  </span>
+                </h3>
+              );
+            })}
+          </div>
+          <div className="board-row">
+            {lanes.map(({ key, column, tickets: laneTickets }) => {
+              const name =
+                column?.name ??
+                `Unknown stage (${laneTickets[0]?.meta.status ?? key.slice(8)})`;
+              const headingId = `archive-lane-${encodeURIComponent(key)}`;
+              return (
+                <section
+                  className="archive-lane board-cell"
+                  data-stage={column?.role}
+                  aria-labelledby={headingId}
+                  key={key}
+                >
+                  <ul className="archive-results">
+                    {laneTickets.map((r) => {
+                      const parent = r.meta.parent
+                        ? recordsById.get(r.meta.parent)
+                        : undefined;
+                      const survivor = r.meta.duplicateOf
+                        ? recordsById.get(r.meta.duplicateOf)
+                        : undefined;
+                      return (
+                        <li key={r.meta.id}>
+                          <div className="archive-ticket-summary">
+                            <button
+                              className="text-button"
+                              {...ticketNavigation(r.meta.id, onOpen)}
+                            >
+                              {recordId(r)} {r.meta.title}
+                            </button>
+                            {parent && (
+                              <button
+                                className="archive-parent text-button"
+                                {...ticketNavigation(parent.meta.id, onOpen)}
+                              >
+                                Parent: {recordId(parent)} {parent.meta.title}
+                                {parent.meta.archived ? " (Archived)" : ""}
+                              </button>
+                            )}
+                            {r.meta.parent && !parent && (
+                              <span className="archive-parent muted">
+                                Parent unavailable: {r.meta.parent}
+                              </span>
+                            )}
+                            {survivor && (
+                              <button
+                                className="archive-parent text-button"
+                                {...ticketNavigation(survivor.meta.id, onOpen)}
+                              >
+                                Duplicate of {recordId(survivor)}{" "}
+                                {survivor.meta.title}
+                              </button>
+                            )}
+                          </div>
+                          {r.meta.duplicateOf ? (
+                            <span className="tag">Duplicate</span>
+                          ) : (
+                            <button
+                              className="button small"
+                              disabled={pending !== null}
+                              aria-label={`Unarchive ${recordId(r)} ${r.meta.title}`}
+                              onClick={() => void restore(r)}
+                            >
+                              {pending === r.meta.id
+                                ? "Restoring…"
+                                : "Unarchive"}
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {!laneTickets.length && (
+                    <p className="empty-inline">No archived tickets.</p>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        </div>
       </div>
       {!shown.length && (
         <p className="empty-inline">No archived tickets match this search.</p>
