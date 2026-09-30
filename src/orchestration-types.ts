@@ -56,6 +56,7 @@ export type ManagedRun = {
   snapshot?: string;
   changedFiles?: string[];
   error?: string;
+  failureKind?: "verification";
   questionId?: string;
   result?: {
     outcome: string;

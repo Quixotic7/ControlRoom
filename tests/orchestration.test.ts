@@ -996,3 +996,115 @@ test("takeover of submitted work requires reopened development and no other live
   await f.store.claim(ticket.meta.id, reviewer, run.worktree!);
   await assert.rejects(f.manager.resume(run.id, human), /can no longer resume/);
 });
+
+test("failed verification returns the retained worktree to its worker without human approval", async (t) => {
+  let checks = 0;
+  const prompts: string[] = [];
+  const runner: Execute = async (o) => {
+    if (o.input.startsWith("Implement")) prompts.push(o.input);
+    const response = await execute(o);
+    if (o.command === "/bin/sh" && ++checks === 1) {
+      fs.appendFileSync(o.log, "Fix the missing acceptance case\n");
+      return { ...response, code: 1 };
+    }
+    return response;
+  };
+  const f = await fixture(t, runner),
+    ticket = await f.create();
+  const first = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  const workers = f.manager.status().runs.filter((r) => r.kind === "work");
+  assert.equal(workers.length, 2);
+  assert.equal(workers[1].previous, first.id);
+  assert.equal(workers[1].worktree, workers[0].worktree);
+  assert.equal(workers[1].agent.name, "Worker 1");
+  assert.equal(workers[1].attempt, 2);
+  assert.match(prompts[1], /Fix the missing acceptance case/);
+  assert.equal(
+    f.store.comments().filter((c) => c.kind === "question").length,
+    0,
+  );
+  assert.equal(f.store.get(ticket.meta.id).meta.agentReview?.outcome, "accept");
+});
+
+test("verification correction stops at the attempt limit instead of looping indefinitely", async (t) => {
+  const runner: Execute = async (o) => {
+    const response = await execute(o);
+    return o.command === "/bin/sh" ? { ...response, code: 1 } : response;
+  };
+  const f = await fixture(t, runner),
+    ticket = await f.create();
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () =>
+    f.store
+      .comments()
+      .some(
+        (c) => c.kind === "question" && c.body.includes("attempts exhausted"),
+      ),
+  );
+  assert.equal(
+    f.manager.status().runs.filter((r) => r.kind === "work").length,
+    3,
+  );
+  for (let i = 0; i < 5; i++) await f.manager.tick();
+  assert.equal(f.manager.status().runs.length, 3);
+  assert.notEqual(f.store.get(ticket.meta.id).meta.status, "done");
+});
+
+test("legacy verification questions recover once with agent attribution", async (t) => {
+  const f = await fixture(t),
+    ticket = await f.create();
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await f.manager.close();
+  const question = await f.store.comment(
+    ticket.meta.id,
+    "Legacy controller verification failure",
+    { name: "Orchestrator", kind: "agent" },
+    "question",
+  );
+  const journal = f.store.file(".local/orchestration/runs.json");
+  const rows = JSON.parse(fs.readFileSync(journal, "utf8"));
+  rows[0].state = "waiting_input";
+  rows[0].result = result();
+  rows[0].error =
+    "Error: Independent verification failed with exit 1. Inspect the verification log.";
+  rows[0].questionId = question.id;
+  fs.writeFileSync(journal, JSON.stringify(rows));
+  const recovered = new Orchestrator(f.store);
+  t.after(() => recovered.close());
+  await until(
+    recovered,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  const resolved = f.store.comments().find((c) => c.id === question.id)!;
+  assert.equal(resolved.resolvedBy?.kind, "agent");
+  assert.equal(
+    recovered.status().runs.filter((r) => r.kind === "work").length,
+    2,
+  );
+  assert.equal(
+    recovered.status().runs.find((r) => r.previous === run.id)?.attempt,
+    2,
+  );
+});

@@ -26,6 +26,8 @@ Set `CONTROLROOM_ACTOR` (your session name) and `CONTROLROOM_ACTOR_KIND=agent` i
 
 ## Work a ticket
 
+**Managed workers:** when your assignment says the controller owns the run, it has already claimed the ticket for you. Follow that managed prompt and return the structured handoff. Do not run the manual claim, move, review, or release commands below; the controller performs those writes. A missing globally installed `controlroom` command is not a blocker for implementing your assigned code.
+
 1. `next` (or `next_ticket`) returns the ticket you should pick up, with its brief: description, approved scope, applicable decisions and rules, dependencies, conversation, screenshot paths, and the etag. For a specific ticket, `context ID --brief` (or `get_context`). Rule matching is advisory: check whether other rules apply.
 2. Work only inside a human-approved scope. You may create backlog tickets anywhere, but selecting or implementing needs an approved parent or an explicitly approved ticket. Ask for approval instead of setting `scopeApproved` yourself.
 3. `claim ID` before editing code (`claim_ticket`). Claims last 30 minutes; repeat the claim to renew. A live claim by someone else means stop. A claim is not proof that its process is running.
@@ -36,7 +38,7 @@ Set `CONTROLROOM_ACTOR` (your session name) and `CONTROLROOM_ACTOR_KIND=agent` i
 
 Review instructions appear beside Accept/Reject. If no manual checks are needed, use `review --no-manual-checks` (MCP `manual_review_required: false`) and provide the current verification run. A submission without a run does not inherit a previous passing result; earlier evidence stays available and is labeled historical. Use this only when automated verification is sufficient; otherwise provide concrete `--review-notes`.
 
-You may propose or accept project decisions and UI rules, keeping rationale, attribution, and predecessor links. Scope approval and task acceptance remain human actions.
+You may propose or accept project decisions and UI rules, keeping rationale, attribution, and predecessor links. Scope approval remains a human action. Task acceptance follows the configured managed-review policy; unmanaged work still requires human acceptance.
 
 ## Record meaningful decisions
 
@@ -87,7 +89,7 @@ The managed controller supplies a role-specific context packet, launches isolate
 
 Follow the managed prompt when running inside an assigned checkout: implement only the assigned scope; do not issue competing board writes, merge, push, deploy, or launch further workers. Return the requested structured handoff/question. The controller records progress and evidence. Parents remain open for deliberate outcome review. Human-required tickets and uncertainty route to Needs you, with no expiring questions. Human answers can resume a run; retry exhaustion and service restart need explicit recovery. Assignment, claim, last activity and a verified running process are separate facts.
 
-Accepted work remains on its retained branch. Merge/integration is a separate human action, and dependent runs wait for that branch's commit to be an ancestor of the configured base. Credentials and process logs stay local; durable assignment and review history stay in Markdown. The adapter trial is described in `tests/orchestration.test.ts`; do not describe a fixture run as a real model evaluation.
+The service retains accepted work on its worker branch and does not merge it. In the authorized chat-orchestrator workflow, the orchestrator must integrate accepted work into the configured base, preserve unrelated local changes, verify the combined source, and record the integration commit before reporting the task complete. Do not leave integration silently to the human. Dependent runs wait for the accepted commit to be an ancestor of the configured base. A merge conflict or integration failure remains unfinished work; resolve it within scope or raise a concrete blocker. Pushing and deployment remain separate actions governed by the user's authorization. Credentials and process logs stay local; durable assignment and review history stay in Markdown. The adapter trial is described in `tests/orchestration.test.ts`; do not describe a fixture run as a real model evaluation.
 
 For **Existing chat orchestrator** mode, use the exact human-configured reviewer identity as an agent. `agents review-context RUN` / `agent_review_context` returns the current submission, base commit and freshness token. Inspect the actual diff and criteria, then use `agents review RUN --file review.json` / `review_agent_submission` with `{token,result:{outcome,summary,criteria,evidence,question}}`. The service performs independent verification before accepting; workers cannot use this route. No planner/reviewer CLI is launched in chat mode. Review waits survive restarts, but this setting does not wake the chat; continue coordination during an active conversation or an explicitly requested automation.
 
@@ -96,6 +98,8 @@ For **Existing chat orchestrator** mode, use the exact human-configured reviewer
 Before each delegation, inspect the ticket context and configured roster, then choose a worker by task complexity, uncertainty, risk, required skills and observed performance. Pass the worker name explicitly for every `work` assignment; the service never rotates the roster or substitutes an available model. Record a short selection reason in the ticket conversation (or in each planned child's description). A busy best-suited worker can wait in the queue; availability alone is not a reason to downgrade the assignment. Recovery retains the selected profile and refuses if it has been removed.
 
 For the current Sol/Terra/Luna roster, use these as starting heuristics, not guarantees: Sol for complex implementation, architecture or difficult debugging; Terra for well-scoped implementation with moderate reasoning; Luna for small, clear, low-risk edits. Reassess against actual results and escalate when the task proves harder. The orchestrator retains review responsibility and routes uncertainty or mandatory review to the human.
+
+Verification failures and reviewer-requested changes return approved work to its selected worker with feedback, within the configured attempt limit. Do not ask the human to reapprove routine corrections. Accept a submission into Done through the managed review protocol once independent verification and your review pass; use human escalation only for a real question, uncertainty, mandatory acceptance, revoked scope/configuration, or exhausted retries. Interrupted/unknown-process recovery still needs deliberate reconciliation.
 
 ## Related tickets and duplicate merges
 
