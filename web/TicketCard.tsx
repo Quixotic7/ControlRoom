@@ -42,6 +42,7 @@ export function TicketCard({
   showParent,
   tabIndex,
   onOpen,
+  onShiftSelect,
 }: {
   record: RecordFile;
   ctx: Context;
@@ -50,6 +51,7 @@ export function TicketCard({
   // Roving tabindex: the board keeps exactly one card in the Tab order.
   tabIndex?: number;
   onOpen: (id: string) => void;
+  onShiftSelect?: () => void;
 }) {
   const drag = useTicketDrag(record);
   const m = record.meta;
@@ -57,6 +59,7 @@ export function TicketCard({
   const parent = m.parent ? ctx.byId.get(m.parent) : undefined;
   const priority = priorityOf(record);
   const live = claim && claim.expiresAt > new Date().toISOString();
+  const navigation = ticketNavigation(m.id, onOpen);
   const [dragging, setDragging] = useState(false);
   const details =
     !!m.labels?.length ||
@@ -80,7 +83,17 @@ export function TicketCard({
       }}
       onDragEnd={() => setDragging(false)}
       onKeyDown={drag.key}
-      {...ticketNavigation(m.id, onOpen)}
+      {...navigation}
+      onClick={(e) => {
+        // Cmd/Ctrl retain new-tab navigation. Shift alone is range selection.
+        if (e.shiftKey && !e.metaKey && !e.ctrlKey && onShiftSelect) {
+          e.preventDefault();
+          e.stopPropagation();
+          onShiftSelect();
+          return;
+        }
+        navigation.onClick(e);
+      }}
     >
       <span className="card-meta">
         <StageIcon role={role} />

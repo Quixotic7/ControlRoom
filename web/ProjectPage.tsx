@@ -257,6 +257,8 @@ export function ProjectPage({
       on ? next.add(id) : next.delete(id);
       return next;
     });
+  const selectRange = (ids: string[]) =>
+    setBulkSelected((current) => new Set([...current, ...ids]));
   const claims = useMemo(
     () => new Map<string, Claim>(state.claims.map((c) => [c.ticket, c])),
     [state.claims],
@@ -265,7 +267,12 @@ export function ProjectPage({
   useEffect(() => {
     const end = () => setTicketDrag(null);
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") end();
+      if (e.key !== "Escape") return;
+      end();
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable], dialog"))
+        return;
+      setBulkSelected(new Set());
     };
     document.addEventListener("dragend", end);
     document.addEventListener("drop", end);
@@ -774,7 +781,7 @@ export function ProjectPage({
             collapsed={collapsed}
             onToggleGroup={toggleGroup}
             selected={bulkSelected}
-            onToggleSelected={toggleSelected}
+            onSelectRange={selectRange}
             onArchive={(column, records) =>
               setArchiveScope({
                 column: column.name,

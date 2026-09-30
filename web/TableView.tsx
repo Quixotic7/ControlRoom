@@ -1,11 +1,11 @@
 import { useTicketDrag, useTicketDragContext } from "./TicketDrag";
-import { Fragment, useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { ProgressReport } from "./ProgressReport";
 import { TicketProgress } from "./TicketProgress";
 import { ticketNavigation } from "./ticketNavigation";
 import type { Claim, GroupBy, RecordFile } from "../src/types";
-import { ago, recordId } from "./api";
+import { actor, ago, api, recordId } from "./api";
 import { GroupHeader } from "./BoardView";
 import { ArrowUpIcon, BlockedIcon, Label, StageIcon } from "./Icons";
 import { priorities, priorityOf, type Context, type Group } from "./model";
@@ -64,6 +64,18 @@ function DragRow({
   );
 }
 
+type EditableColumn = "status" | "priority";
+type TableCell = { id: string; column: EditableColumn };
+const editableColumns: EditableColumn[] = ["status", "priority"];
+
+function matrixFromClipboard(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .replace(/\n$/, "")
+    .split("\n")
+    .map((line) => line.split("\t"));
+}
+
 export function TableView({
   groups,
   groupBy,
@@ -118,10 +130,229 @@ export function TableView({
   }, [chosen.length, allChosen]);
   // Table columns: checkbox, row number, seven fields, and the order control.
   const columns = 9 + (canReorder ? 1 : 0);
+  const tableRef = useRef<HTMLDivElement>(null);
+  const [activeCell, setActiveCell] = useState<TableCell | null>(null);
+  const [cellAnchor, setCellAnchor] = useState<TableCell | null>(null);
+  const [pasteFeedback, setPasteFeedback] = useState<string | null>(null);
+  const rowIds = shown.map((record) => record.meta.id);
+  const active =
+    activeCell && rowIds.includes(activeCell.id) ? activeCell : null;
+  const anchor =
+    cellAnchor && rowIds.includes(cellAnchor.id) ? cellAnchor : active;
+  const selectedCells = () => {
+    if (!active || !anchor) return [] as TableCell[];
+    const firstRow = Math.min(
+      rowIds.indexOf(active.id),
+      rowIds.indexOf(anchor.id),
+    );
+    const lastRow = Math.max(
+      rowIds.indexOf(active.id),
+      rowIds.indexOf(anchor.id),
+    );
+    const firstColumn = Math.min(
+      editableColumns.indexOf(active.column),
+      editableColumns.indexOf(anchor.column),
+    );
+    const lastColumn = Math.max(
+      editableColumns.indexOf(active.column),
+      editableColumns.indexOf(anchor.column),
+    );
+    return rowIds
+      .slice(firstRow, lastRow + 1)
+      .flatMap((id) =>
+        editableColumns
+          .slice(firstColumn, lastColumn + 1)
+          .map((column) => ({ id, column })),
+      );
+  };
+  const isCellSelected = (id: string, column: EditableColumn) =>
+    selectedCells().some((cell) => cell.id === id && cell.column === column);
+  const activateCell = (cell: TableCell, extend = false) => {
+    setActiveCell(cell);
+    setCellAnchor((current) => (extend ? (current ?? cell) : cell));
+  };
+  const focusCell = (cell: TableCell) => {
+    requestAnimationFrame(() =>
+      tableRef.current
+        ?.querySelector<HTMLElement>(
+          `td[data-cell-id="${cell.id}"][data-cell-column="${cell.column}"]`,
+        )
+        ?.focus(),
+    );
+  };
+  const copiedText = () => {
+    const cells = selectedCells();
+    if (!cells.length) return "";
+    const byId = new Map(shown.map((record) => [record.meta.id, record]));
+    const rows = [...new Set(cells.map((cell) => cell.id))];
+    const cols = [...new Set(cells.map((cell) => cell.column))];
+    return rows
+      .map((id) =>
+        cols
+          .map((column) => {
+            const record = byId.get(id)!;
+            return column === "status"
+              ? (ctx.columns.find((item) => item.id === record.meta.status)
+                  ?.name ?? record.meta.status)
+              : priorities[priorityOf(record)];
+          })
+          .join("\t"),
+      )
+      .join("\n");
+  };
+  const pasteCells = async (text: string) => {
+    const cells = selectedCells();
+    if (!cells.length || !text) return;
+    const source = matrixFromClipboard(text);
+    const rows = [...new Set(cells.map((cell) => cell.id))];
+    const cols = [...new Set(cells.map((cell) => cell.column))];
+    const fill = source.length === 1 && source[0].length === 1;
+    if (
+      !fill &&
+      (source.length !== rows.length ||
+        source.some((line) => line.length !== cols.length))
+    ) {
+      setPasteFeedback(
+        `Paste needs ${rows.length} row${rows.length === 1 ? "" : "s"} × ${cols.length} column${cols.length === 1 ? "" : "s"}, or one value to fill the selected cells.`,
+      );
+      return;
+    }
+    const changes = new Map<string, Record<string, unknown>>();
+    for (let row = 0; row < rows.length; row++) {
+      for (let column = 0; column < cols.length; column++) {
+        const value = (fill ? source[0][0] : source[row][column]).trim();
+        let parsed: string | number | undefined;
+        if (cols[column] === "status")
+          parsed = ctx.columns.find(
+            (item) =>
+              item.id.toLowerCase() === value.toLowerCase() ||
+              item.name.toLowerCase() === value.toLowerCase(),
+          )?.id;
+        else {
+          const normalized = value.toLowerCase().replace(/ priority$/, "");
+          const index = priorities.findIndex(
+            (priority) => priority.toLowerCase() === normalized,
+          );
+          parsed = index < 0 ? undefined : index;
+        }
+        if (parsed === undefined) {
+          setPasteFeedback(
+            `“${value}” is not a valid ${cols[column]} value. Nothing was changed.`,
+          );
+          return;
+        }
+        const patch = changes.get(rows[row]) ?? {};
+        patch[cols[column]] = parsed;
+        changes.set(rows[row], patch);
+      }
+    }
+    const records = new Map(shown.map((record) => [record.meta.id, record]));
+    const writes = [...changes].filter(([id, patch]) => {
+      const record = records.get(id)!;
+      return Object.entries(patch).some(([field, value]) =>
+        field === "status"
+          ? record.meta.status !== value
+          : priorityOf(record) !== value,
+      );
+    });
+    if (!writes.length) {
+      setPasteFeedback("No cells changed.");
+      return;
+    }
+    const outcomes = await Promise.all(
+      writes.map(async ([id, patch]) => {
+        const record = records.get(id)!;
+        try {
+          await api(`/records/${id}`, "PATCH", {
+            revision: record.revision,
+            patch,
+            actor,
+          });
+          return { ok: true, id };
+        } catch (error) {
+          return {
+            ok: false,
+            id,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
+    );
+    const failed = outcomes.filter((outcome) => !outcome.ok);
+    setPasteFeedback(
+      failed.length
+        ? `${outcomes.length - failed.length} updated; ${failed.length} conflict${failed.length === 1 ? "" : "s"}: ${failed[0].error}`
+        : `${outcomes.length} ticket${outcomes.length === 1 ? "" : "s"} updated.`,
+    );
+    await reload();
+  };
+  const onTableKeyDown = (e: React.KeyboardEvent<HTMLTableElement>) => {
+    if (
+      !(e.target instanceof HTMLElement) ||
+      e.target instanceof HTMLSelectElement
+    )
+      return;
+    const cell = e.target.closest<HTMLTableCellElement>(
+      "td[data-cell-id][data-cell-column]",
+    );
+    if (!cell || !active) return;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      cell.querySelector<HTMLSelectElement>("select")?.focus();
+      return;
+    }
+    const movement: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+    };
+    const step = movement[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const row = rowIds.indexOf(active.id) + step[0];
+    const column = editableColumns.indexOf(active.column) + step[1];
+    if (
+      row < 0 ||
+      row >= rowIds.length ||
+      column < 0 ||
+      column >= editableColumns.length
+    )
+      return;
+    const next = { id: rowIds[row], column: editableColumns[column] };
+    activateCell(next, e.shiftKey);
+    focusCell(next);
+  };
   let row = 0;
   return (
-    <div className="table-wrap">
-      <table className="project-table">
+    <div className="table-wrap" ref={tableRef}>
+      <table
+        className="project-table"
+        onKeyDown={onTableKeyDown}
+        onCopy={(e) => {
+          if (
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement ||
+            (e.target instanceof HTMLElement && e.target.isContentEditable)
+          )
+            return;
+          const text = copiedText();
+          if (!text) return;
+          e.preventDefault();
+          e.clipboardData.setData("text/plain", text);
+        }}
+        onPaste={(e) => {
+          if (
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement ||
+            (e.target instanceof HTMLElement && e.target.isContentEditable)
+          )
+            return;
+          if (!active) return;
+          e.preventDefault();
+          void pasteCells(e.clipboardData.getData("text/plain"));
+        }}
+      >
         <thead>
           <tr>
             <th className="row-check">
@@ -279,7 +510,28 @@ export function TableView({
                           <TicketProgress record={r} ctx={ctx} compact />
                           <VerificationTag record={r} />
                         </td>
-                        <td>
+                        <td
+                          data-cell-id={r.meta.id}
+                          data-cell-column="status"
+                          tabIndex={0}
+                          className={
+                            isCellSelected(r.meta.id, "status")
+                              ? "cell-selected"
+                              : ""
+                          }
+                          onFocus={() =>
+                            activateCell({ id: r.meta.id, column: "status" })
+                          }
+                          onMouseDown={(e) => {
+                            if (!e.shiftKey) return;
+                            e.preventDefault();
+                            activateCell(
+                              { id: r.meta.id, column: "status" },
+                              true,
+                            );
+                            e.currentTarget.focus();
+                          }}
+                        >
                           <span className="status-cell" data-stage={role}>
                             <StageIcon role={role} />
                             <select
@@ -296,7 +548,28 @@ export function TableView({
                             </select>
                           </span>
                         </td>
-                        <td>
+                        <td
+                          data-cell-id={r.meta.id}
+                          data-cell-column="priority"
+                          tabIndex={0}
+                          className={
+                            isCellSelected(r.meta.id, "priority")
+                              ? "cell-selected"
+                              : ""
+                          }
+                          onFocus={() =>
+                            activateCell({ id: r.meta.id, column: "priority" })
+                          }
+                          onMouseDown={(e) => {
+                            if (!e.shiftKey) return;
+                            e.preventDefault();
+                            activateCell(
+                              { id: r.meta.id, column: "priority" },
+                              true,
+                            );
+                            e.currentTarget.focus();
+                          }}
+                        >
                           <select
                             className="cell-select"
                             aria-label={`Priority of ${r.meta.title}`}
@@ -391,6 +664,11 @@ export function TableView({
           );
         })}
       </table>
+      {pasteFeedback && (
+        <p className="table-paste-feedback" role="status">
+          {pasteFeedback}
+        </p>
+      )}
       {!groups.some((g) => g.items.length) && (
         <p className="empty-inline">No tickets match this view.</p>
       )}
