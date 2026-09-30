@@ -503,7 +503,8 @@ export function TableView({
                         role={role}
                         selected={selected.has(r.meta.id)}
                         source={
-                          ticketDrag?.session?.source.meta.id === r.meta.id
+                          !!ticketDrag?.session?.preview &&
+                          ticketDrag.session.source.meta.id === r.meta.id
                         }
                       >
                         <td className="row-check">
