@@ -128,11 +128,15 @@ export function Settings({
     [workflowError, setWorkflowError] = useState(""),
     [pendingRemoval, setPendingRemoval] = useState<Column | null>(null);
   const currentDraft = (): WorkflowDraft => ({ name, columns, shortcut });
-  const applyWorkflow = (draft: WorkflowDraft, nextRevision: string) => {
+  const applyWorkflow = (
+    draft: WorkflowDraft,
+    nextRevision: string,
+    persisted: WorkflowDraft = draft,
+  ) => {
     setName(draft.name);
     setColumns(draft.columns);
     setShortcut(draft.shortcut);
-    setBaseline(cloneWorkflowDraft(draft));
+    setBaseline(cloneWorkflowDraft(persisted));
     setRevision(nextRevision);
     setRemoteWorkflow(null);
     setPendingRemoval(null);
@@ -349,7 +353,13 @@ export function Settings({
                     currentDraft(),
                     remoteWorkflow.draft,
                   );
-                  applyWorkflow(next, remoteWorkflow.revision);
+                  // The reapplied draft is still unsaved. Compare future remote
+                  // updates against their persisted baseline, not this local edit.
+                  applyWorkflow(
+                    next,
+                    remoteWorkflow.revision,
+                    remoteWorkflow.draft,
+                  );
                   setWorkflowError(
                     "Your draft was reapplied to the latest workflow configuration. Review it, then save.",
                   );
