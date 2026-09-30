@@ -775,8 +775,8 @@ textarea::placeholder {
 .column-role {
   display: grid;
   grid-row: 1 / -1;
-  grid-template-rows: auto auto auto;
-  gap: 3px;
+  grid-template-rows: subgrid;
+  gap: 6px;
   font-family: var(--display);
   text-transform: uppercase;
   letter-spacing: 0.06em;
