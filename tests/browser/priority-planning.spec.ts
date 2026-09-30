@@ -23,20 +23,21 @@ test("priority planning ranks across statuses without changing workflow or paren
   await page.request.patch("/api/preferences", {
     data: { selected: null, page: "project", viewId: "priority-planning" },
   });
-  const parent = await create(page, "Priority planning parent", {});
-  const first = await create(page, "Priority planning first", {
+  const prefix = `Priority planning ${Date.now()}-${Math.random()}`;
+  const parent = await create(page, `${prefix} parent`, {});
+  const first = await create(page, `${prefix} first`, {
     parent: parent.meta.id,
     status: "backlog",
     priority: 2,
     order: 10,
   });
-  const second = await create(page, "Priority planning second", {
+  const second = await create(page, `${prefix} second`, {
     parent: parent.meta.id,
     status: "selected",
     priority: 2,
     order: 20,
   });
-  const high = await create(page, "Priority planning high", {
+  const high = await create(page, `${prefix} high`, {
     parent: parent.meta.id,
     status: "review",
     priority: 1,
@@ -44,7 +45,7 @@ test("priority planning ranks across statuses without changing workflow or paren
   });
 
   await page.goto("/");
-  await page.getByLabel("Filter tickets").fill("Priority planning");
+  await page.getByLabel("Filter tickets").fill(prefix);
   await expect(page.getByText("Start of Urgent priority")).toBeVisible();
   await expect(page.getByText("End of Low priority")).toBeVisible();
   await expect(page.getByText("Priority planning is active:")).toBeVisible();
@@ -69,6 +70,14 @@ test("priority planning ranks across statuses without changing workflow or paren
   await page.mouse.move(firstBox.x + firstBox.width / 2, firstBox.y + 2, {
     steps: 8,
   });
+  await expect(firstRow).toHaveClass(/insert-before/);
+  // The preview inserts a row and changes the native hit target beneath the
+  // pointer. Move onto that visible gap so it receives dragover before drop,
+  // just as a user placing the ticket in the displayed insertion slot does.
+  const gap = page.locator(".ticket-drop-row.active");
+  await expect(gap).toBeVisible();
+  const gapBox = (await gap.boundingBox())!;
+  await page.mouse.move(gapBox.x + gapBox.width / 2, gapBox.y + gapBox.height / 2);
   await expect(firstRow).toHaveClass(/insert-before/);
   await page.mouse.up();
   await expect
