@@ -585,7 +585,28 @@ body,
   flex-wrap: wrap;
   gap: 12px;
 }
+.archive-lanes {
+  display: grid;
+  gap: 16px;
+}
+.archive-lane {
+  padding: 14px 16px;
+  background: var(--lane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.archive-lane h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+}
+.archive-lane h3 .count {
+  margin-left: auto;
+}
 .archive-results {
+  margin: 8px 0 0;
   padding: 0;
   list-style: none;
 }
@@ -600,6 +621,17 @@ body,
 .archive-results .text-button {
   text-align: left;
   overflow-wrap: anywhere;
+}
+.archive-ticket-summary {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+.archive-parent {
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
 }
 .archive-results .button {
   flex-shrink: 0;

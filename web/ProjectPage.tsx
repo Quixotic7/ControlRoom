@@ -376,6 +376,7 @@ export function ProjectPage({
     return (
       <ArchivedTickets
         records={state.records}
+        columns={ctx.columns}
         onOpen={onOpen}
         reload={reload}
         onBack={() => setArchiveView(false)}
