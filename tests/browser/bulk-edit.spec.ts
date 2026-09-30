@@ -47,7 +47,10 @@ test("board/table selection reconciles visibility and partial bulk results retry
 
   await page.goto("/");
   await page.getByLabel("Filter tickets").fill(good.meta.title);
-  await page.getByLabel(`Select ${good.meta.title}`).check();
+  await page
+    .locator(".ticket-card")
+    .filter({ hasText: good.meta.title })
+    .click({ modifiers: ["Shift"] });
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
 
   // A normal live refresh replaces record objects, but selection remains on
@@ -148,7 +151,7 @@ test("board/table selection reconciles visibility and partial bulk results retry
   ]);
 });
 
-test("board selection controls exclude hidden and collapsed tickets and report unchanged writes", async ({
+test("board Shift selection excludes hidden and collapsed tickets and reports unchanged writes", async ({
   page,
 }) => {
   const suffix = Date.now();
@@ -168,10 +171,10 @@ test("board selection controls exclude hidden and collapsed tickets and report u
   await page.goto("/");
   await page.getByLabel("Filter tickets").fill(`label:${label}`);
 
-  // Native controls remain keyboard operable and expose a persistent count.
-  const backlogBox = page.getByLabel(`Select ${backlog.meta.title}`);
-  await backlogBox.focus();
-  await page.keyboard.press("Space");
+  const backlogCard = page
+    .locator(".ticket-card")
+    .filter({ hasText: backlog.meta.title });
+  await backlogCard.click({ modifiers: ["Shift"] });
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
   const parentField = page
     .locator(".bulk-enable")
@@ -184,9 +187,13 @@ test("board selection controls exclude hidden and collapsed tickets and report u
   await expect(page.getByText("0 selected", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Hide Backlog column" }).click();
-  await expect(backlogBox).toHaveCount(0);
+  await expect(backlogCard).toHaveCount(0);
   await page.getByRole("button", { name: "Select visible (1)" }).click();
-  await expect(page.getByLabel(`Select ${progress.meta.title}`)).toBeChecked();
+  await expect(
+    page
+      .locator(".board-ticket.selected .ticket-card")
+      .filter({ hasText: progress.meta.title }),
+  ).toHaveCount(1);
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
 
   await page
@@ -213,4 +220,199 @@ test("board selection controls exclude hidden and collapsed tickets and report u
   await expect(page.getByText("0 selected", { exact: true })).toBeVisible();
   expect((await record(page, backlog.meta.id)).meta.status).toBe("backlog");
   expect((await record(page, progress.meta.id)).meta.status).toBe("progress");
+});
+
+test("table Shift ranges copy displayed values and report a stale paste conflict", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const first = await create(page, `Cell paste first ${suffix}`);
+  const second = await create(page, `Cell paste second ${suffix}`);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page.getByLabel("Filter tickets").fill(`Cell paste ${suffix}`);
+  const priorityCell = (id: string) =>
+    page.locator(`tr[data-id="${id}"] td[data-cell-column="priority"]`);
+  await priorityCell(first.meta.id).click({ position: { x: 3, y: 3 } });
+  await priorityCell(second.meta.id).click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.keyboard.press("Meta+c");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("Normal\nNormal");
+
+  let conflicted = false;
+  await page.route(`**/api/records/${second.meta.id}`, async (route) => {
+    if (route.request().method() !== "PATCH" || conflicted) {
+      await route.continue();
+      return;
+    }
+    conflicted = true;
+    const latest = await record(page, second.meta.id);
+    await page.request.patch(`/api/records/${second.meta.id}`, {
+      data: { revision: latest.revision, patch: { owner: "external" }, actor },
+    });
+    await route.continue();
+  });
+  await page.evaluate(() => navigator.clipboard.writeText("Low"));
+  await page.keyboard.press("Meta+v");
+  await expect(page.locator(".table-paste-feedback")).toContainText(
+    "1 updated; 1 conflict",
+  );
+  await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
+    "3",
+  );
+  await expect(page.getByLabel(`Priority of ${second.meta.title}`)).toHaveValue(
+    "2",
+  );
+});
+
+test("board Shift-arrow starts a range at the focused card", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const label = `arrow-range-${suffix}`;
+  await create(page, `Arrow range one ${suffix}`, { labels: [label] });
+  await create(page, `Arrow range two ${suffix}`, { labels: [label] });
+  await page.goto("/");
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+
+  const cards = page.locator(".ticket-card");
+  await cards.nth(0).focus();
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(page.getByText("2 selected", { exact: true })).toBeVisible();
+});
+
+test("table ranges freeze ticket IDs across filtering and validate clipboard rectangles", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const label = `frozen-range-${suffix}`;
+  const first = await create(page, `Frozen first ${suffix}`, {
+    labels: [label],
+  });
+  const second = await create(page, `Frozen second ${suffix}`, {
+    labels: [label],
+  });
+  const third = await create(page, `Frozen third ${suffix}`, {
+    labels: [label],
+    priority: 3,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  const cell = (id: string, column: "status" | "priority") =>
+    page.locator(`tr[data-id="${id}"] td[data-cell-column="${column}"]`);
+
+  // Copy a real displayed Low value, then use that clipboard value to fill a
+  // separate range below. This keeps clipboard coverage on the same keyboard
+  // path users take instead of injecting the fill value directly.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await cell(third.meta.id, "priority").click({ position: { x: 3, y: 3 } });
+  await page.keyboard.press("Meta+c");
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("Low");
+
+  // Both Shift click and Shift arrow retain the original cell as the anchor.
+  await cell(first.meta.id, "priority").click({ position: { x: 3, y: 3 } });
+  await page.keyboard.press("Shift+ArrowDown");
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+
+  // Hide and restore an endpoint. Restoring it must restore the frozen IDs,
+  // not select the third row which happens to be adjacent after a refresh.
+  await page.getByLabel("Filter tickets").fill(first.meta.title);
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(1);
+
+  // The filter is an ordinary text input: pasting there remains native and
+  // must not trigger table bulk editing. Clear it again before restoring table
+  // focus with Shift, which deliberately preserves the frozen range.
+  const filter = page.getByLabel("Filter tickets");
+  await page.keyboard.press("Meta+v");
+  await expect(filter).toHaveValue(`${first.meta.title}Low`);
+  await page.getByLabel("Filter tickets").fill(`label:${label}`);
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await expect(
+    page.locator("td.cell-selected[data-cell-column='priority']"),
+  ).toHaveCount(2);
+  await page.keyboard.press("Meta+v");
+  await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
+    "3",
+  );
+  await expect(page.getByLabel(`Priority of ${second.meta.title}`)).toHaveValue(
+    "3",
+  );
+  await expect(page.getByLabel(`Priority of ${third.meta.title}`)).toHaveValue(
+    "3",
+  );
+
+  // A two-column rectangle updates matching Status/Priority cells.
+  await cell(first.meta.id, "status").click({ position: { x: 3, y: 3 } });
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  await page.evaluate(() =>
+    navigator.clipboard.writeText("Progress\tHigh\nSelected\tLow"),
+  );
+  await page.keyboard.press("Meta+v");
+  await expect(page.getByLabel(`Status of ${first.meta.title}`)).toHaveValue(
+    "progress",
+  );
+  await expect(page.getByLabel(`Priority of ${first.meta.title}`)).toHaveValue(
+    "1",
+  );
+  await expect(page.getByLabel(`Status of ${second.meta.title}`)).toHaveValue(
+    "selected",
+  );
+  await expect(page.getByLabel(`Priority of ${second.meta.title}`)).toHaveValue(
+    "3",
+  );
+
+  // Reloading after the successful rectangle paste leaves focus outside the
+  // table. Shift-click restores table focus while retaining this rectangle,
+  // so the invalid-value assertion below tests the table paste handler.
+  await cell(second.meta.id, "priority").click({
+    modifiers: ["Shift"],
+    position: { x: 3, y: 3 },
+  });
+  const firstBeforeInvalid = await record(page, first.meta.id);
+  const secondBeforeInvalid = await record(page, second.meta.id);
+  await page.evaluate(() =>
+    navigator.clipboard.writeText("Not a status\tUrgent\nProgress\tLow"),
+  );
+  await page.keyboard.press("Meta+v");
+  await expect(page.locator(".table-paste-feedback")).toContainText(
+    "not a valid status value. Nothing was changed.",
+  );
+  expect((await record(page, first.meta.id)).revision).toBe(
+    firstBeforeInvalid.revision,
+  );
+  expect((await record(page, second.meta.id)).revision).toBe(
+    secondBeforeInvalid.revision,
+  );
 });

@@ -44,6 +44,14 @@ export function Shortcuts({
             "Move between board cards once one has focus; Enter opens it",
           ],
           [
+            "Shift + click / Shift + arrows",
+            "Select a range of visible board tickets; Esc clears selection",
+          ],
+          [
+            "Table: click + Shift + arrows, ⌘ / Ctrl + C / V",
+            "Select editable Status/Priority cells, then copy or fill compatible values",
+          ],
+          [
             "Alt / Option + ↑ / ↓",
             "Move focused ticket earlier / later (Manual or Priority sort)",
           ],

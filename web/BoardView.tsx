@@ -152,7 +152,7 @@ export function BoardView({
   collapsed,
   onToggleGroup,
   selected,
-  onToggleSelected,
+  onSelectRange,
 }: {
   groups: Group[];
   groupBy: GroupBy;
@@ -170,7 +170,7 @@ export function BoardView({
   collapsed: Set<string>;
   onToggleGroup: (key: string) => void;
   selected: Set<string>;
-  onToggleSelected: (id: string, on: boolean) => void;
+  onSelectRange: (ids: string[]) => void;
 }) {
   const ticketDrag = useTicketDragContext();
   // The cell a dragged card is currently over, for the drop highlight.
@@ -178,6 +178,7 @@ export function BoardView({
   // The one card in the Tab order (as "group/ticket", since label groups can
   // repeat a ticket); arrows move focus between the others.
   const [focused, setFocused] = useState<string | null>(null);
+  const [selectionAnchor, setSelectionAnchor] = useState<string | null>(null);
   const columnIds = ctx.columns
     .filter((c) => !hidden.has(c.id))
     .map((c) => c.id);
@@ -205,8 +206,26 @@ export function BoardView({
     ];
   };
   const tabStop = focused && shown.includes(focused) ? focused : shown[0];
+  const shiftSelect = (id: string, originId?: string) => {
+    const ids = [...new Set(shown.map((key) => key.split("/").at(-1)!))];
+    const anchor =
+      selectionAnchor && ids.includes(selectionAnchor)
+        ? selectionAnchor
+        : originId && ids.includes(originId)
+          ? originId
+          : id;
+    const start = ids.indexOf(anchor);
+    const end = ids.indexOf(id);
+    if (start < 0 || end < 0) return;
+    onSelectRange(ids.slice(Math.min(start, end), Math.max(start, end) + 1));
+    setSelectionAnchor(anchor);
+  };
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const card = (e.target as HTMLElement).closest<HTMLElement>(cardSelector);
+    if (e.key === "Escape") {
+      setSelectionAnchor(null);
+      return;
+    }
     if (!card || e.metaKey || e.ctrlKey || e.altKey) return;
     const next = nextCard(e.currentTarget, card, e.key, columnIds);
     if (!next) {
@@ -216,6 +235,7 @@ export function BoardView({
     e.preventDefault();
     next.focus();
     next.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (e.shiftKey) shiftSelect(next.dataset.id!, card.dataset.id);
   };
   const lanes = groupBy === "none";
   return (
@@ -431,19 +451,6 @@ export function BoardView({
                                     : ""
                                 }`}
                               >
-                                <label className="board-check">
-                                  <input
-                                    type="checkbox"
-                                    aria-label={`Select ${r.meta.title}`}
-                                    checked={selected.has(r.meta.id)}
-                                    onChange={(e) =>
-                                      onToggleSelected(
-                                        r.meta.id,
-                                        e.target.checked,
-                                      )
-                                    }
-                                  />
-                                </label>
                                 <TicketCard
                                   record={r}
                                   ctx={ctx}
@@ -456,6 +463,7 @@ export function BoardView({
                                     `${g.key}/${r.meta.id}` === tabStop ? 0 : -1
                                   }
                                   onOpen={onOpen}
+                                  onShiftSelect={() => shiftSelect(r.meta.id)}
                                 />
                               </div>
                             </React.Fragment>
