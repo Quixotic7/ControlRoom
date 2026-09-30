@@ -384,9 +384,10 @@ export function Settings({
         )}
         {columns.map((c, i) => (
           <div className="column-setting" key={c.id}>
-            <label className="column-display-name">
-              <span>Display name</span>
+            <div className="column-display-name">
+              <label htmlFor={`status-name-${c.id}`}>Display name</label>
               <input
+                id={`status-name-${c.id}`}
                 aria-label={`Name for ${c.id}`}
                 value={c.name}
                 onChange={(e) =>
@@ -400,10 +401,11 @@ export function Settings({
               <small>
                 Stable ID: <code>{c.id}</code>
               </small>
-            </label>
-            <label className="column-role">
-              <span>Workflow role</span>
+            </div>
+            <div className="column-role">
+              <label htmlFor={`status-role-${c.id}`}>Workflow role</label>
               <select
+                id={`status-role-${c.id}`}
                 aria-label={`Role for ${c.id}`}
                 value={c.role}
                 onChange={(e) =>
@@ -422,7 +424,7 @@ export function Settings({
                   ),
                 )}
               </select>
-            </label>
+            </div>
             <button
               className="icon-button"
               aria-label={`Move ${c.name} earlier`}

@@ -766,14 +766,16 @@ textarea::placeholder {
 .column-setting {
   display: grid;
   grid-template-columns: minmax(0, 46fr) minmax(0, 30fr) repeat(3, 30px);
+  grid-template-rows: auto auto auto;
   gap: 6px;
   margin-bottom: 8px;
   align-items: start;
 }
 .column-display-name,
 .column-role {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-row: 1 / -1;
+  grid-template-rows: auto auto auto;
   gap: 3px;
   font-family: var(--display);
   text-transform: uppercase;
@@ -792,7 +794,8 @@ textarea::placeholder {
   width: 100%;
 }
 .column-setting > .icon-button {
-  margin-top: 15px;
+  grid-row: 2;
+  margin-top: 0;
 }
 .column-setting small {
   font-family: var(--body);
