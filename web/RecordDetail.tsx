@@ -214,6 +214,7 @@ export function RecordDetail({
   const readingAnchor = useRef<{
     id: string;
     top: number;
+    scrollTop: number;
     order: string;
     tab: string;
   } | null>(null);
@@ -285,28 +286,52 @@ export function RecordDetail({
   function draftBody(value: string) {
     bodyRef.current = value;
   }
-  function rememberReadingPosition() {
+  const readingScrollTop = useRef(0);
+  // Track the visible comment without doing DOM queries and layout reads in
+  // the scroll event hot path. IntersectionObserver supplies already-computed
+  // geometry only when visibility changes; scroll events only remember the
+  // scroller's numeric position.
+  useEffect(() => {
     const scroller = detailBody.current;
     if (!scroller || (tab !== "conversation" && tab !== "details")) {
       readingAnchor.current = null;
       return;
     }
-    const viewport = scroller.getBoundingClientRect();
-    const visible = Array.from(
-      scroller.querySelectorAll<HTMLElement>(".comment"),
-    ).find((node) => {
-      const rect = node.getBoundingClientRect();
-      return rect.bottom > viewport.top && rect.top < viewport.bottom;
-    });
-    readingAnchor.current = visible
-      ? {
-          id: visible.id,
-          top: visible.getBoundingClientRect().top - viewport.top,
-          order: conversationOrder,
-          tab,
+    readingScrollTop.current = scroller.scrollTop;
+    // Entries arrive only at visibility transitions, at different scroll offsets.
+    // Cache content coordinates so an older entry never masquerades as a fresh
+    // viewport measurement when a neighbouring comment enters or leaves.
+    const visible = new Map<string, number>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const rootTop = entries[0]?.rootBounds?.top;
+        if (rootTop === undefined) return;
+        for (const entry of entries) {
+          if (entry.isIntersecting)
+            visible.set(
+              (entry.target as HTMLElement).id,
+              entry.boundingClientRect.top - rootTop + scroller.scrollTop,
+            );
+          else visible.delete((entry.target as HTMLElement).id);
         }
-      : null;
-  }
+        const first = [...visible].sort((a, b) => a[1] - b[1])[0];
+        readingAnchor.current = first
+          ? {
+              id: first[0],
+              top: first[1] - scroller.scrollTop,
+              scrollTop: scroller.scrollTop,
+              order: conversationOrder,
+              tab,
+            }
+          : null;
+      },
+      { root: scroller },
+    );
+    scroller
+      .querySelectorAll<HTMLElement>(".comment")
+      .forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [state.comments, tab, conversationOrder]);
   // Preserve the visible comment when a live update prepends/reflows entries.
   // A deliberate sort change starts a new anchor instead of preserving the old order.
   useLayoutEffect(() => {
@@ -318,13 +343,16 @@ export function RecordDetail({
       anchor?.order === conversationOrder
     ) {
       const node = document.getElementById(anchor.id);
-      if (node)
+      if (node) {
+        const expectedTop =
+          anchor.top - (readingScrollTop.current - anchor.scrollTop);
         scroller.scrollTop +=
           node.getBoundingClientRect().top -
           scroller.getBoundingClientRect().top -
-          anchor.top;
+          expectedTop;
+        readingScrollTop.current = scroller.scrollTop;
+      }
     }
-    rememberReadingPosition();
   }, [state.comments, tab, conversationOrder]);
   const dirty = isDraftDirty();
   useEffect(() => {
@@ -970,7 +998,9 @@ export function RecordDetail({
       <div
         className="detail-body"
         ref={detailBody}
-        onScroll={rememberReadingPosition}
+        onScroll={(event) => {
+          readingScrollTop.current = event.currentTarget.scrollTop;
+        }}
         style={{
           overflowAnchor:
             tab === "conversation" || tab === "details" ? "none" : undefined,
