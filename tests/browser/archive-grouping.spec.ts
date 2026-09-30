@@ -37,6 +37,7 @@ test.beforeEach(async ({ page }) => {
 test("archive history uses board-style workflow columns with parent context", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 700, height: 700 });
   const original = await state(page);
   const parent = await create(page, "Archived grouping parent", {
     status: "done",
@@ -81,15 +82,21 @@ test("archive history uses board-style workflow columns with parent context", as
       name: "Archived tickets",
       exact: true,
     });
+    const shippedHeader = archiveView.getByRole("heading", {
+      name: "Shipped work 2",
+      exact: true,
+    });
     const shipped = archiveView.getByRole("region", {
-      name: "Shipped work swimlane",
+      name: "Shipped work 2",
       exact: true,
     });
     const review = archiveView.getByRole("region", {
-      name: "Ready for archive swimlane",
+      name: "Ready for archive 1",
       exact: true,
     });
-    await expect(shipped).toContainText("2");
+    // The lane count belongs to its visual column header, which labels the
+    // matching region for assistive technology.
+    await expect(shippedHeader).toBeVisible();
     await expect(shipped).toContainText(parent.meta.title);
     await expect(shipped).toContainText(doneChild.meta.title);
     await expect(shipped).toContainText(`Parent: #${parent.meta.number}`);
@@ -106,11 +113,40 @@ test("archive history uses board-style workflow columns with parent context", as
     expect(Math.abs(reviewBox!.y - shippedBox!.y)).toBeLessThan(2);
     expect(reviewBox!.x).not.toBe(shippedBox!.x);
 
+    const archiveBoard = archiveView.getByLabel("Archived ticket board");
+    const overflowsHorizontally = await archiveBoard.evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    );
+    expect(overflowsHorizontally).toBeTruthy();
+    const reviewUnarchive = review.getByRole("button", {
+      name: `Unarchive #${reviewChild.meta.number} ${reviewChild.meta.title}`,
+      exact: true,
+    });
+    await reviewUnarchive.scrollIntoViewIfNeeded();
+    expect(
+      await archiveBoard.evaluate((element) => element.scrollLeft),
+    ).toBeGreaterThan(0);
+    const [unarchiveBox, boardBox] = await Promise.all([
+      reviewUnarchive.boundingBox(),
+      archiveBoard.boundingBox(),
+    ]);
+    expect(unarchiveBox).not.toBeNull();
+    expect(boardBox).not.toBeNull();
+    expect(unarchiveBox!.x).toBeGreaterThanOrEqual(boardBox!.x);
+    expect(unarchiveBox!.x + unarchiveBox!.width).toBeLessThanOrEqual(
+      boardBox!.x + boardBox!.width,
+    );
+
     await archiveView
       .getByLabel("Search archived tickets")
       .fill(`#${reviewChild.meta.number}`);
     await expect(review).toContainText(reviewChild.meta.title);
     await expect(shipped).toContainText("No archived tickets.");
+    await archiveView.getByLabel("Search archived tickets").fill("");
+    await reviewUnarchive.click();
+    await expect
+      .poll(async () => (await record(page, reviewChild.meta.id)).meta.archived)
+      .toBeFalsy();
   } finally {
     const latest = await state(page);
     await page.request.patch("/api/config", {

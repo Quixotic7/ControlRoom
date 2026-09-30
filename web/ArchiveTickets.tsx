@@ -293,16 +293,18 @@ export function ArchivedTickets({
               const name =
                 column?.name ??
                 `Unknown stage (${laneTickets[0]?.meta.status ?? key.slice(8)})`;
+              const headingId = `archive-lane-${encodeURIComponent(key)}`;
               return (
-                <div
+                <h3
                   className="column-head"
                   data-stage={column?.role}
+                  id={headingId}
                   key={key}
                 >
                   <StageIcon role={column?.role} size={16} />
                   <strong title={name}>{name}</strong>
                   <span className="count">{laneTickets.length}</span>
-                </div>
+                </h3>
               );
             })}
           </div>
@@ -311,11 +313,12 @@ export function ArchivedTickets({
               const name =
                 column?.name ??
                 `Unknown stage (${laneTickets[0]?.meta.status ?? key.slice(8)})`;
+              const headingId = `archive-lane-${encodeURIComponent(key)}`;
               return (
                 <section
                   className="archive-lane board-cell"
                   data-stage={column?.role}
-                  aria-label={`${name} swimlane`}
+                  aria-labelledby={headingId}
                   key={key}
                 >
                   <ul className="archive-results">
