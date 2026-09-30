@@ -169,8 +169,13 @@ export async function api<T = any>(
   method = "GET",
   body?: unknown,
   signal?: AbortSignal,
+  allowStart = true,
 ): Promise<T> {
-  const base = await service(store);
+  const base = allowStart ? await service(store) : await endpoint(store);
+  if (!base)
+    throw new Error(
+      "Control Room service is not running. Start it or omit --no-start.",
+    );
   const res = await fetch(base + url, {
     method,
     signal,
@@ -343,6 +348,7 @@ export async function waitForChange(
   waitFor: WaitFor,
   timeoutMs: number,
   signal?: AbortSignal,
+  allowStart = true,
 ): Promise<{ change: string; ticket: RecordFile; comments: any[] } | null> {
   if (!["comment", "status", "any"].includes(waitFor))
     throw new Error("Unknown wait condition");
@@ -363,6 +369,7 @@ export async function waitForChange(
       "GET",
       undefined,
       combined,
+      allowStart,
     );
     return { ticket: c.ticket as RecordFile, comments: c.comments as any[] };
   };
@@ -388,7 +395,11 @@ export async function waitForChange(
   let pending = false;
   try {
     first = await snapshot();
-    const base = await service(store);
+    const base = allowStart ? await service(store) : await endpoint(store);
+    if (!base)
+      throw new Error(
+        "Control Room service is not running. Start it or omit --no-start.",
+      );
     try {
       const res = await fetch(base + "/api/events", {
         headers: { Authorization: `Bearer ${store.token()}` },

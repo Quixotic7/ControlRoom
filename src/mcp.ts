@@ -7,7 +7,7 @@ import readline from "node:readline";
 import path from "node:path";
 import type { Store } from "./store.js";
 import {
-  api,
+  api as clientApi,
   ApiError,
   commitsSince,
   currentBranch,
@@ -34,7 +34,15 @@ export async function startMcp(
   store: Store,
   who: Actor,
   worktree = process.cwd(),
+  allowStart = true,
 ) {
+  const api = <T = any>(
+    store: Store,
+    url: string,
+    method = "GET",
+    body?: unknown,
+    signal?: AbortSignal,
+  ) => clientApi<T>(store, url, method, body, signal, allowStart);
   const cwd = path.resolve(worktree);
   const text = (v: unknown) =>
     typeof v === "string" ? v : JSON.stringify(v, null, 2);
@@ -679,6 +687,7 @@ export async function startMcp(
           a.for ?? "any",
           (a.timeout_seconds ?? 600) * 1000,
           signal,
+          allowStart,
         );
         return r
           ? {
@@ -826,7 +835,7 @@ export async function startMcp(
         protocolVersion: msg.params?.protocolVersion ?? "2025-03-26",
         capabilities: { tools: {} },
         serverInfo: { name: "controlroom", version: "0.2.0" },
-        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human accepts Done unless the managed orchestration controller records an independent review receipt. Ordinary workers cannot accept Done.\n\n${decisionProtocol}\n\nUse list_knowledge with include_inactive to check existing decisions, create_decision to record one, and update_ticket to link its ID in the ticket's decisions field (preserving existing links).`,
+        instructions: `You are "${who.name}" (${who.kind}) on the Control Room board for ${store.root}. Before implementing, call get_context (or next_ticket) and claim_ticket. Work only inside an approved scope. Record discoveries with comment, questions with ask_question, and finish with submit_review including a run command; a human accepts Done unless the managed orchestration controller records an independent review receipt. Ordinary workers cannot accept Done.${allowStart ? "" : " Auto-start is disabled: the local Control Room service must already be running before tools can read or write."}\n\n${decisionProtocol}\n\nUse list_knowledge with include_inactive to check existing decisions, create_decision to record one, and update_ticket to link its ID in the ticket's decisions field (preserving existing links).`,
       });
     else if (msg.method === "notifications/cancelled") {
       pending.get(msg.params?.requestId)?.abort();
