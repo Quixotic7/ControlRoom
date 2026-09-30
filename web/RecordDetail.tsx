@@ -9,7 +9,7 @@ import { ArrowUpIcon, CloseIcon, StageIcon, Logo } from "./Icons";
 import { ParentInput } from "./ParentInput";
 import { ScreenshotPicker } from "./ScreenshotPicker";
 import { ImageThumbnail } from "./ImageThumbnail";
-import { ReviewActions } from "./ReviewActions";
+import { ReviewActions, type ReviewActionDraft } from "./ReviewActions";
 import { OpenQuestions } from "./OpenQuestions";
 import { ReviewBrief } from "./ReviewBrief";
 import { QuickTicket } from "./QuickTicket";
@@ -196,6 +196,10 @@ export function RecordDetail({
   conversationOrder,
   onConversationOrder,
   standalone = false,
+  reviewQueue,
+  reviewDraft,
+  onReviewDraft,
+  onReviewDone,
 }: {
   record?: RecordFile;
   kind: Kind;
@@ -208,6 +212,15 @@ export function RecordDetail({
   conversationOrder: "oldest" | "newest";
   onConversationOrder: (order: "oldest" | "newest") => void;
   standalone?: boolean;
+  reviewQueue?: {
+    position: number;
+    total: number;
+    previous?: () => void;
+    next?: () => void;
+  };
+  reviewDraft?: ReviewActionDraft;
+  onReviewDraft: (draft: ReviewActionDraft) => void;
+  onReviewDone?: (id: string) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const detailBody = useRef<HTMLDivElement>(null);
@@ -412,7 +425,8 @@ export function RecordDetail({
       replaceBody(r.body);
       setConflict(null);
       await onSaved(r.meta.id);
-      onClose();
+      if (onReviewDone) onReviewDone(r.meta.id);
+      else onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.detail?.current)
         setConflict({ current: e.detail.current, fields: ["review outcome"] });
@@ -558,6 +572,21 @@ export function RecordDetail({
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   });
+  useEffect(() => {
+    if (!reviewQueue) return;
+    const key = (e: KeyboardEvent) => {
+      if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      if (e.key === "ArrowLeft" && reviewQueue.previous) {
+        e.preventDefault();
+        reviewQueue.previous();
+      } else if (e.key === "ArrowRight" && reviewQueue.next) {
+        e.preventDefault();
+        reviewQueue.next();
+      }
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, [reviewQueue]);
   const [posting, setPosting] = useState(false);
   const [postedComment, setPostedComment] = useState<string | null>(null);
   const draftKey = `comment:${state.config.projectId}:${baseline?.meta.id ?? "new"}`;
@@ -995,6 +1024,34 @@ export function RecordDetail({
           </button>
         ))}
       </nav>
+      {reviewQueue && (
+        <nav
+          className="review-queue-navigation"
+          aria-label="Review queue navigation"
+        >
+          <span>
+            Review {reviewQueue.position + 1} of {reviewQueue.total}
+          </span>
+          <div className="inline-actions">
+            <button
+              className="button subtle small"
+              disabled={!reviewQueue.previous || saving}
+              onClick={reviewQueue.previous}
+              title="Previous review (Alt / Option + Left Arrow)"
+            >
+              Previous
+            </button>
+            <button
+              className="button subtle small"
+              disabled={!reviewQueue.next || saving}
+              onClick={reviewQueue.next}
+              title="Next review (Alt / Option + Right Arrow)"
+            >
+              Next
+            </button>
+          </div>
+        </nav>
+      )}
       <div
         className="detail-body"
         ref={detailBody}
@@ -1092,6 +1149,8 @@ export function RecordDetail({
                 hidden={tab !== "details" && tab !== "conversation"}
                 columns={state.config.columns}
                 disabled={saving || state.branchChanged}
+                draft={reviewDraft}
+                onDraft={onReviewDraft}
                 onDecide={(outcome, target, feedback) =>
                   void decide(outcome, target, feedback)
                 }

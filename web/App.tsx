@@ -17,6 +17,8 @@ import {
 import { AttentionPage, KnowledgePage, PageHeader } from "./Pages";
 import { ProjectPage } from "./ProjectPage";
 import { RecordDetail } from "./RecordDetail";
+import { ReviewQueue } from "./ReviewQueue";
+import type { ReviewActionDraft } from "./ReviewActions";
 import { Screenshots } from "./Screenshots";
 import { Settings } from "./Settings";
 import { Shortcuts } from "./Shortcuts";
@@ -72,6 +74,9 @@ export function App() {
     [shortcuts, setShortcuts] = useState(false),
     [prefsReady, setPrefsReady] = useState(false),
     [knowledgeRead, setKnowledgeRead] = useState(0);
+  const [reviewDrafts, setReviewDrafts] = useState<
+    Record<string, ReviewActionDraft>
+  >({});
   const { state, reload, loadError } = useProjectState();
   function setSelected(id: string | null) {
     setSelectedState(id);
@@ -241,6 +246,21 @@ export function App() {
     ? (state.records.find((r) => r.meta.id === selected) ??
       (createdRecord?.meta.id === selected ? createdRecord : null))
     : null;
+  const reviewRecords = state.records
+    .filter(
+      (record) =>
+        record.meta.kind === "ticket" &&
+        !record.meta.archived &&
+        state.config.columns.find((column) => column.id === record.meta.status)
+          ?.role === "review",
+    )
+    .sort(
+      (a, b) =>
+        a.meta.updatedAt.localeCompare(b.meta.updatedAt) ||
+        (a.meta.number ?? 0) - (b.meta.number ?? 0),
+    );
+  const reviewQueueIds = reviewRecords.map((record) => record.meta.id);
+  const reviewPosition = active ? reviewQueueIds.indexOf(active.meta.id) : -1;
   const views = viewsOf(state);
   const currentViewId = views.some((v) => v.id === viewId)
     ? viewId
@@ -271,6 +291,7 @@ export function App() {
           branch={state.branch}
           page={page}
           attentionCount={attention.length + changedDocs.length}
+          reviewCount={reviewRecords.length}
           density={density}
           theme={theme}
           setPage={go}
@@ -362,6 +383,9 @@ export function App() {
                 onMarkSeen={() => setKnowledgeRead(Date.now())}
               />
             )}
+            {page === "review" && (
+              <ReviewQueue records={reviewRecords} open={setSelected} />
+            )}
             {(page === "decisions" || page === "rulebook") && (
               <KnowledgePage
                 key={page}
@@ -430,6 +454,46 @@ export function App() {
           kind={creating ?? active!.meta.kind}
           state={state}
           standalone={standalone}
+          reviewQueue={
+            page === "review" && reviewPosition >= 0
+              ? {
+                  position: reviewPosition,
+                  total: reviewQueueIds.length,
+                  previous:
+                    reviewPosition > 0
+                      ? () => setSelected(reviewQueueIds[reviewPosition - 1])
+                      : undefined,
+                  next:
+                    reviewPosition < reviewQueueIds.length - 1
+                      ? () => setSelected(reviewQueueIds[reviewPosition + 1])
+                      : undefined,
+                }
+              : undefined
+          }
+          reviewDraft={active ? reviewDrafts[active.meta.id] : undefined}
+          onReviewDraft={(draft) => {
+            if (!active) return;
+            setReviewDrafts((drafts) => ({
+              ...drafts,
+              [active.meta.id]: draft,
+            }));
+          }}
+          onReviewDone={
+            page === "review" && reviewPosition >= 0
+              ? (id) => {
+                  setReviewDrafts((drafts) => {
+                    const { [id]: _removed, ...rest } = drafts;
+                    return rest;
+                  });
+                  const index = reviewQueueIds.indexOf(id);
+                  setSelected(
+                    reviewQueueIds[index + 1] ??
+                      reviewQueueIds[index - 1] ??
+                      null,
+                  );
+                }
+              : undefined
+          }
           conversationOrder={conversationOrder}
           onConversationOrder={setConversationOrder}
           onClose={() => {
