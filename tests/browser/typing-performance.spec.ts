@@ -129,7 +129,7 @@ test("open Markdown keeps microtask changes through focused keyboard saves", asy
   const ticket = await createTicket(
     page,
     "Synchronized Markdown draft",
-    "Existing prose.\n\n- [ ] Preserve this task",
+    "Existing prose.\n\n## Microtasks\n- [ ] Preserve this task",
   );
   await page.goto(`/#ticket=${ticket.meta.id}`);
   await page.getByRole("button", { name: "Edit Markdown" }).click();
@@ -137,7 +137,7 @@ test("open Markdown keeps microtask changes through focused keyboard saves", asy
   const description = page.getByRole("textbox", { name: "Markdown body" });
   await page.getByLabel("Complete microtask 1", { exact: true }).check();
   await expect(description).toHaveValue(
-    "Existing prose.\n\n- [x] Preserve this task",
+    "Existing prose.\n\n## Microtasks\n- [x] Preserve this task",
   );
   await description.focus();
   await description.evaluate((element: HTMLTextAreaElement) =>
@@ -152,7 +152,7 @@ test("open Markdown keeps microtask changes through focused keyboard saves", asy
   expect(saved.ok()).toBeTruthy();
   let record = await saved.json();
   expect(record.body).toBe(
-    "Existing prose.\n\n- [x] Preserve this task\nTyped after checking.",
+    "Existing prose.\n\n## Microtasks\n- [x] Preserve this task\nTyped after checking.",
   );
 
   await page.goto(`/#ticket=${ticket.meta.id}`);
@@ -171,6 +171,6 @@ test("open Markdown keeps microtask changes through focused keyboard saves", asy
   expect(saved.ok()).toBeTruthy();
   record = await saved.json();
   expect(record.body).toBe(
-    "Existing prose.\n\n- [x] Preserve this task\nTyped after checking.\nSaved on keyboard close.",
+    "Existing prose.\n\n## Microtasks\n- [x] Preserve this task\nTyped after checking.\nSaved on keyboard close.",
   );
 });
