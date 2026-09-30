@@ -1,5 +1,5 @@
 import { NetworkSettings } from "./NetworkSettings";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { Column, ProjectState } from "../src/types";
 import { api, isRemoteBrowser } from "./api";
 export function Settings({
@@ -7,11 +7,13 @@ export function Settings({
   reload,
   onError,
   openImage,
+  onMoveTickets,
 }: {
   state: ProjectState;
   reload: () => Promise<void>;
   onError: (s: string) => void;
   openImage: (id: string) => void;
+  onMoveTickets: () => void;
 }) {
   const [name, setName] = useState(state.config.name),
     [columns, setColumns] = useState<Column[]>(state.config.columns),
@@ -19,7 +21,38 @@ export function Settings({
     [shortcut, setShortcut] = useState(state.config.shortcut),
     [capture, setCapture] = useState<any>(null),
     [drafts, setDrafts] = useState<string[]>([]),
-    [saved, setSaved] = useState("");
+    [saved, setSaved] = useState(""),
+    [workflowError, setWorkflowError] = useState(""),
+    [pendingRemoval, setPendingRemoval] = useState<Column | null>(null);
+  useEffect(() => {
+    setName(state.config.name);
+    setColumns(state.config.columns);
+    setRevision(state.configRevision);
+    setShortcut(state.config.shortcut);
+    setPendingRemoval(null);
+  }, [state.configRevision]);
+  const ticketCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const record of state.records)
+      if (record.meta.kind === "ticket")
+        counts.set(
+          record.meta.status,
+          (counts.get(record.meta.status) ?? 0) + 1,
+        );
+    return counts;
+  }, [state.records]);
+  const defaultFor = (role: Column["role"]) =>
+    columns.find((column) => column.role === role);
+  const validateWorkflow = () => {
+    if (!name.trim()) return "Project name is required.";
+    const blank = columns.find((column) => !column.name.trim());
+    if (blank) return `Give ${blank.id} a display name.`;
+    const missing = ["backlog", "selected", "progress", "review", "done"].find(
+      (role) => !columns.some((column) => column.role === role),
+    );
+    if (missing) return `Keep a status with the ${missing} workflow role.`;
+    return "";
+  };
   const loadCapture = () => {
     api("/capture/status")
       .then(setCapture)
@@ -35,6 +68,11 @@ export function Settings({
     return () => clearInterval(timer);
   }, []);
   async function save() {
+    const invalid = validateWorkflow();
+    if (invalid) {
+      setWorkflowError(invalid);
+      return;
+    }
     try {
       await api("/config", "PATCH", {
         revision,
@@ -45,7 +83,15 @@ export function Settings({
       await api("/active", "POST", {});
       await reload();
       setSaved("Project settings saved.");
+      setWorkflowError("");
     } catch (e) {
+      if (String(e).includes("Configuration changed")) {
+        setWorkflowError(
+          "Workflow configuration changed elsewhere. The current configuration was reloaded; review it and apply your changes again.",
+        );
+        await reload();
+        return;
+      }
       onError(String(e));
     }
   }
@@ -125,43 +171,76 @@ export function Settings({
         )}
       </section>
       <section className="settings-card">
-        <h2>Workflow columns</h2>
+        <h2 id="workflow-columns">Customize statuses</h2>
         <p className="help">
-          Names are editable. Roles preserve agent workflow behavior. Move
-          tickets before removing their column.
+          Display names are what people see on the board. Stable IDs keep
+          tickets, history and saved views associated as names and order change.
+          Workflow roles preserve agent behavior; more than one status can use
+          the same role.
         </p>
+        <p className="help workflow-defaults">
+          <strong>Deterministic role defaults:</strong> new tickets use the
+          first <em>backlog</em> status, and role-based agent moves use the
+          first matching status in this order. Reorder statuses to change those
+          defaults.
+        </p>
+        <ul className="workflow-default-list" aria-label="Workflow role defaults">
+          {(["backlog", "selected", "progress", "review", "done"] as const).map(
+            (role) => {
+              const column = defaultFor(role);
+              return (
+                <li key={role}>
+                  <code>{role}</code>
+                  <span>{column ? `${column.name} (${column.id})` : "Required"}</span>
+                </li>
+              );
+            },
+          )}
+        </ul>
+        {workflowError && (
+          <p className="banner error workflow-message" role="alert">
+            {workflowError}
+          </p>
+        )}
         {columns.map((c, i) => (
           <div className="column-setting" key={c.id}>
-            <input
-              aria-label={`Name for ${c.id}`}
-              value={c.name}
-              onChange={(e) =>
-                setColumns(
-                  columns.map((v, j) =>
-                    j === i ? { ...v, name: e.target.value } : v,
+            <label className="column-display-name">
+              <span>Display name</span>
+              <input
+                aria-label={`Name for ${c.id}`}
+                value={c.name}
+                onChange={(e) =>
+                  setColumns(
+                    columns.map((v, j) =>
+                      j === i ? { ...v, name: e.target.value } : v,
+                    ),
+                  )
+                }
+              />
+              <small>Stable ID: <code>{c.id}</code></small>
+            </label>
+            <label className="column-role">
+              <span>Workflow role</span>
+              <select
+                aria-label={`Role for ${c.id}`}
+                value={c.role}
+                onChange={(e) =>
+                  setColumns(
+                    columns.map((v, j) =>
+                      j === i
+                        ? { ...v, role: e.target.value as Column["role"] }
+                        : v,
+                    ),
+                  )
+                }
+              >
+                {["backlog", "selected", "progress", "review", "done"].map(
+                  (r) => (
+                    <option key={r}>{r}</option>
                   ),
-                )
-              }
-            />
-            <select
-              aria-label={`Role for ${c.id}`}
-              value={c.role}
-              onChange={(e) =>
-                setColumns(
-                  columns.map((v, j) =>
-                    j === i
-                      ? { ...v, role: e.target.value as Column["role"] }
-                      : v,
-                  ),
-                )
-              }
-            >
-              {["backlog", "selected", "progress", "review", "done"].map(
-                (r) => (
-                  <option key={r}>{r}</option>
-                ),
-              )}
-            </select>
+                )}
+              </select>
+            </label>
             <button
               className="icon-button"
               aria-label={`Move ${c.name} earlier`}
@@ -176,13 +255,64 @@ export function Settings({
             </button>
             <button
               className="icon-button"
+              aria-label={`Move ${c.name} later`}
+              disabled={i === columns.length - 1}
+              onClick={() => {
+                const copy = [...columns];
+                [copy[i], copy[i + 1]] = [copy[i + 1], copy[i]];
+                setColumns(copy);
+              }}
+            >
+              ↓
+            </button>
+            <button
+              className="icon-button"
               aria-label={`Remove ${c.name}`}
-              onClick={() => setColumns(columns.filter((_, j) => j !== i))}
+              disabled={columns.filter((column) => column.role === c.role).length === 1}
+              title={
+                columns.filter((column) => column.role === c.role).length === 1
+                  ? `Add or change another ${c.role} status before removing this required role.`
+                  : undefined
+              }
+              onClick={() => {
+                const count = ticketCounts.get(c.id) ?? 0;
+                if (count) {
+                  setPendingRemoval(c);
+                  return;
+                }
+                setColumns(columns.filter((_, j) => j !== i));
+              }}
             >
               ×
             </button>
           </div>
         ))}
+        {pendingRemoval && (
+          <div className="workflow-removal" role="alert">
+            <strong>
+              {pendingRemoval.name} still has {ticketCounts.get(pendingRemoval.id)} ticket
+              {ticketCounts.get(pendingRemoval.id) === 1 ? "" : "s"}.
+            </strong>
+            <p>
+              Choose each ticket’s destination on the board first. This status
+              remains until no tickets reference its stable ID.
+            </p>
+            <div className="inline-actions">
+              <button
+                className="button primary small"
+                onClick={() => {
+                  setPendingRemoval(null);
+                  onMoveTickets();
+                }}
+              >
+                Move tickets on board
+              </button>
+              <button className="button small" onClick={() => setPendingRemoval(null)}>
+                Keep status
+              </button>
+            </div>
+          </div>
+        )}
         <button
           className="button"
           onClick={() =>

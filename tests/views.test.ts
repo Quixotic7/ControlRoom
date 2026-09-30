@@ -259,3 +259,57 @@ test("saved views are validated in the project configuration", async (t) => {
   );
   assert.deepEqual(s.config().views, [view]);
 });
+
+test("status display edits and ordering preserve ticket IDs, history, and views", async (t) => {
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), "workboard-test-")),
+  );
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const s = new Store(root).initialize("Workflow");
+  const revision = () => hash(read(s.file("config.yml")));
+  const human = { name: "Human", kind: "human" } as const;
+  const view = {
+    id: "triage",
+    name: "Triage",
+    layout: "board",
+    filter: "status:backlog",
+    groupBy: "none",
+    sort: "manual",
+  };
+  await s.updateConfig(revision(), { views: [view] } as any);
+  const ticket = await s.create(
+    "ticket",
+    { title: "Keep association", status: "backlog" },
+    "",
+    human,
+  );
+  await s.comment(ticket.meta.id, "History remains attached", human);
+  const before = s.get(ticket.meta.id);
+  const columns = [
+    { id: "concept", name: "Concept", role: "backlog" as const },
+    ...s.config().columns.map((column) =>
+      column.id === "backlog" ? { ...column, name: "Ideas" } : column,
+    ),
+  ];
+  await s.updateConfig(revision(), { columns } as any);
+  assert.equal(s.get(ticket.meta.id).meta.status, "backlog");
+  assert.equal(s.get(ticket.meta.id).revision, before.revision);
+  assert.equal(s.historyFor(ticket.meta.id).length, 1);
+  assert.deepEqual(s.config().views, [view]);
+  assert.equal(
+    s.config().columns.find((column) => column.role === "backlog")?.id,
+    "concept",
+  );
+  const staleRevision = revision();
+  await s.updateConfig(staleRevision, { name: "Workflow renamed" } as any);
+  await assert.rejects(
+    s.updateConfig(staleRevision, { name: "Stale overwrite" } as any),
+    /Configuration changed/,
+  );
+  await assert.rejects(
+    s.updateConfig(revision(), {
+      columns: s.config().columns.filter((column) => column.id !== "backlog"),
+    } as any),
+    /Move tickets out of backlog before removing it/,
+  );
+});

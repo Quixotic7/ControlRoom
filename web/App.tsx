@@ -352,6 +352,7 @@ export function App() {
                 reload={reload}
                 onError={setError}
                 onNotice={setNotice}
+                onCustomizeStatuses={() => go("settings")}
               />
             )}
             {page === "attention" && (
@@ -417,6 +418,13 @@ export function App() {
                   reload={reload}
                   onError={setError}
                   openImage={setImage}
+                  onMoveTickets={() => {
+                    setViewId(
+                      views.find((view) => view.layout === "board")?.id ??
+                        views[0].id,
+                    );
+                    go("project");
+                  }}
                 />
               </>
             )}
