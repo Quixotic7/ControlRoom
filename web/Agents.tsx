@@ -456,6 +456,19 @@ export function Agents({
       <div className="agent-runs">
         {runs.map((run) => {
           const t = state.records.find((t) => t.meta.id === run.ticket);
+          const ticketRole = state.config.columns.find(
+            (c) => c.id === t?.meta.status,
+          )?.role;
+          const takeoverEligible =
+            t &&
+            !t.meta.archived &&
+            ticketRole !== "done" &&
+            ticketRole !== "review" &&
+            (["assigned", "acknowledged"].includes(
+              t.meta.assignment?.state ?? "",
+            ) ||
+              (t.meta.assignment?.state === "submitted" &&
+                (ticketRole === "selected" || ticketRole === "progress")));
           return (
             <article key={run.id} className="agent-run">
               <header>
@@ -582,9 +595,7 @@ export function Agents({
                   run.state === "interrupted" &&
                   t?.meta.assignment?.runId === run.id &&
                   t.meta.assignment.worker === run.agent.name &&
-                  ["assigned", "acknowledged"].includes(
-                    t.meta.assignment.state,
-                  ) && (
+                  takeoverEligible && (
                     <button
                       className="button"
                       disabled={busy}

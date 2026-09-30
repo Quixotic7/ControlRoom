@@ -1166,6 +1166,18 @@ export class Orchestrator {
             409,
             "Only an interrupted worker run can be taken over",
           );
+        if (
+          this.runs.some(
+            (other) =>
+              other.id !== run.id &&
+              other.ticket === run.ticket &&
+              (activeStates.has(other.state) || this.active.has(other.id)),
+          )
+        )
+          throw new Problem(
+            409,
+            "Another managed run is still active for this ticket",
+          );
         const processState = this.stoppedProcessState(run);
         if (processState === "active")
           throw new Problem(
