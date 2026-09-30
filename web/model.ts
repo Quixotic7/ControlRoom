@@ -46,7 +46,9 @@ export const defaultViews: ProjectView[] = [
 // of making an existing project recreate its views to discover planning.
 export const viewsOf = (state: ProjectState) => {
   const views = state.config.views?.length ? state.config.views : defaultViews;
-  const planning = defaultViews.find((view) => view.id === "priority-planning")!;
+  const planning = defaultViews.find(
+    (view) => view.id === "priority-planning",
+  )!;
   return views.some((view) => view.id === planning.id)
     ? views
     : [...views, planning];
@@ -72,6 +74,7 @@ export const sortOptions: Record<SortBy, string> = {
 
 export type FilterTerm = { key: string; values: string[]; negate: boolean };
 export type Filter = { text: string[]; terms: FilterTerm[] };
+export type ApprovalFilter = "all" | "approved" | "not-approved" | "custom";
 export const filterKeys = [
   "status",
   "label",
@@ -109,6 +112,49 @@ export function parseFilter(query: string): Filter {
     }
   }
   return filter;
+}
+
+// The compact approval control shares the query with the regular filter input.
+// Its edits only remove or add `is:approved`, retaining every other constraint.
+const approvalValues = (token: string) => {
+  const match = token.match(/^(-?)(is):(.+)$/i);
+  if (!match) return null;
+  const values = match[3]
+    .split(",")
+    .map((value) => unquote(value).trim().toLowerCase())
+    .filter(Boolean);
+  return values.includes("approved")
+    ? { negate: match[1] === "-", values }
+    : null;
+};
+
+export function approvalFilterOf(query: string): ApprovalFilter {
+  const approvals = tokens(query)
+    .map(approvalValues)
+    .filter((term): term is { negate: boolean; values: string[] } => !!term);
+  if (!approvals.length) return "all";
+  if (approvals.every((term) => !term.negate && term.values.length === 1))
+    return "approved";
+  if (approvals.every((term) => term.negate && term.values.length === 1))
+    return "not-approved";
+  return "custom";
+}
+
+export function withApprovalFilter(query: string, approval: ApprovalFilter) {
+  const retained = tokens(query).flatMap((token) => {
+    const match = token.match(/^(-?)(is):(.+)$/i);
+    const values = approvalValues(token);
+    if (!match || !values) return [token];
+    const remaining = match[3]
+      .split(",")
+      .filter((value) => unquote(value).trim().toLowerCase() !== "approved");
+    return remaining.length
+      ? [`${match[1]}${match[2]}:${remaining.join(",")}`]
+      : [];
+  });
+  if (approval === "approved") retained.push("is:approved");
+  if (approval === "not-approved") retained.push("-is:approved");
+  return retained.join(" ");
 }
 
 export type Context = {

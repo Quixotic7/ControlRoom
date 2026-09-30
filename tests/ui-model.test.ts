@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  approvalFilterOf,
   attentionReason,
   context,
   matches,
   parseFilter,
   showsArchived,
+  withApprovalFilter,
 } from "../web/model.js";
 import { defaultColumns } from "../src/store.js";
 import type { Meta, ProjectState, RecordFile } from "../src/types.js";
@@ -99,4 +101,26 @@ test("showsArchived only for a positive is:archived term", () => {
   assert.equal(showsArchived(parseFilter("-is:archived")), false);
   assert.equal(showsArchived(parseFilter("archived")), false);
   assert.equal(showsArchived(parseFilter("")), false);
+});
+
+test("approval control preserves non-approval constraints and exposes mixed expressions", () => {
+  assert.equal(approvalFilterOf("label:ui is:approved login"), "approved");
+  assert.equal(approvalFilterOf("-is:approved owner:ana"), "not-approved");
+  assert.equal(approvalFilterOf("is:approved,blocked"), "custom");
+  assert.equal(approvalFilterOf("is:approved -is:approved"), "custom");
+  assert.equal(
+    withApprovalFilter("label:ui is:approved is:blocked login", "not-approved"),
+    "label:ui is:blocked login -is:approved",
+  );
+  assert.equal(
+    withApprovalFilter("label:ui is:approved,blocked login", "all"),
+    "label:ui is:blocked login",
+  );
+  assert.equal(
+    withApprovalFilter(
+      'label:"needs design" -is:approved,blocked "customer login"',
+      "all",
+    ),
+    'label:"needs design" -is:blocked "customer login"',
+  );
 });

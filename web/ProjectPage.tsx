@@ -23,6 +23,7 @@ import {
 } from "./Icons";
 import { Menu } from "./Menu";
 import {
+  approvalFilterOf,
   groupByOptions,
   groupTickets,
   matches,
@@ -33,6 +34,8 @@ import {
   sortOptions,
   sortTickets,
   viewsOf,
+  withApprovalFilter,
+  type ApprovalFilter,
   type Context,
 } from "./model";
 import { TableView } from "./TableView";
@@ -183,6 +186,10 @@ export function ProjectPage({
   }
 
   const filter = useMemo(() => parseFilter(view.filter), [view.filter]);
+  const approvalFilter = useMemo(
+    () => approvalFilterOf(view.filter),
+    [view.filter],
+  );
   const withArchived = showsArchived(filter);
   const tickets = useMemo(
     () =>
@@ -445,7 +452,8 @@ export function ProjectPage({
       patch: {
         status: r.meta.status,
         priority,
-        order: (position === "first" ? Math.min(...orders) : Math.max(...orders)) +
+        order:
+          (position === "first" ? Math.min(...orders) : Math.max(...orders)) +
           (position === "first" ? -1024 : 1024),
       },
     })
@@ -530,10 +538,11 @@ export function ProjectPage({
             view.groupBy !== "parent" ||
             (target.meta.parent ?? null) ===
               (ticketDrag.source.meta.parent ?? null)) &&
-          (priorityPlanning || !(
-            ctx.columns.find((c) => c.id === target.meta.status)?.role ===
-              "review" && ticketDrag.source.meta.status !== target.meta.status
-          )),
+          (priorityPlanning ||
+            !(
+              ctx.columns.find((c) => c.id === target.meta.status)?.role ===
+                "review" && ticketDrag.source.meta.status !== target.meta.status
+            )),
       }}
     >
       <div
@@ -748,6 +757,33 @@ export function ProjectPage({
               </button>
             )}
           </label>
+          <label className="approval-filter">
+            Approval
+            <select
+              aria-label="Approval filter"
+              aria-describedby="approval-filter-help"
+              value={approvalFilter}
+              onChange={(e) =>
+                edit({
+                  filter: withApprovalFilter(
+                    view.filter,
+                    e.target.value as ApprovalFilter,
+                  ),
+                })
+              }
+            >
+              <option value="all">All</option>
+              <option value="approved">Approved</option>
+              <option value="not-approved">Not approved</option>
+              {approvalFilter === "custom" && (
+                <option value="custom">Custom</option>
+              )}
+            </select>
+          </label>
+          <span id="approval-filter-help" className="sr-only">
+            Filters the ticket's own approval checkbox. A child authorized by an
+            approved parent is not explicitly approved here.
+          </span>
           {dirty && (
             <div className="inline-actions">
               <button className="button subtle" onClick={discard}>
@@ -822,8 +858,9 @@ export function ProjectPage({
               </label>
               <p className="help">
                 Filter keys: status, label, owner, priority, parent, is:blocked,
-                is:claimed, is:open, is:archived, no:owner. Prefix with - to
-                exclude.
+                is:claimed, is:approved, is:open, is:archived, no:owner.
+                Approval filters use each ticket's own checkbox; inherited
+                parent authorization is separate. Prefix with - to exclude.
               </p>
             </div>
           </Menu>

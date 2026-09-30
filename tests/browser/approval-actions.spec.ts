@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { defaultViews } from "../../web/model";
 
 const fixtureActor = { name: "Quick approval reviewer", kind: "human" };
 const webActor = { name: "You", kind: "human" };
@@ -25,6 +26,78 @@ test.beforeEach(async ({ page }) => {
   await page.request.patch("/api/preferences", {
     data: { selected: null, page: "project", viewId: "board", theme: "dark" },
   });
+});
+
+test("approval filter composes with saved board and table views", async ({
+  page,
+}) => {
+  const original = await (await page.request.get("/api/state")).json();
+  try {
+    const suffix = Date.now();
+    const label = `approval-filter-${suffix}`;
+    const parent = await create(page, `Approved parent ${suffix}`, {
+      labels: [label],
+      scopeApproved: true,
+    });
+    await create(page, `Inherited child ${suffix}`, {
+      labels: [label],
+      parent: parent.meta.id,
+    });
+    await create(page, `Unchecked ticket ${suffix}`, { labels: [label] });
+
+    await page.goto("/");
+    const filter = page.getByLabel("Filter tickets");
+    const approval = page.getByLabel("Approval filter");
+    await filter.fill(`label:${label}`);
+    await approval.selectOption("approved");
+    await expect(filter).toHaveValue(`label:${label} is:approved`);
+    await expect(approval).toHaveValue("approved");
+    await expect(
+      page.locator(".group-header").filter({ hasText: parent.meta.title }),
+    ).toHaveCount(1);
+    await page.getByRole("button", { name: "Save view", exact: true }).click();
+
+    await page.getByRole("button", { name: "Table", exact: true }).click();
+    await filter.fill(`label:${label}`);
+    await approval.selectOption("not-approved");
+    await expect(filter).toHaveValue(`label:${label} -is:approved`);
+    await expect(approval).toHaveValue("not-approved");
+    await expect(
+      page.locator("tbody tr").filter({ hasText: label }),
+    ).toHaveCount(2);
+    await page.getByRole("button", { name: "Save view", exact: true }).click();
+
+    await page.reload();
+    await expect(filter).toHaveValue(`label:${label} -is:approved`);
+    await expect(approval).toHaveValue("not-approved");
+
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await expect(filter).toHaveValue(`label:${label} is:approved`);
+    await expect(approval).toHaveValue("approved");
+
+    await page.getByRole("button", { name: "Table", exact: true }).click();
+    await expect(filter).toHaveValue(`label:${label} -is:approved`);
+    await expect(approval).toHaveValue("not-approved");
+
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+
+    await filter.fill(`label:${label} -is:approved,blocked "customer login"`);
+    await expect(approval).toHaveValue("custom");
+    await approval.selectOption("all");
+    await expect(filter).toHaveValue(
+      `label:${label} -is:blocked "customer login"`,
+    );
+  } finally {
+    const latest = await (await page.request.get("/api/state")).json();
+    const restored = await page.request.patch("/api/config", {
+      data: {
+        actor: fixtureActor,
+        revision: latest.configRevision,
+        patch: { views: original.config.views ?? defaultViews },
+      },
+    });
+    expect(restored.ok()).toBeTruthy();
+  }
 });
 
 for (const layout of ["Board", "Table"] as const) {
