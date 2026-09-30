@@ -14,7 +14,7 @@ export const themeNames = {
   gameboy: "Game Boy",
 } as const;
 export type Theme = keyof typeof themeNames;
-export const themes = Object.keys(themeNames) as Theme[];
+type PresetTheme = Exclude<Theme, "system" | "light" | "dark">;
 type Preset = {
   bg: string;
   surface: string;
@@ -37,7 +37,7 @@ type Preset = {
 };
 const pixel = '"Pixelify Sans", monospace',
   chunky = '"Silkscreen", "Pixelify Sans", monospace';
-export const presets: Partial<Record<Theme, Preset>> = {
+export const presets: Record<PresetTheme, Preset> = {
   win95: {
     bg: "#008080",
     surface: "#c0c0c0",
@@ -238,6 +238,73 @@ export const presets: Partial<Record<Theme, Preset>> = {
       "Four-tone adventure palette: pale grass, moss green, brown pixel outlines and stepped frames.",
   },
 };
+
+type ThemePreview = Pick<
+  Preset,
+  | "bg"
+  | "surface"
+  | "ink"
+  | "line"
+  | "accent"
+  | "cyan"
+  | "success"
+  | "radius"
+  | "font"
+  | "description"
+>;
+
+// This is the single source for the theme picker. `presets` only contains
+// themes that override the shared CSS tokens, while these entries make the
+// three built-in CSS themes equally visible and selectable in the picker.
+const builtInPreviews: Record<"system" | "light" | "dark", ThemePreview> = {
+  system: {
+    bg: "#f4f4f2",
+    // A solid surface keeps the System label readable regardless of where it
+    // lands in the tile. The swatches retain its light-and-dark appearance cue.
+    surface: "#16181b",
+    ink: "#f5f7fa",
+    line: "#8b9197",
+    accent: "#4c9aff",
+    cyan: "#35cfc6",
+    success: "#6fd08a",
+    radius: "4px",
+    font: '"Rajdhani", sans-serif',
+    description: "Follows your operating system's light or dark appearance.",
+  },
+  light: {
+    bg: "#f4f4f2",
+    surface: "#ffffff",
+    ink: "#1b1d1f",
+    line: "#cfd2d1",
+    accent: "#2b6fd6",
+    cyan: "#178f87",
+    success: "#1f8a3c",
+    radius: "4px",
+    font: '"Rajdhani", sans-serif',
+    description: "Bright neutral surfaces with blue, cyan and green signals.",
+  },
+  dark: {
+    bg: "#0a0b0d",
+    surface: "#131518",
+    ink: "#d9dcdd",
+    line: "#2a2e33",
+    accent: "#4c9aff",
+    cyan: "#35cfc6",
+    success: "#6fd08a",
+    radius: "4px",
+    font: '"Rajdhani", sans-serif',
+    description: "Near-black surfaces with blue, cyan and green signals.",
+  },
+};
+
+export const themePreviews: Record<Theme, ThemePreview> = {
+  ...builtInPreviews,
+  ...presets,
+};
+
+// Both the select and preview buttons derive their options from this registry.
+export const themes = Object.keys(themePreviews) as Theme[];
+
 export function tokens(p: Preset): Record<string, string> {
   const soft = (c: string) => c + "20";
   return {
@@ -293,7 +360,7 @@ export function applyTheme(theme: Theme) {
   applied = [];
   if (theme === "system") delete root.dataset.theme;
   else root.dataset.theme = theme;
-  const p = presets[theme];
+  const p = theme in presets ? presets[theme as PresetTheme] : undefined;
   if (p) root.dataset.preset = "true";
   else delete root.dataset.preset;
   if (p && theme !== "synthwave") root.dataset.pixel = "true";
