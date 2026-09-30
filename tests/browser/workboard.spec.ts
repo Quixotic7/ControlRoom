@@ -418,6 +418,74 @@ test("knowledge views, import preview, and mobile layout", async ({ page }) => {
   await expect(page.locator("body")).toHaveJSProperty("scrollWidth", 390);
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
 });
+test("rule references and attributed exceptions are actionable in record views", async ({
+  page,
+}) => {
+  const suffix = Date.now();
+  const origin = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "ticket",
+        meta: { title: `Archived rule origin ${suffix}`, archived: true },
+        body: "",
+        actor: { name: "Rule author", kind: "human" },
+      },
+    })
+  ).json();
+  const rule = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "rule",
+        meta: {
+          title: `Reference status rule ${suffix}`,
+          status: "active",
+          references: [`#${origin.meta.number}`, `missing-${suffix}.tsx`],
+        },
+        body: "## Rule\n\nUse the canonical component.",
+        actor: { name: "Rule author", kind: "human" },
+      },
+    })
+  ).json();
+  const work = await (
+    await page.request.post("/api/records", {
+      data: {
+        kind: "ticket",
+        meta: {
+          title: `Initial exception ${suffix}`,
+          exceptions: "Legacy embed spacing remains until migration.",
+        },
+        body: "",
+        actor: { name: "Creating reviewer", kind: "human" },
+      },
+    })
+  ).json();
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Rulebook", exact: true }).click();
+  await page.getByLabel("Search knowledge").fill(rule.meta.title);
+  const card = page
+    .locator(".knowledge-card")
+    .filter({ hasText: rule.meta.title });
+  await expect(card).toContainText("1 broken reference");
+  await card.click();
+  const statuses = page.getByRole("list", { name: "Reference status" });
+  await expect(
+    statuses.locator("li").filter({ hasText: `#${origin.meta.number}` }),
+  ).toContainText("Available — archived record retained");
+  await expect(
+    statuses.locator("li").filter({ hasText: `missing-${suffix}.tsx` }),
+  ).toContainText("Missing");
+  await page.getByRole("button", { name: "Close ticket" }).click();
+
+  await page.goto(`/#ticket=${work.meta.id}`);
+  await page.getByText("Recorded rule exceptions", { exact: true }).click();
+  await expect(page.locator(".exception-history")).toContainText(
+    "Creating reviewer",
+  );
+  await expect(page.locator(".exception-history")).toContainText(
+    "Legacy embed spacing remains until migration.",
+  );
+});
 test("draw, comment, undo, save, and reopen screenshot annotations", async ({
   page,
 }) => {

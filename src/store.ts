@@ -39,6 +39,8 @@ import type {
   RecordFile,
   Comment,
   Verification,
+  ReferenceCheck,
+  RuleException,
   MergeConflictField,
   MergeResolution,
 } from "./types.js";
@@ -143,6 +145,15 @@ const metaSchema = z
       })
       .optional(),
     exceptions: z.string().optional(),
+    exceptionHistory: z
+      .array(
+        z.object({
+          rationale: z.string().trim().min(1).max(10000),
+          actor: actorSchema,
+          at: z.string().datetime(),
+        }),
+      )
+      .optional(),
     scope: strings.optional(),
     strength: z.enum(["required", "recommended"]).optional(),
     category: z.string().optional(),
@@ -425,6 +436,14 @@ export class Store {
       attachments,
       claims: this.claims(),
       errors,
+      referenceChecks: Object.fromEntries(
+        records
+          .filter((record) => record.meta.kind !== "ticket")
+          .map((record) => [
+            record.meta.id,
+            this.referenceChecks(record, records),
+          ]),
+      ),
       canonical: this.root,
       ...this.branchState(),
     };
@@ -872,6 +891,11 @@ export class Store {
         403,
         "Managed assignments and review receipts are service-owned",
       );
+    if ("exceptionHistory" in input)
+      throw new Problem(
+        422,
+        "Exception history is recorded from attributed exception edits and cannot be supplied",
+      );
     if (
       kind === "ticket" &&
       ["related", "duplicateOf", "mergedFrom", "duplicateMerge"].some(
@@ -905,6 +929,14 @@ export class Store {
     } as Meta;
     if (kind === "ticket" && meta.progress)
       meta.progress = { ...meta.progress, at: stamp, actor };
+    if (
+      kind === "ticket" &&
+      typeof meta.exceptions === "string" &&
+      meta.exceptions.trim()
+    )
+      meta.exceptionHistory = [
+        { rationale: meta.exceptions.trim(), actor, at: stamp },
+      ];
     this.validate(meta);
     this.authority(actor, meta);
     if (kind === "ticket") meta.number = this.reserveTicketNumber();
@@ -969,6 +1001,15 @@ export class Store {
           "Managed assignments and review receipts are service-owned",
         );
     if (
+      "exceptionHistory" in patch &&
+      JSON.stringify(patch.exceptionHistory) !==
+        JSON.stringify(old.meta.exceptionHistory)
+    )
+      throw new Problem(
+        422,
+        "Exception history is recorded from attributed exception edits and cannot be rewritten",
+      );
+    if (
       actor.kind === "agent" &&
       "humanReviewRequired" in patch &&
       patch.humanReviewRequired !== old.meta.humanReviewRequired
@@ -1000,6 +1041,19 @@ export class Store {
       )
         throw new Problem(422, `Cannot change ${key}`);
     if (old.meta.kind === "ticket") patch = this.ticketLinks(patch);
+    if (
+      old.meta.kind === "ticket" &&
+      typeof patch.exceptions === "string" &&
+      patch.exceptions.trim() &&
+      patch.exceptions.trim() !== old.meta.exceptions?.trim()
+    )
+      patch = {
+        ...patch,
+        exceptionHistory: [
+          ...(old.meta.exceptionHistory ?? []),
+          { rationale: patch.exceptions.trim(), actor, at: now() },
+        ],
+      };
     if (
       old.meta.kind === "ticket" &&
       this.config().columns.find(
@@ -1760,13 +1814,21 @@ export class Store {
       );
     if (meta.pr) parts.push("", `Pull request: ${meta.pr}`);
     if (meta.branch) parts.push("", `Branch: ${meta.branch}`);
-    if (meta.exceptions?.trim())
+    if (meta.exceptions?.trim()) {
+      const recorded = meta.exceptionHistory?.at(-1);
       parts.push(
         "",
         "## Exceptions and limitations",
         "",
         meta.exceptions.trim(),
+        ...(recorded
+          ? [
+              "",
+              `Recorded by ${recorded.actor.name} (${recorded.actor.kind}) at ${recorded.at}.`,
+            ]
+          : []),
       );
+    }
     return parts.join("\n") + "\n";
   }
   private commentNow(
@@ -2006,6 +2068,9 @@ export class Store {
     });
   }
   applicableRules(ticket: RecordFile) {
+    return this.applicableRuleMatches(ticket).map(({ rule }) => rule);
+  }
+  private applicableRuleMatches(ticket: RecordFile) {
     const scope = this.scope(ticket);
     const labels = new Set([
       ...(ticket.meta.labels ?? []),
@@ -2018,26 +2083,105 @@ export class Store {
         .map((r) => r.meta.supersedes)
         .filter(Boolean),
     );
-    return records.filter(
-      (r) =>
-        r.meta.kind === "rule" &&
-        r.meta.status === "active" &&
-        !replaced.has(r.meta.id) &&
-        ((ticket.meta.rules ?? []).includes(r.meta.id) ||
-          !r.meta.scope?.length ||
-          r.meta.scope.includes("*") ||
-          r.meta.scope.some((s) => labels.has(s))),
-    );
+    return records
+      .filter(
+        (r) =>
+          r.meta.kind === "rule" &&
+          r.meta.status === "active" &&
+          !replaced.has(r.meta.id),
+      )
+      .map((rule) => {
+        const matchingLabels = (rule.meta.scope ?? []).filter(
+          (label) => label !== "*" && labels.has(label),
+        );
+        const reasons = [
+          ...((ticket.meta.rules ?? []).includes(rule.meta.id)
+            ? ["explicitly linked to this ticket"]
+            : []),
+          ...(!rule.meta.scope?.length || rule.meta.scope.includes("*")
+            ? ["project-wide scope"]
+            : []),
+          ...(matchingLabels.length
+            ? [
+                `scope matched label${matchingLabels.length === 1 ? "" : "s"}: ${matchingLabels.join(", ")}`,
+              ]
+            : []),
+        ];
+        return { rule, reasons };
+      })
+      .filter(({ reasons }) => reasons.length);
+  }
+  referenceChecks(record: RecordFile, records = this.list()): ReferenceCheck[] {
+    const byId = new Map(
+        records.map((candidate) => [candidate.meta.id, candidate]),
+      ),
+      byPublicTicket = new Map(
+        records
+          .filter(
+            (candidate) =>
+              candidate.meta.kind === "ticket" &&
+              candidate.meta.number !== undefined,
+          )
+          .map((candidate) => [`#${candidate.meta.number}`, candidate]),
+      );
+    return (record.meta.references ?? []).map((reference) => {
+      const linked = byId.get(reference) ?? byPublicTicket.get(reference);
+      if (linked)
+        return {
+          reference,
+          kind: "record" as const,
+          status: "available" as const,
+          target: linked.meta.id,
+          archived: !!linked.meta.archived,
+        };
+      if (/^#\d+$/.test(reference))
+        return {
+          reference,
+          kind: "record" as const,
+          status: "missing" as const,
+        };
+      if (/^https?:\/\//i.test(reference))
+        return {
+          reference,
+          kind: "url" as const,
+          status: "external" as const,
+        };
+      if (/^(?:WB|UI|DEC)-[A-Za-z0-9_-]+$/.test(reference))
+        return {
+          reference,
+          kind: "record" as const,
+          status: "missing" as const,
+        };
+      const local = reference.replace(/#.*$/, "").replace(/:\d+(?::\d+)?$/, "");
+      let available = false;
+      try {
+        available =
+          !path.isAbsolute(local) && fs.existsSync(safe(this.root, local));
+      } catch {
+        // Unsafe and out-of-project paths are broken local references, not
+        // reasons to make the knowledge record itself unreadable.
+      }
+      return {
+        reference,
+        kind: "path" as const,
+        status: available ? ("available" as const) : ("missing" as const),
+        target: local,
+      };
+    });
   }
   context(id: string) {
     const ticket = this.get(id),
       mergedSources = this.mergeSources(ticket),
       provenance = [ticket, ...mergedSources],
+      ruleMatches = provenance.flatMap((record) =>
+        this.applicableRuleMatches(record).map((match) => ({
+          ...match,
+          source: record,
+        })),
+      ),
       rules = [
         ...new Map(
-          provenance
-            .flatMap((record) => this.applicableRules(record))
-            .map((record) => [record.meta.id, record]),
+          ruleMatches.map(({ rule }) => [rule.meta.id, rule]),
         ).values(),
       ],
       scope = this.scope(ticket);
@@ -2086,6 +2230,24 @@ export class Store {
           ),
       ),
       rules,
+      ruleApplicability: rules.map((rule) => ({
+        rule: rule.meta.id,
+        reasons: [
+          ...new Set(
+            ruleMatches
+              .filter((match) => match.rule.meta.id === rule.meta.id)
+              .flatMap((match) =>
+                match.source.meta.id === ticket.meta.id
+                  ? match.reasons
+                  : match.reasons.map(
+                      (reason) =>
+                        `${reason} on preserved source #${match.source.meta.number ?? match.source.meta.id}`,
+                    ),
+              ),
+          ),
+        ],
+        references: this.referenceChecks(rule),
+      })),
       ruleRevisions: Object.fromEntries(
         rules.map((r) => [r.meta.id, r.revision]),
       ),
@@ -2314,14 +2476,39 @@ export class Store {
     }
     if (c.rules.length) {
       lines.push("", "## Rules that apply", "");
-      for (const r of c.rules)
+      for (const r of c.rules) {
+        const applicability = c.ruleApplicability.find(
+          (match) => match.rule === r.meta.id,
+        )!;
         lines.push(
           `### ${r.meta.title} (${r.meta.strength ?? "recommended"})`,
+          "",
+          `Applies because: ${applicability.reasons.join("; ")}.`,
+          ...(applicability.references.length
+            ? [
+                `Canonical references: ${applicability.references
+                  .map(
+                    (reference) =>
+                      `\`${reference.reference}\` (${reference.status}${reference.archived ? ", archived record retained" : ""})`,
+                  )
+                  .join(", ")}.`,
+              ]
+            : [
+                "Canonical references: none recorded; verify the implementation source before introducing values or components.",
+              ]),
           "",
           trim(r.body),
           "",
         );
+      }
       lines.push(`Rule matching is advisory: ${c.ruleMatching}`);
+    }
+    if (t.meta.exceptionHistory?.length) {
+      lines.push("", "## Recorded rule exceptions", "");
+      for (const exception of t.meta.exceptionHistory as RuleException[])
+        lines.push(
+          `- ${exception.actor.name} (${exception.actor.kind}, ${exception.at}): ${exception.rationale}`,
+        );
     }
     if (c.comments.length) {
       const shown = brief ? c.comments.slice(-5) : c.comments;

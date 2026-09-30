@@ -1,6 +1,23 @@
 import type { Assignment, AgentReviewReceipt } from "./orchestration-types.js";
 export type Kind = "ticket" | "decision" | "rule";
 export type Actor = { name: string; kind: "human" | "agent" };
+export type RuleException = {
+  rationale: string;
+  actor: Actor;
+  at: string;
+};
+export type ReferenceCheck = {
+  reference: string;
+  kind: "record" | "path" | "url";
+  status: "available" | "missing" | "external";
+  target?: string;
+  archived?: boolean;
+};
+export type RuleApplicability = {
+  rule: string;
+  reasons: string[];
+  references: ReferenceCheck[];
+};
 export type MergeConflictField =
   | "parent"
   | "status"
@@ -55,6 +72,7 @@ export type Meta = {
   progress?: { note: string; percent?: number; at: string; actor: Actor };
   progressStartedAt?: string;
   exceptions?: string;
+  exceptionHistory?: RuleException[];
   scope?: string[];
   strength?: "required" | "recommended";
   category?: string;
@@ -186,6 +204,7 @@ export type ProjectState = {
   attachments: Attachment[];
   claims: Claim[];
   errors: { path: string; message: string }[];
+  referenceChecks?: Record<string, ReferenceCheck[]>;
   branch: string;
   canonical: string;
   branchChanged: boolean;

@@ -398,21 +398,14 @@ export function groupTickets(
 
 // ------------------------------------------------------------ attention
 
-// True when rule guidance changed since the ticket last reviewed it.
+// True when guidance already linked to this ticket changed. Broadly-scoped new
+// rules remain visible in context without turning every open ticket into an
+// alert; submitting review links the applicable revisions for future changes.
 export function ruleChanged(
   ticket: RecordFile,
   state: ProjectState,
   ctx: Context,
 ) {
-  const labels = new Set(ticket.meta.labels ?? []);
-  let parent = ticket.meta.parent;
-  const seen = new Set<string>();
-  while (parent && !seen.has(parent)) {
-    seen.add(parent);
-    const record = ctx.byId.get(parent);
-    record?.meta.labels?.forEach((l) => labels.add(l));
-    parent = record?.meta.parent;
-  }
   const reviewed = ticket.meta.reviewedRules ?? {};
   if (
     Object.entries(reviewed).some(
@@ -426,13 +419,26 @@ export function ruleChanged(
   const replaced = new Set(
     active.map((r) => r.meta.supersedes).filter(Boolean),
   );
+  const linked = new Set([
+    ...Object.keys(reviewed),
+    ...(ticket.meta.rules ?? []),
+  ]);
+  const followsLinkedRule = (rule: RecordFile) => {
+    const seen = new Set<string>();
+    let current: RecordFile | undefined = rule;
+    while (current && !seen.has(current.meta.id)) {
+      if (linked.has(current.meta.id)) return true;
+      seen.add(current.meta.id);
+      current = current.meta.supersedes
+        ? ctx.byId.get(current.meta.supersedes)
+        : undefined;
+    }
+    return false;
+  };
   return active.some(
     (rule) =>
       !replaced.has(rule.meta.id) &&
-      (!rule.meta.scope?.length ||
-        rule.meta.scope.includes("*") ||
-        rule.meta.scope.some((s) => labels.has(s)) ||
-        ticket.meta.rules?.includes(rule.meta.id)) &&
+      followsLinkedRule(rule) &&
       reviewed[rule.meta.id] !== rule.revision,
   );
 }
