@@ -196,6 +196,7 @@ export function RecordDetail({
   openImage,
   conversationOrder,
   onConversationOrder,
+  registerLeaveGuard,
   initialComment,
   standalone = false,
   reviewQueue,
@@ -213,6 +214,7 @@ export function RecordDetail({
   openImage: (s: string) => void;
   conversationOrder: "oldest" | "newest";
   onConversationOrder: (order: "oldest" | "newest") => void;
+  registerLeaveGuard?: (guard: null | (() => Promise<boolean>)) => void;
   initialComment?: string;
   standalone?: boolean;
   reviewQueue?: {
@@ -581,6 +583,12 @@ export function RecordDetail({
     if (isDraftDirty() && !(await save(false, false))) return;
     move();
   }
+  useEffect(() => {
+    if (!registerLeaveGuard) return;
+    const guard = async () => !isDraftDirty() || !!(await save(false, false));
+    registerLeaveGuard(guard);
+    return () => registerLeaveGuard(null);
+  });
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (

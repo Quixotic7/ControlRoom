@@ -49,7 +49,38 @@ function fromPreference(value: unknown): { page?: Page; viewId?: string } {
   return pages.includes(value as Page) ? { page: value as Page } : {};
 }
 
+type AppHistoryState = {
+  controlRoom: true;
+  index: number;
+  page: Page;
+  viewId: string;
+  selected: string | null;
+  focusComment?: string;
+  closeIndex?: number;
+};
+
+function locationPage() {
+  const value = new URLSearchParams(location.search).get("page");
+  return pages.includes(value as Page) ? (value as Page) : undefined;
+}
+
+function locationView() {
+  return new URLSearchParams(location.search).get("view") ?? undefined;
+}
+
+function appUrl(state: Pick<AppHistoryState, "page" | "viewId" | "selected">) {
+  const url = new URL(location.href);
+  if (url.searchParams.get("ticketOnly") !== "1") {
+    url.searchParams.set("page", state.page);
+    if (state.page === "project") url.searchParams.set("view", state.viewId);
+    else url.searchParams.delete("view");
+  }
+  url.hash = state.selected ? ticketUrl(state.selected) : "";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export function App() {
+  const explicitLocation = useRef(!!(locationPage() || locationView()));
   const [createdRecord, setCreatedRecord] = useState<RecordFile | null>(null);
   const [standalone, setStandalone] = useState(
     () => new URLSearchParams(location.search).get("ticketOnly") === "1",
@@ -58,9 +89,11 @@ export function App() {
     "oldest" | "newest"
   >("oldest");
   const [page, setPage] = useState<Page>(
-    () => fromPreference(stored("wb-page")).page ?? "project",
+    () => locationPage() ?? fromPreference(stored("wb-page")).page ?? "project",
   );
-  const [viewId, setViewId] = useState(() => stored("wb-view-id") ?? "board");
+  const [viewId, setViewIdState] = useState(
+    () => locationView() ?? stored("wb-view-id") ?? "board",
+  );
   const [density, setDensity] = useState(
     () => stored("wb-density") ?? "comfortable",
   );
@@ -84,26 +117,14 @@ export function App() {
   // IDs encountered when the reviewer opens the queue so saving an item (which
   // updates `updatedAt`) cannot make Next/Previous jump or revisit an item.
   const [reviewQueue, setReviewQueue] = useState<string[] | null>(null);
+  const leaveGuard = useRef<null | (() => Promise<boolean>)>(null);
+  const historyLocation = useRef<AppHistoryState | null>(null);
+  const restoringHistoryIndex = useRef<number | null>(null);
+  const handlingPop = useRef(false);
+  const popGeneration = useRef(0);
+  const queuedPop = useRef<AppHistoryState | null>(null);
+  const unguardedPopIndex = useRef<number | null>(null);
   const { state, reload, loadError } = useProjectState();
-  function setSelected(id: string | null) {
-    setFocusComment(undefined);
-    setSelectedState(id);
-    history.replaceState(
-      null,
-      "",
-      location.pathname + location.search + (id ? ticketUrl(id) : ""),
-    );
-  }
-  useEffect(() => {
-    const change = () => {
-      if (!location.hash.startsWith("#image=")) {
-        setSelectedState(ticketFromUrl());
-        setCreating(null);
-      }
-    };
-    window.addEventListener("hashchange", change);
-    return () => window.removeEventListener("hashchange", change);
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -111,9 +132,11 @@ export function App() {
       .then((p) => {
         if (!active) return;
         const legacy = fromPreference(p.page ?? p.view);
-        if (legacy.page) setPage(legacy.page);
-        if (typeof p.viewId === "string") setViewId(p.viewId);
-        else if (legacy.viewId) setViewId(legacy.viewId);
+        if (!locationPage() && legacy.page) setPage(legacy.page);
+        if (!locationView()) {
+          if (typeof p.viewId === "string") setViewIdState(p.viewId);
+          else if (legacy.viewId) setViewIdState(legacy.viewId);
+        }
         if (["compact", "comfortable"].includes(p.density))
           setDensity(p.density);
         if (themes.includes(p.theme)) setTheme(p.theme);
@@ -122,8 +145,14 @@ export function App() {
           p.conversationOrder === "newest"
         )
           setConversationOrder(p.conversationOrder);
-        if (!standalone && !ticketFromUrl() && !location.hash && p.selected)
-          setSelected(p.selected);
+        if (
+          !explicitLocation.current &&
+          !standalone &&
+          !ticketFromUrl() &&
+          !location.hash &&
+          p.selected
+        )
+          setSelectedState(p.selected);
         setKnowledgeRead(p.knowledgeRead ?? 0);
       })
       .catch(() => {})
@@ -131,6 +160,171 @@ export function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!prefsReady || historyLocation.current) return;
+    const existing = history.state as AppHistoryState | null;
+    const initial: AppHistoryState = {
+      controlRoom: true,
+      index: existing?.controlRoom ? existing.index : 0,
+      page,
+      viewId,
+      selected,
+      focusComment,
+    };
+    history.replaceState(
+      initial,
+      "",
+      location.hash.startsWith("#image=")
+        ? `${location.pathname}${location.search}${location.hash}`
+        : appUrl(initial),
+    );
+    historyLocation.current = initial;
+  }, [prefsReady, page, viewId, selected, focusComment]);
+
+  function applyLocation(next: AppHistoryState) {
+    setPage(next.page);
+    setViewIdState(next.viewId);
+    setSelectedState(next.selected);
+    setFocusComment(next.focusComment);
+    setCreating(null);
+  }
+
+  function ensureHistoryLocation() {
+    if (historyLocation.current) return historyLocation.current;
+    const existing = history.state as AppHistoryState | null;
+    const current: AppHistoryState = {
+      controlRoom: true,
+      index: existing?.controlRoom ? existing.index : 0,
+      page,
+      viewId,
+      selected,
+      focusComment,
+    };
+    history.replaceState(current, "", appUrl(current));
+    historyLocation.current = current;
+    return current;
+  }
+
+  async function pushLocation(
+    patch: Partial<
+      Pick<AppHistoryState, "page" | "viewId" | "selected" | "focusComment">
+    >,
+    skipGuard = false,
+  ) {
+    const current = ensureHistoryLocation();
+    if (handlingPop.current) return false;
+    const next: AppHistoryState = {
+      ...current,
+      ...patch,
+      controlRoom: true,
+      index: current.index + 1,
+    };
+    if (patch.selected !== undefined) {
+      next.closeIndex = patch.selected
+        ? (current.closeIndex ?? (current.selected ? undefined : current.index))
+        : undefined;
+    }
+    if (
+      next.page === current.page &&
+      next.viewId === current.viewId &&
+      next.selected === current.selected &&
+      next.focusComment === current.focusComment
+    )
+      return true;
+    if (!skipGuard && leaveGuard.current && !(await leaveGuard.current()))
+      return false;
+    history.pushState(next, "", appUrl(next));
+    historyLocation.current = next;
+    applyLocation(next);
+    return true;
+  }
+
+  function setSelected(id: string | null, comment?: string, saved = false) {
+    void pushLocation({ selected: id, focusComment: comment }, saved);
+  }
+
+  function setViewId(id: string) {
+    void pushLocation({ page: "project", viewId: id, selected: null });
+  }
+
+  useEffect(() => {
+    const pop = async (event: PopStateEvent) => {
+      const popped = event.state as AppHistoryState | null;
+      if (restoringHistoryIndex.current !== null) {
+        const isCompensation =
+          popped?.controlRoom && popped.index === restoringHistoryIndex.current;
+        restoringHistoryIndex.current = null;
+        if (isCompensation) return;
+      }
+      const current = historyLocation.current;
+      const target = popped;
+      if (!current || !target?.controlRoom) return;
+      if (unguardedPopIndex.current === target.index) {
+        unguardedPopIndex.current = null;
+        historyLocation.current = target;
+        applyLocation(target);
+        return;
+      }
+      unguardedPopIndex.current = null;
+      const generation = ++popGeneration.current;
+      if (handlingPop.current) {
+        queuedPop.current = target;
+        return;
+      }
+      handlingPop.current = true;
+      const allowed = !leaveGuard.current || (await leaveGuard.current());
+      if (generation !== popGeneration.current) {
+        const queued = queuedPop.current;
+        queuedPop.current = null;
+        if (queued && allowed) {
+          historyLocation.current = queued;
+          applyLocation(queued);
+        } else if (queued) {
+          restoringHistoryIndex.current = current.index;
+          history.go(current.index - queued.index);
+        }
+        handlingPop.current = false;
+        return;
+      }
+      if (allowed) {
+        historyLocation.current = target;
+        applyLocation(target);
+      } else {
+        restoringHistoryIndex.current = current.index;
+        history.go(current.index - target.index);
+      }
+      handlingPop.current = false;
+    };
+    window.addEventListener("popstate", pop);
+    return () => window.removeEventListener("popstate", pop);
+  }, []);
+
+  useEffect(() => {
+    const hash = () => {
+      if (location.hash.startsWith("#image=")) return;
+      const current = historyLocation.current;
+      if (!current || history.state?.controlRoom) return;
+      const target: AppHistoryState = {
+        ...current,
+        index: current.index + 1,
+        selected: ticketFromUrl(),
+        focusComment: undefined,
+      };
+      history.replaceState(target, "", appUrl(target));
+      void (async () => {
+        if (leaveGuard.current && !(await leaveGuard.current())) {
+          restoringHistoryIndex.current = current.index;
+          history.back();
+          return;
+        }
+        historyLocation.current = target;
+        applyLocation(target);
+      })();
+    };
+    window.addEventListener("hashchange", hash);
+    return () => window.removeEventListener("hashchange", hash);
   }, []);
   useEffect(() => {
     if (!prefsReady) return;
@@ -309,8 +503,7 @@ export function App() {
     ? viewId
     : views[0].id;
   const go = (p: Page) => {
-    setPage(p);
-    setSelected(null);
+    void pushLocation({ page: p, selected: null, focusComment: undefined });
   };
   return (
     <div
@@ -431,13 +624,7 @@ export function App() {
               <Feed
                 revision={state.revision}
                 onOpen={(id, comment) => {
-                  setFocusComment(comment);
-                  setSelectedState(id);
-                  history.replaceState(
-                    null,
-                    "",
-                    location.pathname + location.search + ticketUrl(id),
-                  );
+                  setSelected(id, comment);
                 }}
               />
             )}
@@ -503,11 +690,13 @@ export function App() {
                   onError={setError}
                   openImage={setImage}
                   onMoveTickets={() => {
-                    setViewId(
-                      views.find((view) => view.layout === "board")?.id ??
+                    void pushLocation({
+                      page: "project",
+                      viewId:
+                        views.find((view) => view.layout === "board")?.id ??
                         views[0].id,
-                    );
-                    go("project");
+                      selected: null,
+                    });
                   }}
                 />
               </>
@@ -568,6 +757,8 @@ export function App() {
                         .reverse()
                         .find((candidate) => stillInReview.has(candidate)) ??
                       null,
+                    undefined,
+                    true,
                   );
                 }
               : undefined
@@ -575,14 +766,48 @@ export function App() {
           conversationOrder={conversationOrder}
           initialComment={focusComment}
           onConversationOrder={setConversationOrder}
+          registerLeaveGuard={(guard) => {
+            leaveGuard.current = guard;
+          }}
           onClose={() => {
+            if (creating) {
+              setCreating(null);
+              return;
+            }
             if (standalone) {
               setStandalone(false);
-              setPage("project");
-              history.replaceState(null, "", location.pathname);
+              const next = {
+                ...(historyLocation.current ?? {
+                  controlRoom: true as const,
+                  index: 0,
+                  viewId,
+                }),
+                page: "project" as const,
+                selected: null,
+              };
+              const url = new URL(location.href);
+              url.searchParams.delete("ticketOnly");
+              url.searchParams.set("page", "project");
+              url.searchParams.set("view", next.viewId);
+              url.hash = "";
+              history.replaceState(next, "", `${url.pathname}${url.search}`);
+              historyLocation.current = next;
+              applyLocation(next);
+            } else if (historyLocation.current?.closeIndex !== undefined) {
+              unguardedPopIndex.current = historyLocation.current.closeIndex;
+              history.go(
+                historyLocation.current.closeIndex -
+                  historyLocation.current.index,
+              );
+            } else {
+              // RecordDetail has already saved, discarded, or verified a clean
+              // draft before calling onClose. Do not invoke its guard again
+              // while the save promise is still unwinding.
+              void pushLocation(
+                { selected: null, focusComment: undefined },
+                true,
+              );
             }
-            setSelected(null);
-            setCreating(null);
           }}
           onSaved={async () => {
             await reload();
@@ -601,7 +826,8 @@ export function App() {
           state={state}
           onClose={() => {
             setImage(null);
-            history.replaceState(null, "", location.pathname);
+            const current = historyLocation.current;
+            if (current) history.replaceState(current, "", appUrl(current));
           }}
           reload={reload}
           onError={setError}
