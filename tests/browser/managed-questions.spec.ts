@@ -270,3 +270,48 @@ test("failed retry saves the answer and displays its recovery guard without clai
     await f.cleanup();
   }
 });
+
+test("an answer from the older reply control can retry without another answer or Resolve", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  try {
+    const legacyReply = await page.request.post(
+      `/api/records/${f.ticket.meta.id}/comments`,
+      {
+        data: {
+          actor,
+          kind: "comment",
+          body: `Reply to question ${f.questionId} from Question fixture\n\n> Should the control use teal?\n\nSeems good.`,
+        },
+      },
+    );
+    expect(legacyReply.ok()).toBe(true);
+    await page.reload();
+    await expect(f.card.getByRole("status")).toContainText(
+      "Answer received; question still open",
+    );
+    await expect(f.card.getByLabel("Answer this question")).toHaveValue("");
+    await f.card
+      .getByRole("button", { name: "Retry run", exact: true })
+      .click();
+    await expect
+      .poll(
+        async () =>
+          (await f.status()).runs.filter((r: any) => r.previous === f.run.id)
+            .length,
+      )
+      .toBe(1);
+    const context = await f.context();
+    const question = context.comments.find((c: any) => c.id === f.questionId);
+    expect(question.resolved).toBe(true);
+    expect(question.replies).toBeUndefined();
+    expect(
+      context.comments.filter(
+        (c: any) => c.kind === "comment" && c.body.includes("Seems good."),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    await f.cleanup();
+  }
+});
