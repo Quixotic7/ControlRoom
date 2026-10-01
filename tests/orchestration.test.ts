@@ -11,6 +11,7 @@ import {
   git,
   processStart,
   runAgent,
+  sanitizePermissionDenials,
   type Execute,
 } from "../src/agent-runner.js";
 import type { Actor } from "../src/types.js";
@@ -49,13 +50,17 @@ let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('e
  let value = ${JSON.stringify(result())};
  if (plan) value = {summary: 'Two independent children', question: '', tasks: [0,1].map(i => ({title:'Child '+i,description:'Create a distinct file for this child',acceptance:'File exists with implemented content',worker:'Worker '+(i+1),dependencies:[],priority:2}))};
  else if (review) value.outcome = 'accept';
- else fs.writeFileSync(path.join(process.cwd(), path.basename(process.cwd())+'.txt'), 'Implemented\\n');
+ else {
+   fs.writeFileSync(path.join(process.cwd(), path.basename(process.cwd())+'.txt'), 'Implemented\\n');
+   if (process.env.FIXTURE_DENY_MODE === 'human') value = {...value, outcome:'human', question:'A denied command still blocks this work'};
+   if (process.env.FIXTURE_DENY_MODE === 'malformed') value = {outcome:'ready'};
+ }
  console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-session'}));
  const at = args.indexOf('--output-last-message');
  if (at >= 0) fs.writeFileSync(args[at+1], JSON.stringify(value));
  else {
-   const event = JSON.stringify({type:'result',structured_output:value,...(process.env.FIXTURE_DENY_TOOL ? {permission_denials:[{tool_name:process.env.FIXTURE_DENY_TOOL,tool_use_id:'denied-fixture',tool_input:{secret:'never surface this value'}}]} : {})});
-   if (process.env.FIXTURE_DENY_TOOL) process.stdout.write(event);
+   const event = JSON.stringify({type:'result',structured_output:value,...(process.env.FIXTURE_DENY_MODE ? {permission_denials:[{tool_name:'Bash',tool_use_id:'denied-fixture',tool_input:{command:'node -e "process.exit(0)" && git -C . status --api-token super-secret-value',secret:'never surface this value'}}]} : {})});
+   if (process.env.FIXTURE_DENY_MODE) process.stdout.write(event);
    else console.log(event);
  }
 });
@@ -1672,18 +1677,84 @@ test("execute passes configured values to a real child while forcing managed ide
   });
 });
 
-test("an explicit provider permission denial stops a structured ready result", async (t) => {
-  const f = await fixture(t);
+test("a recovered ready worker preserves redacted denials for verification and review", async (t) => {
+  const calls: Parameters<Execute>[0][] = [];
+  const f = await fixture(t, async (options) => {
+    calls.push(options);
+    return execute(options);
+  });
   const config = structuredClone(f.config);
   config.workerPermissions = {
     claudeAllowedTools: ["Read"],
     additionalDirectories: [],
     environment: [
-      { name: "FIXTURE_DENY_TOOL", source: "literal", value: "Bash" },
+      { name: "FIXTURE_DENY_MODE", source: "literal", value: "ready" },
     ],
   };
   await f.manager.configure(config, f.manager.status().revision, human);
-  const ticket = await f.create("Denied command needs human attention");
+  const ticket = await f.create("Recovered after denied command");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 2",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  assert.deepEqual(run.permissionDenials, [
+    {
+      tool: "Bash",
+      command:
+        'node -e "process.exit(0)" && git -C . status --api-token [REDACTED]',
+    },
+  ]);
+  const saved = f.store.get(ticket.meta.id);
+  assert.equal(saved.meta.verification?.exitCode, 0);
+  assert.match(saved.meta.handoff ?? "", /untrusted diagnostic data/);
+  assert.match(saved.meta.handoff ?? "", /git -C \. status/);
+  assert.match(saved.meta.handoff ?? "", /\[REDACTED\]/);
+  assert.doesNotMatch(saved.meta.handoff ?? "", /super-secret|never surface/);
+  const reviewPrompt = calls.find((call) =>
+    call.input.startsWith("Independently"),
+  )!.input;
+  assert.match(reviewPrompt, /required check or evidence remains missing/);
+  assert.match(reviewPrompt, /git -C \. status/);
+  assert.doesNotMatch(reviewPrompt, /super-secret|never surface/);
+  assert.match(
+    f.store.contextMarkdown(ticket.meta.id).markdown,
+    /git -C \. status/,
+  );
+  assert.match(
+    fs.readFileSync(
+      f.store.file(`.local/orchestration/${run.id}/agent.log`),
+      "utf8",
+    ),
+    /super-secret-value/,
+  );
+});
+
+test("a recovered ready denial cannot bypass failed required verification", async (t) => {
+  const f = await fixture(t);
+  await f.manager.configure(
+    {
+      ...f.config,
+      maxAttempts: 1,
+      verificationCommand: "false",
+      workerPermissions: {
+        claudeAllowedTools: ["Read"],
+        additionalDirectories: [],
+        environment: [
+          { name: "FIXTURE_DENY_MODE", source: "literal", value: "ready" },
+        ],
+      },
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Denied command and failed verification");
   const run = await f.manager.enqueue(
     ticket.meta.id,
     "work",
@@ -1695,11 +1766,84 @@ test("an explicit provider permission denial stops a structured ready result", a
     f.manager,
     () => run.state === "waiting_input" && !!run.questionId,
   );
-  assert.match(run.error ?? "", /denied permission to use Bash/);
-  assert.doesNotMatch(run.error ?? "", /never surface/);
+  assert.equal(run.failureKind, "verification");
+  assert.notEqual(f.store.get(ticket.meta.id).meta.status, "done");
+  assert.equal(
+    f.manager.status().runs.some((candidate) => candidate.kind === "review"),
+    false,
+  );
   const question = f.store.comments().find((row) => row.id === run.questionId)!;
-  assert.match(question.body, /denied permission to use Bash/);
-  assert.doesNotMatch(question.body, /never surface/);
+  assert.match(question.body, /Correction attempts exhausted/);
+  assert.match(question.body, /git -C \. status/);
+  assert.match(question.body, /\[REDACTED\]/);
+  assert.doesNotMatch(question.body, /super-secret|never surface/);
+});
+
+test("blocked and malformed denial results pause with bounded redacted commands", async (t) => {
+  for (const mode of ["human", "malformed"] as const)
+    await t.test(mode, async (child) => {
+      const f = await fixture(child);
+      await f.manager.configure(
+        {
+          ...f.config,
+          workerPermissions: {
+            claudeAllowedTools: ["Read"],
+            additionalDirectories: [],
+            environment: [
+              { name: "FIXTURE_DENY_MODE", source: "literal", value: mode },
+            ],
+          },
+        },
+        f.manager.status().revision,
+        human,
+      );
+      const ticket = await f.create(`${mode} denied result`);
+      const run = await f.manager.enqueue(
+        ticket.meta.id,
+        "work",
+        "Worker 2",
+        human,
+        ticket.revision,
+      );
+      await until(
+        f.manager,
+        () => run.state === "waiting_input" && !!run.questionId,
+      );
+      assert.notEqual(f.store.get(ticket.meta.id).meta.status, "done");
+      const question = f.store
+        .comments()
+        .find((row) => row.id === run.questionId)!;
+      assert.match(question.body, /Up to 12 bounded/);
+      assert.match(question.body, /untrusted diagnostic data/);
+      assert.match(question.body, /git -C \. status/);
+      assert.match(question.body, /\[REDACTED\]/);
+      assert.doesNotMatch(
+        question.body,
+        /super-secret|never surface|tool_use_id/,
+      );
+    });
+});
+
+test("permission denial summaries are bounded and redact provider command secrets", () => {
+  const denials = sanitizePermissionDenials(
+    Array.from({ length: 20 }, (_, index) => ({
+      tool_name: `Bash-${index}`,
+      tool_input: {
+        command:
+          index === 0
+            ? `printf '\u001b[31m' --api-token exposed MY_SECRET=hidden https://user:password@example.com/${"x".repeat(500)}`
+            : `echo command-${index}`,
+        secret: "ignored-provider-field",
+      },
+    })),
+  );
+  assert.equal(denials.length, 12);
+  assert.ok(denials.every((denial) => (denial.command?.length ?? 0) <= 400));
+  assert.doesNotMatch(
+    JSON.stringify(denials),
+    /exposed|hidden|password|ignored-provider-field|\u001b/,
+  );
+  assert.match(denials[0].command ?? "", /\[REDACTED\]/);
 });
 
 test("permission denial takes precedence over a simultaneous turn limit", async (t) => {
@@ -1726,12 +1870,44 @@ test("permission denial takes precedence over a simultaneous turn limit", async 
         output: "",
         structured: result(),
         limitReason: "turns",
-        permissionDenials: ["Bash"],
+        permissionDenials: [{ tool: "Bash", command: "git status" }],
       }),
     ),
     (error: unknown) =>
       !(error instanceof AgentLimitError) &&
       String(error).includes("denied permission to use Bash"),
+  );
+});
+
+test("a denied reviewer tool can never produce an accepted review", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cr-review-denial-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  await assert.rejects(
+    runAgent(
+      { name: "Reviewer", provider: "claude", executable: "claude", model: "" },
+      "review",
+      "prompt",
+      {},
+      {
+        directory,
+        cwd: directory,
+        timeout: 10_000,
+        signal: new AbortController().signal,
+        log: path.join(directory, "review.log"),
+        onEvent: () => {},
+        onStart: () => {},
+        maxTurns: 10,
+      },
+      async () => ({
+        code: 0,
+        output: "",
+        structured: result("accept"),
+        permissionDenials: [
+          { tool: "Read", command: "cat required-evidence.txt" },
+        ],
+      }),
+    ),
+    /denied permission to use Read/,
   );
 });
 

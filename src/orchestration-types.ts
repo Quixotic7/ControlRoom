@@ -1,4 +1,8 @@
 export type Harness = "codex" | "claude";
+export type PermissionDenial = {
+  tool: string;
+  command?: string;
+};
 export type AgentProfile = {
   name: string;
   provider: Harness;
@@ -91,6 +95,7 @@ export type ManagedRun = {
   limitReason?: "turns" | "timeout";
   questionId?: string;
   questionRetryBlocked?: boolean;
+  permissionDenials?: PermissionDenial[];
   result?: {
     outcome: string;
     summary: string;

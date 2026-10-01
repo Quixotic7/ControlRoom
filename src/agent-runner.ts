@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { atomic, hash, Problem } from "./files.js";
-import type { AgentProfile } from "./orchestration-types.js";
+import type { AgentProfile, PermissionDenial } from "./orchestration-types.js";
+export type { PermissionDenial } from "./orchestration-types.js";
 
 export function git(cwd: string, ...args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -80,7 +81,7 @@ export type ProcessResult = {
   output: string;
   structured?: unknown;
   limitReason?: "turns";
-  permissionDenials?: string[];
+  permissionDenials?: PermissionDenial[];
   eventCount?: number;
   stderrPrefix?: string;
   stderrTruncated?: boolean;
@@ -172,7 +173,11 @@ export function redactStartupDiagnostic(
       "$1=[REDACTED]",
     )
     .replace(
-      /(--(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|credentials?))\s+[^\s,;]+/gi,
+      /\b([A-Za-z_][A-Za-z0-9_]*(?:key|token|secret|password|passwd|credential)[A-Za-z0-9_]*)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1=[REDACTED]",
+    )
+    .replace(
+      /(--[A-Za-z0-9_-]*(?:key|token|secret|password|passwd|credential)[A-Za-z0-9_-]*)\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       "$1 [REDACTED]",
     )
     .replace(
@@ -190,6 +195,52 @@ export function redactStartupDiagnostic(
     .slice(0, diagnosticLength);
 }
 
+const denialLimit = 12,
+  denialToolLength = 100,
+  denialCommandLength = 400;
+
+/** Reduce provider permission payloads to bounded, display-safe tool/command summaries. */
+export function sanitizePermissionDenials(
+  input: unknown,
+  extraSecrets: Iterable<string> = [],
+): PermissionDenial[] {
+  if (!Array.isArray(input)) return [];
+  const denials: PermissionDenial[] = [];
+  for (const value of input) {
+    const record =
+        typeof value === "object" && value
+          ? (value as Record<string, unknown>)
+          : undefined,
+      rawTool = record?.tool ?? record?.tool_name ?? value,
+      tool = redactStartupDiagnostic(String(rawTool), extraSecrets)
+        .replace(/[^A-Za-z0-9_.: -]/g, "?")
+        .slice(0, denialToolLength),
+      toolInput =
+        typeof record?.tool_input === "object" && record.tool_input
+          ? (record.tool_input as Record<string, unknown>)
+          : undefined,
+      rawCommand = toolInput?.command ?? record?.command,
+      command =
+        typeof rawCommand === "string"
+          ? redactStartupDiagnostic(rawCommand, extraSecrets)
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, denialCommandLength)
+          : "";
+    if (!tool) continue;
+    const denial = { tool, ...(command ? { command } : {}) };
+    if (
+      !denials.some(
+        (existing) =>
+          existing.tool === denial.tool && existing.command === denial.command,
+      )
+    )
+      denials.push(denial);
+    if (denials.length === denialLimit) break;
+  }
+  return denials;
+}
+
 // Only retain bounded logs, never serialize the inherited environment or CLI credentials.
 // Child process groups let cancellation stop tool descendants, not just their parent CLI.
 export const execute: Execute = (o) =>
@@ -201,7 +252,7 @@ export const execute: Execute = (o) =>
       pending = "",
       structured: unknown,
       limitReason: ProcessResult["limitReason"],
-      permissionDenials: string[] = [],
+      permissionDenials: PermissionDenial[] = [],
       eventCount = 0,
       stderrPrefixParts: Buffer[] = [],
       stderrPrefixBytes = 0,
@@ -268,20 +319,10 @@ export const execute: Execute = (o) =>
         if (e.type === "result" && e.structured_output)
           structured = e.structured_output;
         if (e.type === "result" && Array.isArray(e.permission_denials))
-          permissionDenials = [
-            ...new Set<string>(
-              e.permission_denials
-                .map((denial: unknown) =>
-                  typeof denial === "object" && denial
-                    ? String(
-                        (denial as Record<string, unknown>).tool_name ??
-                          "unknown tool",
-                      ).slice(0, 100)
-                    : "unknown tool",
-                )
-                .slice(0, 20),
-            ),
-          ];
+          permissionDenials = sanitizePermissionDenials(
+            [...permissionDenials, ...e.permission_denials],
+            Object.values(o.environment ?? {}),
+          );
         if (
           e.type === "result" &&
           /(?:max[_ -]?turns|turn[_ -]?limit)/i.test(
@@ -360,6 +401,7 @@ export async function runAgent(
     }) => void;
     sessionId?: string;
     smokeTest?: boolean;
+    onPermissionDenials?: (denials: PermissionDenial[]) => void;
   },
   runner = execute,
 ) {
@@ -484,9 +526,27 @@ export async function runAgent(
       throw new AgentLimitError("timeout", retainedSessionId);
     throw error;
   }
-  if (result.permissionDenials?.length)
+  const permissionDenials = sanitizePermissionDenials(
+    result.permissionDenials,
+    Object.values(options.environment ?? {}),
+  );
+  if (permissionDenials.length)
+    options.onPermissionDenials?.(permissionDenials);
+  // A worker may recover after a refused tool and still return a complete
+  // ready handoff. The controller still validates its schema, context, code,
+  // independent verification and review; planners and reviewers never recover
+  // through this exception because denied inspection could weaken their result.
+  const recoveredReadyWorker =
+    kind === "work" &&
+    result.code === 0 &&
+    !result.limitReason &&
+    !!result.structured &&
+    typeof result.structured === "object" &&
+    !Array.isArray(result.structured) &&
+    (result.structured as Record<string, unknown>).outcome === "ready";
+  if (permissionDenials.length && !recoveredReadyWorker)
     throw new Error(
-      `Provider denied permission to use ${result.permissionDenials.join(", ")}. Review the managed worker grants and ambient provider policy, then resolve the ticket question to retry.`,
+      `Provider denied permission to use ${[...new Set(permissionDenials.map((denial) => denial.tool))].join(", ")}. Review the managed worker grants and ambient provider policy, then answer the ticket question to retry.`,
     );
   if (result.limitReason)
     throw new AgentLimitError(result.limitReason, retainedSessionId);
