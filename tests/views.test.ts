@@ -121,6 +121,40 @@ test("filters match status names, labels, owners, priority, parent, and flags", 
   assert.deepEqual(pick("label:ui,missing is:open"), ["WB-a"]);
 });
 
+test("number lookup matches exact public numbers and retains other constraints", () => {
+  const records = [
+    ticket({
+      id: "WB-a",
+      number: 36,
+      title: "Screenshot feedback",
+      archived: true,
+      status: "done",
+      owner: "Ana",
+    }),
+    ticket({ id: "WB-b", number: 136, title: "Other ticket" }),
+    ticket(
+      { id: "WB-36abc", number: 7, title: "Reference 36", owner: "Ana" },
+      "version 2",
+    ),
+    ticket({ id: "WB-zero", number: 0, title: "First ticket" }),
+  ];
+  const ctx = context(stateOf(records));
+  const pick = (query: string) =>
+    records
+      .filter((r) => matches(r, parseFilter(query), ctx))
+      .map((r) => r.meta.number);
+  assert.deepEqual(pick("36"), [36]);
+  assert.deepEqual(pick("#36"), [36]);
+  assert.deepEqual(pick("036 owner:ana status:done"), [36]);
+  assert.deepEqual(pick("36 -is:archived"), []);
+  assert.deepEqual(pick("36 status:progress"), []);
+  assert.deepEqual(pick("36 owner:other"), []);
+  assert.deepEqual(pick("0"), [0]);
+  assert.deepEqual(pick("#0"), [0]);
+  assert.deepEqual(pick("99999999999999999999999"), []);
+  assert.deepEqual(pick("version 2"), [7]);
+});
+
 test("grouping by parent heads each goal and keeps children nested", () => {
   const goal = ticket({ id: "WB-g", number: 1, title: "Goal" });
   const child = ticket({ id: "WB-c", number: 2, parent: "WB-g" });

@@ -30,6 +30,7 @@ import {
   parseFilter,
   priorities,
   priorityOf,
+  searchedTicketNumber,
   showsArchived,
   sortOptions,
   sortTickets,
@@ -743,7 +744,7 @@ export function ProjectPage({
             </span>
             <input
               aria-label="Filter tickets"
-              placeholder="Filter by keyword or by field, e.g. label:ui is:blocked -status:done"
+              placeholder="Find by number (36 or #36), keyword, or field: label:ui is:blocked"
               value={view.filter}
               onChange={(e) => edit({ filter: e.target.value })}
             />
@@ -884,6 +885,26 @@ export function ProjectPage({
                 ? "Manual reordering is active for this saved view."
                 : "Manual reordering is inactive for this saved sort."}
           </p>
+        )}
+        {searchedTicketNumber(filter) !== undefined && visible.length > 0 && (
+          <section className="banner" aria-label="Ticket number result">
+            {visible.map((record) => (
+              <div key={record.meta.id}>
+                <button
+                  className="text-button"
+                  onClick={() => onOpen(record.meta.id)}
+                >
+                  Open #{record.meta.number}: {record.meta.title}
+                </button>{" "}
+                {record.meta.archived && <span className="tag">Archived</span>}
+              </div>
+            ))}
+            <p>
+              Number searches include archived tickets. Open the result here
+              even if its board column or group is hidden. Other filters still
+              apply.
+            </p>
+          </section>
         )}
         {!!tickets.length && (
           <BulkEditBar

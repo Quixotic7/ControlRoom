@@ -250,17 +250,28 @@ function termMatches(r: RecordFile, key: string, value: string, ctx: Context) {
   return false;
 }
 
-// Archived tickets stay out of a view unless it asks for them with
-// `is:archived`; the term itself then keeps everything else out.
+// A number on its own (optionally with field filters) is an exact lookup.
+// Keep ordinary multiword text searches, such as "version 2", unchanged.
+export const searchedTicketNumber = (filter: Filter): number | undefined =>
+  filter.text.length === 1 && /^#?\d+$/.test(filter.text[0])
+    ? Number(filter.text[0].replace(/^#/, ""))
+    : undefined;
+
+// Exact number lookups include archived tickets without restoring them.
+// Explicit field filters, including -is:archived, still apply in matches().
 export const showsArchived = (filter: Filter) =>
+  searchedTicketNumber(filter) !== undefined ||
   filter.terms.some(
     (t) => t.key === "is" && !t.negate && t.values.includes("archived"),
   );
 
 export function matches(r: RecordFile, filter: Filter, ctx: Context) {
+  const number = searchedTicketNumber(filter);
   const haystack =
     `${r.meta.title} ${r.body} ${r.meta.id} #${r.meta.number} ${(r.meta.labels ?? []).join(" ")} ${r.meta.owner ?? ""}`.toLowerCase();
-  if (!filter.text.every((t) => haystack.includes(t))) return false;
+  if (number !== undefined) {
+    if (r.meta.number !== number) return false;
+  } else if (!filter.text.every((t) => haystack.includes(t))) return false;
   return filter.terms.every((term) => {
     const any = term.values.some((v) => termMatches(r, term.key, v, ctx));
     return term.negate ? !any : any;

@@ -92,7 +92,10 @@ test("is:archived matches archived tickets and -is:archived excludes them", () =
   assert.deepEqual(pick("is:open"), ["WB-live"]);
 });
 
-test("showsArchived only for a positive is:archived term", () => {
+test("showsArchived for explicit archive filters or exact number searches", () => {
+  assert.equal(showsArchived(parseFilter("36")), true);
+  assert.equal(showsArchived(parseFilter("#0 owner:ana")), true);
+  assert.equal(showsArchived(parseFilter("version 2")), false);
   assert.equal(showsArchived(parseFilter("is:archived")), true);
   assert.equal(
     showsArchived(parseFilter("label:ui is:blocked,archived")),
