@@ -110,6 +110,12 @@ export async function buildServer(
       actor(req.body),
     ),
   );
+  app.post("/api/orchestration/proposals", async (req:any) =>
+    orchestration.proposeConfig(req.body.config, req.body.revision, actor(req.body)));
+  app.post("/api/orchestration/proposals/:id/apply", async (req:any) =>
+    orchestration.applyConfigProposal(req.params.id,req.body.revision,actor(req.body)));
+  app.post("/api/orchestration/proposals/:id/discard", async (req:any) =>
+    orchestration.discardConfigProposal(req.params.id,req.body.revision,actor(req.body)));
   app.post("/api/orchestration/queue", async (req: any) => {
     if (!["plan", "work"].includes(req.body.kind))
       throw new Problem(422, "Choose plan or work");

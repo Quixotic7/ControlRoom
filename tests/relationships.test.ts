@@ -467,7 +467,7 @@ test("transaction failures roll back records and audit entries together", async 
       },
       human,
     ),
-    /all written records were restored/,
+    /all written files were restored/,
   );
   assert.equal(store.get(left.meta.id).revision, left.revision);
   assert.equal(store.get(right.meta.id).revision, right.revision);

@@ -1,3 +1,5 @@
+import {AgentConfigProposals} from "./AgentConfigProposals";
+import type {AgentConfigProposal} from "../src/agent-config-proposals";
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentProfile,
@@ -8,6 +10,7 @@ import type { ProjectState } from "../src/types";
 import { actor, api, isRemoteBrowser, recordId } from "./api";
 import "./agents.css";
 type Snapshot = {
+  proposals?: {proposals:AgentConfigProposal[];errors:{path:string;message:string}[]};
   config: OrchestrationConfig;
   revision: string;
   runs: (ManagedRun & { verifiedRunning: boolean })[];
@@ -160,6 +163,13 @@ export function Agents({
           </article>
         ))}
       </div>
+      <AgentConfigProposals proposals={snapshot.proposals?.proposals ?? []} errors={snapshot.proposals?.errors ?? []} config={snapshot.config} revision={snapshot.revision} busy={busy}
+        onApply={proposal => void action(async () => {
+          const next = await api<Snapshot>(`/orchestration/proposals/${proposal.id}/apply`,"POST",{actor,revision:proposal.revision});
+          setDraft(next.config);setRevision(next.revision);
+        },"Proposal applied. No work was started.")}
+        onDiscard={proposal => void action(() => api(`/orchestration/proposals/${proposal.id}/discard`,"POST",{actor,revision:proposal.revision}),"Proposal discarded. Configuration unchanged.")}
+      />
       <details className="agent-settings">
         <summary>Agent configuration</summary>
         <form

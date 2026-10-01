@@ -307,6 +307,7 @@ Writing (need --etag from show or context, or --latest to use the current one)
 
 Service and data
   agents status | agents log RUN
+  agents propose --file CONFIG_JSON [--etag CONFIG_REVISION]   stage a proposal for human approval
   agents configure --file CONFIG_JSON --etag CONFIG_REVISION
   agents queue --file ASSIGNMENT_JSON   {ticket, revision, kind: work|plan, worker} (worker required for work)
   agents stop RUN | agents resume RUN | agents takeover RUN --etag TICKET_ETAG
@@ -384,7 +385,9 @@ async function main() {
   }
   if (command === "agents") {
     if (!id || id === "status") output(await api(store, "/api/orchestration"));
-    else if (id === "configure") {
+    else if (id === "propose") {
+      output(await api(store,"/api/orchestration/proposals","POST",{config:inputJson(),revision:option("etag"),actor:who}));
+    } else if (id === "configure") {
       if (!option("etag"))
         throw new Error(
           "Provide --etag from agents status so a stale configuration cannot overwrite another edit",

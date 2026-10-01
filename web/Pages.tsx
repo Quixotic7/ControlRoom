@@ -45,11 +45,15 @@ export function AttentionPage({
   changedDocs,
   onOpen,
   onMarkSeen,
+  proposals = [],
+  onOpenAgents,
 }: {
   items: [RecordFile, AttentionReason][];
   changedDocs: RecordFile[];
   onOpen: (id: string) => void;
   onMarkSeen: () => void;
+  proposals?: NonNullable<ProjectState["agentConfigProposals"]>;
+  onOpenAgents?: () => void;
 }) {
   return (
     <>
@@ -58,6 +62,7 @@ export function AttentionPage({
         description="Questions, blockers, and work ready for your judgment."
       />
       <div className="list-panel">
+        {proposals.map(proposal => <button key={proposal.id} className="list-row" onClick={onOpenAgents}><span className="row-main"><strong>Agent configuration proposal</strong><small>Proposed by {proposal.proposedBy.name} · review and apply in Agents</small></span></button>)}
         {items.map(([r, reason]) => {
           const Icon = reasons[reason][0];
           return (
@@ -80,7 +85,7 @@ export function AttentionPage({
             </button>
           );
         })}
-        {!items.length && (
+        {!items.length && !proposals.length && (
           <p className="list-empty">✓ No tickets need you right now.</p>
         )}
       </div>

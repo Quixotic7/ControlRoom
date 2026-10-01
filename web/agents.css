@@ -146,3 +146,11 @@
     flex-direction: column;
   }
 }
+
+.agent-config-proposals { margin-block: 1rem; }
+.agent-config-proposal { border: 1px solid var(--line); padding: 1rem; margin-block: .75rem; min-width: 0; }
+.agent-proposal-diff { overflow: auto; max-height: 32rem; margin-block: .75rem; }
+.agent-proposal-diff table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.agent-proposal-diff th, .agent-proposal-diff td { border: 1px solid var(--line); padding: .5rem; text-align: left; vertical-align: top; }
+.agent-proposal-diff th:first-child { width: 22%; overflow-wrap: anywhere; }
+.agent-proposal-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: .85rem; }

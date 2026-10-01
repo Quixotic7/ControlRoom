@@ -1,3 +1,4 @@
+import { readAgentConfigProposal, readAgentConfigProposals, proposalPath, type AgentConfigProposal } from "./agent-config-proposals.js";
 import {
   questionsSchema,
   questionText,
@@ -434,7 +435,10 @@ export class Store {
         errors.push({ path: path.relative(this.dir, f), message: String(e) });
       }
     }
+    const proposals = readAgentConfigProposals(this);
+    errors.push(...proposals.errors);
     const state = {
+      agentConfigProposals: proposals.proposals.filter(p => p.status === "pending").map(({id, proposedBy, createdAt, revision}) => ({id, proposedBy, createdAt, revision})),
       config: this.config(),
       configRevision: hash(read(this.file("config.yml"))),
       records,
@@ -462,6 +466,7 @@ export class Store {
         ...comments.map((c) => c.id + c.revision),
         ...attachments.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
         JSON.stringify(state.claims),
+        ...proposals.proposals.map(p => p.id + p.revision),
         JSON.stringify(errors),
         state.branch,
         state.acknowledgedBranch,
@@ -606,10 +611,11 @@ export class Store {
               path: z
                 .string()
                 .regex(
-                  /^records\/(?:tickets\/[A-Za-z0-9_-]+\.md|history\.jsonl)$/,
+                  /^(?:config\.yml|agents\/worker-brief\.md|records\/(?:tickets\/[A-Za-z0-9_-]+\.md|agent-proposals\/agent-proposal-[a-f0-9]+\.json|history\.jsonl))$/,
                 ),
               before: z.string(),
               after: z.string(),
+              existed: z.boolean().optional(),
             }),
           )
           .min(1),
@@ -634,7 +640,10 @@ export class Store {
         409,
         "A record transaction was interrupted and a file changed independently. Inspect .controlroom/.local/record-transaction.json before continuing.",
       );
-    for (const entry of tx.files) atomic(this.file(entry.path), entry.before);
+    for (const entry of tx.files) {
+      if (entry.existed === false) fs.rmSync(this.file(entry.path), {force: true});
+      else atomic(this.file(entry.path), entry.before);
+    }
     fs.unlinkSync(journal);
   }
 
@@ -767,6 +776,10 @@ export class Store {
       before: historyBefore,
       after: historyBefore + events,
     });
+    this.commitFiles(files);
+    return changes.map((change) => this.get(change.old.meta.id));
+  }
+  private commitFiles(files: {path:string; before:string; after:string; existed?:boolean}[]) {
     const journal = this.file(".local/record-transaction.json");
     atomic(journal, JSON.stringify({ schema: 1, at: now(), files }, null, 2));
     const written: typeof files = [];
@@ -780,7 +793,8 @@ export class Store {
       const recoveryErrors: string[] = [];
       for (const file of written.reverse())
         try {
-          atomic(this.file(file.path), file.before);
+          if (file.existed === false) fs.rmSync(this.file(file.path), {force: true});
+          else atomic(this.file(file.path), file.before);
         } catch (rollback) {
           recoveryErrors.push(`${file.path}: ${String(rollback)}`);
         }
@@ -790,11 +804,10 @@ export class Store {
         500,
         recoveryErrors.length
           ? "The transaction partially failed and automatic recovery was incomplete. Stop editing and inspect the recovery details."
-          : "The transaction failed; all written records were restored and no merge was retained.",
+          : "The transaction failed; all written files were restored.",
         { cause: String(error), recoveryErrors },
       );
     }
-    return changes.map((change) => this.get(change.old.meta.id));
   }
   scope(record: RecordFile): RecordFile | undefined {
     const seen = new Set<string>();
@@ -2674,7 +2687,36 @@ export class Store {
     const markdown = lines.join("\n") + "\n";
     return { markdown, tokens: Math.ceil(markdown.length / 4) };
   }
-  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor) {
+  proposeAgentConfig(input: Omit<AgentConfigProposal, "revision" | "schema" | "id" | "createdAt" | "status">, actor: Actor) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      const proposal = { ...input, proposedBy: actor, schema: 1 as const, id: uid("agent-proposal"), createdAt: now(), status: "pending" as const };
+      const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), before = existed ? read(this.file(historyPath)) : "";
+      const event = {id:uid("event"), record:"project", actor, action:"agent configuration proposed", at:now(), before:null, after:{id:proposal.id, proposedBy:actor, baseRevision:proposal.baseRevision}};
+      this.commitFiles([
+        {path:proposalPath(proposal.id), before:"", after:JSON.stringify(proposal,null,2), existed:false},
+        {path:historyPath,before,after:before+JSON.stringify(event)+"\n",existed},
+      ]);
+      return readAgentConfigProposal(this, proposal.id);
+    });
+  }
+  discardAgentConfigProposal(id: string, revision: string, actor: Actor) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human") throw new Problem(403, "Only a human can discard an agent configuration proposal");
+      const old = readAgentConfigProposal(this, id);
+      if (old.revision !== revision || old.status !== "pending") throw new Problem(409, "Proposal changed; reload before discarding");
+      const {revision: _, ...data} = old;
+      const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), before = existed ? read(this.file(historyPath)) : "";
+      const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal discarded",at:now(),before:{id,proposedBy:old.proposedBy},after:{id,decidedBy:actor}};
+      this.commitFiles([
+        {path:proposalPath(id),before:read(this.file(proposalPath(id))),after:JSON.stringify({...data,status:"discarded",decidedBy:actor,decidedAt:now()},null,2)},
+        {path:historyPath,before,after:before+JSON.stringify(event)+"\n",existed},
+      ]);
+      return readAgentConfigProposal(this,id);
+    });
+  }
+  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, proposal?: {id: string; revision: string}) {
     return this.write(() => {
       if ("orchestration" in patch && actor?.kind !== "human")
         throw new Problem(
@@ -2715,6 +2757,21 @@ export class Store {
             `Move tickets out of ${r.meta.status} before removing it`,
           );
       const before = this.config().orchestration;
+      if (proposal) {
+        if (actor?.kind !== "human" || !patch.orchestration) throw new Problem(403, "Only a human can apply an agent configuration proposal");
+        const old = readAgentConfigProposal(this, proposal.id);
+        if (old.status !== "pending" || old.revision !== proposal.revision) throw new Problem(409, "Proposal changed; reload before applying");
+        const {revision: _, ...data} = old;
+        const accepted = {...data,status:"applied",decidedBy:actor,decidedAt:now()};
+        const historyPath = "records/history.jsonl", historyBefore = fs.existsSync(this.file(historyPath)) ? read(this.file(historyPath)) : "";
+        const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal applied",at:now(),before:{orchestration:before},after:{orchestration:patch.orchestration,proposalId:old.id,proposedBy:old.proposedBy,approvedBy:actor,proposalRevision:old.revision}};
+        this.commitFiles([
+          {path:"config.yml",before:s,after:YAML.stringify(c)},
+          {path:proposalPath(old.id),before:read(this.file(proposalPath(old.id))),after:JSON.stringify(accepted,null,2)},
+          {path:historyPath,before:historyBefore,after:historyBefore+JSON.stringify(event)+"\n",existed:fs.existsSync(this.file(historyPath))},
+        ]);
+        return c;
+      }
       atomic(p, YAML.stringify(c));
       if ("orchestration" in patch)
         this.history(

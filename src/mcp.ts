@@ -109,6 +109,12 @@ export async function startMcp(
       run: () => api(store, "/api/orchestration"),
     },
     {
+      name: "propose_agent_config",
+      description: "Stage a full agent configuration for human review. This never changes the live configuration or starts agents. A human sees the exact diff and must Apply it. Optionally pass the current agent_runs revision to reject stale proposals.",
+      inputSchema: {type:"object",properties:{config:{type:"object",additionalProperties:true},revision:str("Current configuration revision from agent_runs")},required:["config"]},
+      run: (a) => api(store,"/api/orchestration/proposals","POST",{config:a.config,revision:a.revision,actor:who}),
+    },
+    {
       name: "delegate_ticket",
       description:
         "The human-designated orchestrator can queue approved work or decompose an approved goal. The service launches an isolated worker, independently verifies and reviews results. Workers cannot self-accept. No implicit merge, push or deployment.",

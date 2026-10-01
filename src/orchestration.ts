@@ -1,3 +1,4 @@
+import { readAgentConfigProposal, readAgentConfigProposals } from "./agent-config-proposals.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -271,6 +272,7 @@ export class Orchestrator {
   }
   status() {
     return {
+      proposals: readAgentConfigProposals(this.store),
       config: this.config(),
       revision: this.configHash(),
       runs: this.runs.map((r) => ({
@@ -297,11 +299,7 @@ export class Orchestrator {
       )
       .join("\n");
   }
-  async configure(input: unknown, revision: string, actor: Actor) {
-    return this.serial(async () => {
-      this.human(actor);
-      if (revision !== this.configHash())
-        throw new Problem(409, "Orchestration settings changed; reload first");
+  private validateConfiguration(input: unknown) {
       const config = orchestrationSchema.parse(input);
       const names = [
         config.reviewer.name,
@@ -335,17 +333,37 @@ export class Orchestrator {
         if (!config.verificationCommand.trim())
           throw new Problem(422, "Provide an independent verification command");
       }
-      // Persist authority in project config; raw process logs and credentials never travel with it.
-      await this.store.updateConfig(
-        hash(read(this.store.file("config.yml"))),
-        {
-          orchestration: config,
-        },
-        actor,
-      );
-      for (const controller of this.active.values()) controller.abort();
-      return this.status();
+    return config;
+  }
+  async configure(input: unknown, revision: string, actor: Actor) {
+    return this.serial(() => this.configureLocked(input, revision, actor));
+  }
+  private async configureLocked(input: unknown, revision: string, actor: Actor, proposal?: {id:string; revision:string}) {
+    this.human(actor);
+    if (revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; reload first");
+    const config = this.validateConfiguration(input);
+    await this.store.updateConfig(hash(read(this.store.file("config.yml"))), {orchestration:config}, actor, proposal);
+    for (const controller of this.active.values()) controller.abort();
+    return this.status();
+  }
+  async proposeConfig(input: unknown, revision: string | undefined, actor: Actor) {
+    return this.serial(async () => {
+      if (revision && revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; refresh before proposing");
+      const config = this.validateConfiguration(input);
+      return this.store.proposeAgentConfig({config,baseConfig:this.config(),baseRevision:this.configHash(),proposedBy:actor}, actor);
     });
+  }
+  async applyConfigProposal(id: string, revision: string, actor: Actor) {
+    return this.serial(async () => {
+      this.human(actor);
+      const proposal = readAgentConfigProposal(this.store,id);
+      if (proposal.status !== "pending" || proposal.revision !== revision) throw new Problem(409, "Proposal changed; reload before applying");
+      if (proposal.baseRevision !== this.configHash()) throw new Problem(409, "Proposal is stale: configuration changed since it was proposed. Request a fresh proposal.");
+      return this.configureLocked(proposal.config, proposal.baseRevision, actor, {id,revision});
+    });
+  }
+  async discardConfigProposal(id: string, revision: string, actor: Actor) {
+    return this.serial(() => this.store.discardAgentConfigProposal(id,revision,actor));
   }
   private available(ticket: RecordFile) {
     if (

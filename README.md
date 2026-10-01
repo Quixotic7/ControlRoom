@@ -277,6 +277,7 @@ CLI examples (readable by default; add `--json`):
 ```sh
 controlroom agents status
 controlroom agents configure --file agent-config.json --etag CONFIG_REVISION
+controlroom agents propose --file agent-config.json --agent --actor "Project orchestrator"
 # assignment.json: {"ticket":"65","revision":"CURRENT_TICKET_ETAG","kind":"work","worker":"Worker 1"}
 controlroom agents queue --file assignment.json
 controlroom agents log RUN_ID
@@ -284,6 +285,8 @@ controlroom agents stop RUN_ID
 controlroom agents resume RUN_ID
 controlroom agents takeover RUN_ID --etag CURRENT_TICKET_ETAG
 ```
+
+Agents can stage a complete configuration with `agents propose --file CONFIG_JSON` or MCP `propose_agent_config`. Proposals appear in **Needs you** and **Agents**, with a current-versus-proposed diff and human-only **Apply proposal** / **Discard proposal** actions. Staging never changes live configuration or enables execution. A changed configuration makes old proposals stale; create a fresh proposal before applying. Proposal files in `.controlroom/records/agent-proposals/` retain proposer, decision and approver history. Applying commits configuration, proposal status and audit together.
 
 Configuration and recovery require a human actor. The designated orchestrator can delegate, stop runs, and explicitly take over a stopped worker ticket through CLI or MCP `agent_runs`, `delegate_ticket`, `stop_agent_run`, and `take_over_stopped_agent_run`. Takeover requires the current ticket etag and matching run assignment, and is refused while an owned process is active or its exit is uncertain. It retains the original run, checkout, logs, attempts, and assignment history; releases only the matching obsolete execution claim; and puts the new actor into the ordinary claim, progress, and human-review workflow under their own identity. It does not approve scope, reset attempts, accept work, merge, push, or deploy. Managed acceptance is admitted only from the service's verified review pipeline, not from a tool caller's claimed reviewer name. The same host-only authentication and write serialization apply to the HTTP surface.
 

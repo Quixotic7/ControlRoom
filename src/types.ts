@@ -240,6 +240,7 @@ export type Attachment = {
   createdAt: string;
 };
 export type ProjectState = {
+  agentConfigProposals?: import("./agent-config-proposals.js").AgentConfigProposalSummary[];
   config: Config;
   configRevision: string;
   records: RecordFile[];
