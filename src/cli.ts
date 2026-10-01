@@ -21,6 +21,7 @@ import {
   endpoint,
   filterRecords,
   parseArgs,
+  validatePositionals,
   parseSet,
   resolveActor,
   runVerification,
@@ -32,7 +33,14 @@ import { installSkills, packageSkills } from "./skills.js";
 import { boardSnapshot } from "./boardSnapshot.js";
 import type { Actor } from "./types.js";
 
-const parsed = parseArgs(process.argv.slice(2));
+const parsed = (() => {
+  try {
+    return parseArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+})();
 const { option, has, all, positional } = parsed;
 const cwd = path.resolve(option("project", process.cwd())!);
 const executionDirectory = path.resolve(option("worktree", process.cwd())!);
@@ -324,6 +332,18 @@ All commands accept --project PATH and --json. --no-start prevents automatic pro
 `;
 async function main() {
   const [command, id, extra] = positional;
+  if (has("help")) {
+    output(help);
+    return;
+  }
+  validatePositionals(positional);
+  if (
+    command === "agents" &&
+    id === "propose" &&
+    has("brief-file") &&
+    !option("brief-file")?.trim()
+  )
+    throw new Error("Provide a path for --brief-file");
   if (!command || command === "help") {
     output(help);
     return;

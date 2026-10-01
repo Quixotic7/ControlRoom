@@ -158,6 +158,8 @@ Tools: `next_ticket`, `get_context`, `list_tickets`, `get_ticket`, `claim_ticket
 
 Identity comes from the environment: set `CONTROLROOM_ACTOR` and `CONTROLROOM_ACTOR_KIND` in the agent's launch configuration. Without them, a known agent harness or a non-interactive terminal counts as an agent, so a forgotten flag can never turn an agent into a human. Every write takes the record's etag (its content hash) from `show` or `context`; a stale etag returns a conflict with the current record instead of overwriting another contributor. `--latest` opts into writing over the current version for fields nobody else edits. `review --run` executes the verification command and records its exit code and output on the ticket, refusing a failing run unless `--allow-failure` is given; the branch is recorded automatically and `--pr` and `--commits-since` link the code. Claims last 30 minutes and are renewed by repeating the claim. A claim or task status is not proof that a process is running.
 
+Unknown flags, missing option values, and extra positional arguments are errors. Use `--option=VALUE` when a value starts with `--` (for example, `--body=--literal-text`); quote file paths containing spaces. `agents propose --file config.json --brief-file "worker brief.md"` stages the complete Markdown brief for human review. Omitting `--brief-file` preserves the current brief; an empty file proposes clearing it.
+
 Control Room does not monitor LLM conversations or infer completion from source edits; updates rely on the agent following the protocol. The CLI starts the local service when necessary. Actor names are attribution, not a security boundary between programs under the same OS account.
 
 ## Files and worktrees

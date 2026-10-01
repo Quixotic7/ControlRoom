@@ -15,6 +15,7 @@ export const valueOptions = new Set([
   "--project",
   "--actor",
   "--body-file",
+  "--brief-file",
   "--body",
   "--file",
   "--patch",
@@ -47,16 +48,57 @@ export const valueOptions = new Set([
   "--port",
   "--worktree",
 ]);
+export const booleanOptions = new Set([
+  "--agent",
+  "--human",
+  "--json",
+  "--allow-failure",
+  "--archived",
+  "--brief",
+  "--dev",
+  "--headless",
+  "--lan",
+  "--latest",
+  "--local",
+  "--markdown",
+  "--mine",
+  "--no-manual-checks",
+  "--no-start",
+  "--open",
+  "--help",
+]);
 export function parseArgs(argv: string[]) {
   const positional: string[] = [];
   const values = new Map<string, string[]>();
   const flags = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (valueOptions.has(a)) {
-      values.set(a, [...(values.get(a) ?? []), argv[++i] ?? ""]);
-    } else if (a.startsWith("--")) flags.add(a);
-    else positional.push(a);
+    const token = argv[i];
+    if (token === "--") {
+      positional.push(...argv.slice(i + 1));
+      break;
+    }
+    const equals = token.startsWith("--") ? token.indexOf("=") : -1;
+    const name = equals < 0 ? token : token.slice(0, equals);
+    if (valueOptions.has(name)) {
+      let value: string;
+      if (equals >= 0) value = token.slice(equals + 1);
+      else {
+        const next = argv[i + 1];
+        if (next === undefined || next.startsWith("--"))
+          throw new Error(
+            `Option ${name} requires a value. Use ${name}=VALUE for a value beginning with --.`,
+          );
+        value = next;
+        i++;
+      }
+      values.set(name, [...(values.get(name) ?? []), value]);
+    } else if (booleanOptions.has(name)) {
+      if (equals >= 0) throw new Error(`Flag ${name} does not take a value`);
+      flags.add(name);
+    } else if (token.startsWith("-")) {
+      if (token === "-h") flags.add("--help");
+      else throw new Error(`Unknown option ${name}. Run controlroom help.`);
+    } else positional.push(token);
   }
   return {
     positional,
@@ -65,6 +107,80 @@ export function parseArgs(argv: string[]) {
     all: (name: string) => values.get(`--${name}`) ?? [],
     has: (name: string) => flags.has(`--${name}`) || values.has(`--${name}`),
   };
+}
+
+// Reject ignored positional arguments before a command can initialize a board
+// or contact its service. Counts include the command and any subcommand.
+export function validatePositionals(positional: string[]) {
+  const [command, subcommand] = positional;
+  if (!command) return;
+  const limits: Record<string, number> = {
+    help: 1,
+    list: 1,
+    snapshot: 1,
+    next: 1,
+    serve: 1,
+    stop: 1,
+    mcp: 1,
+    init: 1,
+    export: 1,
+    restore: 1,
+    migrate: 1,
+    install: 2,
+    upgrade: 2,
+    show: 2,
+    context: 2,
+    wait: 2,
+    create: 2,
+    update: 2,
+    handoff: 2,
+    questionnaire: 2,
+    progress: 2,
+    comment: 2,
+    ask: 2,
+    claim: 2,
+    release: 2,
+    review: 2,
+    move: 3,
+    relate: 3,
+    unrelate: 3,
+    merge: 3,
+    "merge-preview": 3,
+  };
+  let limit = limits[command];
+  if (command === "agents") {
+    if (!subcommand) limit = 1;
+    else if (["status", "propose", "configure", "queue"].includes(subcommand))
+      limit = 2;
+    else if (
+      [
+        "log",
+        "stop",
+        "resume",
+        "takeover",
+        "review-context",
+        "review",
+      ].includes(subcommand)
+    )
+      limit = 3;
+    else
+      throw new Error(
+        `Unknown agents command: ${subcommand}. Run controlroom help.`,
+      );
+  } else if (command === "skills") {
+    if (subcommand !== "install") throw new Error("Use skills install [DIR]");
+    limit = 3;
+  } else if (command === "import") {
+    if (!["brief", "stage"].includes(subcommand))
+      throw new Error("Use import brief|stage --file FILE");
+    limit = 2;
+  }
+  if (limit === undefined)
+    throw new Error(`Unknown command: ${command}. Run controlroom help.`);
+  if (positional.length > limit)
+    throw new Error(
+      `Unexpected positional argument for ${command}: ${JSON.stringify(positional[limit])}. Run controlroom help.`,
+    );
 }
 
 // -------------------------------------------------------------- identity
