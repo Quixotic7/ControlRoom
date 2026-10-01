@@ -301,6 +301,7 @@ export function Agents({
             <label>
               Verification time limit (minutes)
               <input
+                aria-label="Verification time limit (minutes)"
                 type="number"
                 min={1}
                 max={720}

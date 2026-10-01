@@ -2,13 +2,23 @@ import { test, expect } from "@playwright/test";
 const proposer = { name: "Proposal agent", kind: "agent" },
   human = { name: "Fixture human", kind: "human" };
 let originalConfig: unknown;
-test.beforeEach(async ({page}) => {
+let originalBrief: string;
+test.beforeEach(async ({ page }) => {
   await page.request.get("/");
-  originalConfig = (await (await page.request.get("/api/orchestration")).json()).config;
+  const snapshot = await (await page.request.get("/api/orchestration")).json();
+  originalConfig = snapshot.config;
+  originalBrief = snapshot.workerBrief.content;
 });
-test.afterEach(async ({page}) => {
+test.afterEach(async ({ page }) => {
   const current = await (await page.request.get("/api/orchestration")).json();
-  const response = await page.request.put("/api/orchestration/config", {data:{actor:human, revision:current.revision, config:originalConfig}});
+  const response = await page.request.put("/api/orchestration/config", {
+    data: {
+      actor: human,
+      revision: current.revision,
+      config: originalConfig,
+      workerBrief: originalBrief,
+    },
+  });
   expect(response.ok()).toBe(true);
 });
 test("proposal appears in Needs you, shows exact diff, and only applies on human click", async ({
@@ -95,4 +105,58 @@ test("stale proposal disables Apply and can be discarded without replacing live 
     (await (await page.request.get("/api/orchestration")).json()).config
       .maxTurns,
   ).toBe(43);
+});
+
+test("proposal previews companion and brief changes and updates the human editor on apply", async ({
+  page,
+}) => {
+  const current = await (await page.request.get("/api/orchestration")).json();
+  const config = {
+    ...current.config,
+    enabled: false,
+    companionRepositories: [
+      {
+        name: "juicebox",
+        repository: "/example/juicebox",
+        baseRef: "main",
+        relativePath: "../juicebox",
+        mode: "read-only",
+      },
+    ],
+  };
+  const response = await page.request.post("/api/orchestration/proposals", {
+    data: {
+      actor: proposer,
+      config,
+      revision: current.revision,
+      workerBrief: "# Proposed build guidance",
+    },
+  });
+  expect(response.ok()).toBe(true);
+  const p = await response.json();
+  await page.goto("/?page=agents");
+  const card = page.locator(".agent-config-proposal").filter({ hasText: p.id });
+  await expect(card).toContainText("../juicebox");
+  await expect(card).toContainText("# Proposed build guidance");
+  await card.getByRole("button", { name: "Apply proposal" }).click();
+  await expect(card).toHaveCount(0);
+  await page.getByText("Agent configuration", { exact: true }).click();
+  await expect(
+    page.getByLabel("Project worker brief", { exact: true }),
+  ).toHaveValue("# Proposed build guidance");
+  const group = page.getByRole("group", {
+    name: "Companion repositories",
+    exact: true,
+  });
+  await expect(group.getByLabel("Name", { exact: true })).toHaveValue(
+    "juicebox",
+  );
+  await group
+    .getByLabel("Relative to main", { exact: true })
+    .fill("../renamed");
+  await page.getByRole("button", { name: "Save agent configuration" }).click();
+  await expect(page.getByRole("status")).toContainText("Configuration saved");
+  const saved = await (await page.request.get("/api/orchestration")).json();
+  expect(saved.config.companionRepositories[0].relativePath).toBe("../renamed");
+  expect(saved.workerBrief.content).toBe("# Proposed build guidance");
 });

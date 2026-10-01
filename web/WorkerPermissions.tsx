@@ -41,6 +41,7 @@ export function WorkerPermissionsEditor({
       <label>
         Claude allowed tool patterns
         <textarea
+          aria-label="Claude allowed tool patterns"
           rows={6}
           value={value.claudeAllowedTools.join("\n")}
           placeholder={
@@ -64,6 +65,7 @@ export function WorkerPermissionsEditor({
       <label>
         Additional writable directories
         <textarea
+          aria-label="Additional writable directories"
           rows={4}
           value={value.additionalDirectories.join("\n")}
           placeholder="/absolute/path/to/evidence"
@@ -161,6 +163,7 @@ export function WorkerPermissionsEditor({
       <label>
         Project worker brief
         <textarea
+          aria-label="Project worker brief"
           rows={10}
           value={workerBrief}
           placeholder="Markdown guidance shared with every managed worker"

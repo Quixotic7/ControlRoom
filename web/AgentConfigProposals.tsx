@@ -98,7 +98,30 @@ export function AgentConfigProposals({
             ) : (
               <p>No configuration differences.</p>
             )}
-            {proposal.workerBrief !== undefined && proposal.workerBrief !== workerBrief && <div className="agent-proposal-diff"><table><caption>Worker brief changes</caption><thead><tr><th>Current</th><th>Proposed</th></tr></thead><tbody><tr><td><pre>{workerBrief || "(empty)"}</pre></td><td><pre>{proposal.workerBrief || "(empty)"}</pre></td></tr></tbody></table></div>}
+            {proposal.workerBrief !== undefined &&
+              proposal.workerBrief !== workerBrief && (
+                <div className="agent-proposal-diff">
+                  <table>
+                    <caption>Worker brief changes</caption>
+                    <thead>
+                      <tr>
+                        <th>Current</th>
+                        <th>Proposed</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <pre>{workerBrief || "(empty)"}</pre>
+                        </td>
+                        <td>
+                          <pre>{proposal.workerBrief || "(empty)"}</pre>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
             <div className="inline-actions">
               <button
                 className="button primary"

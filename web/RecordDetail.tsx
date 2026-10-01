@@ -697,7 +697,7 @@ export function RecordDetail({
       {label}
       <input
         key={baseline?.revision ?? "new"}
-        defaultValue={(m[key] ?? []).join(", ")}
+        defaultValue={(m[key] ?? (key === "repositories" ? ["main"] : [])).join(", ")}
         placeholder={placeholder}
         onChange={(e) => set(key, split(e.target.value))}
       />
@@ -1288,7 +1288,7 @@ export function RecordDetail({
                     {array(
                       "repositories",
                       "Writable repositories",
-                      "main, companion-name (empty keeps single-repo default)",
+                      "main, companion-name; clear to make every repository read-only",
                     )}
                     {field(
                       "worktree",
