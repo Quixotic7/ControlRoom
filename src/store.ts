@@ -8,6 +8,7 @@ import type { AgentReviewReceipt, Assignment } from "./orchestration-types.js";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import YAML from "yaml";
 import { z } from "zod";
 import { decisionProtocol } from "./decision-protocol.js";
@@ -2716,7 +2717,7 @@ export class Store {
       return readAgentConfigProposal(this,id);
     });
   }
-  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, options?: {proposal?: {id: string; revision: string}; workerBrief?: string}) {
+  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, options?: {proposal?: {id: string; revision: string}; workerBrief?: string; expectedBriefRevision?: string}) {
     return this.write(() => {
       if ("orchestration" in patch && actor?.kind !== "human")
         throw new Problem(
@@ -2760,15 +2761,18 @@ export class Store {
       const {proposal,workerBrief} = options ?? {};
       if (workerBrief !== undefined && (actor?.kind !== "human" || !patch.orchestration)) throw new Problem(403, "Only a human can configure the worker brief");
       const briefPath = "agents/worker-brief.md", briefExists = fs.existsSync(this.file(briefPath)), briefBefore = briefExists ? read(this.file(briefPath)) : "";
+      if (options?.expectedBriefRevision && options.expectedBriefRevision !== hash(briefBefore)) throw new Problem(409, "Worker brief changed; reload first");
       const briefFiles = workerBrief !== undefined ? [{path:briefPath,before:briefBefore,after:workerBrief,existed:briefExists}] : [];
       if (proposal) {
         if (actor?.kind !== "human" || !patch.orchestration) throw new Problem(403, "Only a human can apply an agent configuration proposal");
         const old = readAgentConfigProposal(this, proposal.id);
         if (old.status !== "pending" || old.revision !== proposal.revision) throw new Problem(409, "Proposal changed; reload before applying");
+        if (!isDeepStrictEqual(patch.orchestration, old.config) || workerBrief !== old.workerBrief) throw new Problem(409, "Applied configuration must exactly match the reviewed proposal");
+        if (!isDeepStrictEqual({...old.baseConfig,...(before as Record<string,unknown> | undefined)},old.baseConfig) || hash(JSON.stringify({config:old.baseConfig,workerBrief:hash(briefBefore)})) !== old.baseRevision) throw new Problem(409, "Proposal is stale: configuration or worker brief changed");
         const {revision: _, ...data} = old;
         const accepted = {...data,status:"applied",decidedBy:actor,decidedAt:now()};
         const historyPath = "records/history.jsonl", historyBefore = fs.existsSync(this.file(historyPath)) ? read(this.file(historyPath)) : "";
-        const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal applied",at:now(),before:{orchestration:before},after:{orchestration:patch.orchestration,proposalId:old.id,proposedBy:old.proposedBy,approvedBy:actor,proposalRevision:old.revision}};
+        const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal applied",at:now(),before:{orchestration:before,workerBrief:briefBefore},after:{orchestration:patch.orchestration,workerBrief:workerBrief ?? briefBefore,proposalId:old.id,proposedBy:old.proposedBy,approvedBy:actor,proposalRevision:old.revision}};
         this.commitFiles([
           {path:"config.yml",before:s,after:YAML.stringify(c)},
           ...briefFiles,

@@ -24,7 +24,7 @@ export function backup(store: Store) {
       ...walk(store.file("records")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("assets")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("staging")).map((f) => path.relative(store.dir, f)),
-      ...walk(store.file("agents")).map((f) => path.relative(store.dir, f)),
+      ...(fs.existsSync(store.file("agents/worker-brief.md")) ? ["agents/worker-brief.md"] : []),
     ];
     let size = 0;
     const files = paths.map((p) => {

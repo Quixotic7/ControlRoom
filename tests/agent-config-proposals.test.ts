@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {backup,restore} from "../src/transfer.js";
+import {hash} from "../src/files.js";
 import { Store } from "../src/store.js";
 import { Orchestrator, defaultOrchestration } from "../src/orchestration.js";
 import {
@@ -200,4 +202,28 @@ test("worker brief proposal applies atomically and brief edits invalidate propos
   const preserved = await manager.proposeConfig(manager.config(),undefined,agent);
   await manager.applyConfigProposal(preserved.id,preserved.revision,human);
   assert.equal(manager.workerBrief().content,"Human edit");
+});
+
+
+test("store refuses proposal substitution and changed brief under the write lock", async(t) => {
+  const {store,manager} = fixture(t);
+  const p=await manager.proposeConfig(manager.config(),undefined,agent,"Proposed brief");
+  const revision=()=>hash(fs.readFileSync(store.file("config.yml"),"utf8"));
+  await assert.rejects(store.updateConfig(revision(),{orchestration:{...p.config,maxTurns:31}},human,{proposal:{id:p.id,revision:p.revision},workerBrief:p.workerBrief}),/exactly match/);
+  await assert.rejects(store.updateConfig(revision(),{orchestration:p.config},human,{proposal:{id:p.id,revision:p.revision},workerBrief:"Different"}),/exactly match/);
+  fs.mkdirSync(store.file("agents"),{recursive:true});fs.writeFileSync(store.file("agents/worker-brief.md"),"External edit");
+  await assert.rejects(store.updateConfig(revision(),{orchestration:p.config},human,{proposal:{id:p.id,revision:p.revision},workerBrief:p.workerBrief}),/stale/);
+  assert.equal(readAgentConfigProposal(store,p.id).status,"pending");
+});
+
+
+test("backup and restore preserve pending proposals and worker brief",async(t)=>{
+ const a=fixture(t),b=fixture(t);
+ await a.manager.configure(a.manager.config(),a.manager.status().revision,human,"Existing guidance");
+ const p=await a.manager.proposeConfig(a.manager.config(),undefined,agent,"Proposed guidance");
+ const pack=await backup(a.store);await restore(b.store,pack);
+ assert.equal(b.manager.workerBrief().content,"Existing guidance");
+ assert.equal(readAgentConfigProposal(b.store,p.id).workerBrief,"Proposed guidance");
+ await b.manager.applyConfigProposal(p.id,p.revision,human);
+ assert.equal(b.manager.workerBrief().content,"Proposed guidance");
 });

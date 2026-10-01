@@ -458,7 +458,7 @@ export class Orchestrator {
     this.human(actor);
     if (revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; reload first");
     const config = validateConfiguration(input, workerBrief);
-    await this.store.updateConfig(hash(read(this.store.file("config.yml"))), {orchestration:config}, actor, {proposal,workerBrief});
+    await this.store.updateConfig(hash(read(this.store.file("config.yml"))), {orchestration:config}, actor, {proposal,workerBrief,expectedBriefRevision:this.workerBrief().revision});
     for (const controller of this.active.values()) controller.abort();
     return this.status();
   }
