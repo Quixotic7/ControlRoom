@@ -578,7 +578,19 @@ export class Orchestrator {
   log(id: string) {
     const run = this.run(id),
       directory = this.store.file(`.local/orchestration/${run.id}`);
-    return ["agent.log", "verification.log"]
+    const agentLogs = fs.existsSync(directory)
+      ? fs
+          .readdirSync(directory)
+          .filter((name) => /^agent(?:-resume-\d+)?\.log$/.test(name))
+          .sort((a, b) => {
+            const number = (name: string) =>
+              name === "agent.log"
+                ? 0
+                : Number(name.match(/^agent-resume-(\d+)\.log$/)?.[1] ?? 0);
+            return number(a) - number(b);
+          })
+      : [];
+    return [...agentLogs, "verification.log"]
       .map((name) =>
         fs.existsSync(path.join(directory, name))
           ? `## ${name}\n${read(path.join(directory, name)).slice(-60000)}`
@@ -1007,7 +1019,7 @@ export class Orchestrator {
     this.active.set(run.id, controller);
     const task = this.perform(run, controller.signal, externalResult)
       .catch(async (e) => {
-        if (e instanceof AgentLimitError) {
+        if (e instanceof AgentLimitError && !controller.signal.aborted) {
           this.save(run, {
             state: "waiting_input",
             failureKind: "limit",
@@ -1259,7 +1271,12 @@ export class Orchestrator {
             environment:
               run.kind === "work" ? this.workerEnvironment(config) : undefined,
             onLaunch: (launch) => this.save(run, { launch }),
-            log: path.join(directory, "agent.log"),
+            log: path.join(
+              directory,
+              run.resumeCount
+                ? `agent-resume-${run.resumeCount}.log`
+                : "agent.log",
+            ),
             onStart: (pid) =>
               this.save(run, {
                 pid,
@@ -1643,6 +1660,8 @@ export class Orchestrator {
       this.active.get(id)?.abort();
       this.save(run, {
         state: "interrupted",
+        failureKind: undefined,
+        limitReason: undefined,
         error: "Stopped explicitly; checkout and logs retained",
       });
       return run;
@@ -1736,10 +1755,16 @@ export class Orchestrator {
       )
     )
       throw new Problem(409, "Only paused or failed runs can resume");
-    if (this.originalProcessAlive(run))
+    const processState = this.stoppedProcessState(run);
+    if (processState === "active")
       throw new Problem(
         409,
-        "Original process is still alive; inspect and stop it before resuming",
+        "Original process or one of its owned descendants is still alive; inspect and stop it before resuming",
+      );
+    if (processState === "uncertain")
+      throw new Problem(
+        409,
+        "Original process exit cannot be verified; inspect and stop it before resuming",
       );
     const ticket = this.store.get(run.ticket);
     if (limitResume) {
@@ -1770,6 +1795,7 @@ export class Orchestrator {
         state: "queued",
         failureKind: undefined,
         limitReason: undefined,
+        resumeCount: (run.resumeCount ?? 0) + 1,
         error: "Resuming retained provider session after configured limit",
       });
       return run;

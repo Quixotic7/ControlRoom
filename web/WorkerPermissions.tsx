@@ -56,7 +56,9 @@ export function WorkerPermissionsEditor({
         />
         <small>
           One Claude <code>--allowedTools</code> pattern per line. These are
-          passed only to Claude work runs. Codex has no equivalent per-run
+          passed only to Claude work runs and add grants; existing Claude
+          settings and ambient permissions still apply, so this is not a
+          complete restrictive allow-list. Codex has no equivalent per-run
           command allow-list flag: it keeps its workspace sandbox and any
           trusted ambient Codex rules. Control Room does not create or broaden
           those rules.

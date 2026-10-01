@@ -80,6 +80,7 @@ export type ProcessResult = {
   output: string;
   structured?: unknown;
   limitReason?: "turns";
+  permissionDenials?: string[];
 };
 export class AgentLimitError extends Error {
   constructor(
@@ -118,6 +119,7 @@ export const execute: Execute = (o) =>
       pending = "",
       structured: unknown,
       limitReason: ProcessResult["limitReason"],
+      permissionDenials: string[] = [],
       total = 0,
       stopped = "",
       killTimer: NodeJS.Timeout | undefined;
@@ -158,6 +160,43 @@ export const execute: Execute = (o) =>
     child.on("spawn", () => {
       if (child.pid) o.onStart(child.pid);
     });
+    const parseEvent = (line: string) => {
+      try {
+        const e = JSON.parse(line);
+        // Store event types only. Raw provider payloads remain in the private local log.
+        const type = String(e.type ?? "event").slice(0, 100);
+        o.onEvent(
+          type,
+          typeof (e.thread_id ?? e.session_id) === "string"
+            ? (e.thread_id ?? e.session_id)
+            : undefined,
+        );
+        if (e.type === "result" && e.structured_output)
+          structured = e.structured_output;
+        if (e.type === "result" && Array.isArray(e.permission_denials))
+          permissionDenials = [
+            ...new Set<string>(
+              e.permission_denials
+                .map((denial: unknown) =>
+                  typeof denial === "object" && denial
+                    ? String(
+                        (denial as Record<string, unknown>).tool_name ??
+                          "unknown tool",
+                      ).slice(0, 100)
+                    : "unknown tool",
+                )
+                .slice(0, 20),
+            ),
+          ];
+        if (
+          e.type === "result" &&
+          /(?:max[_ -]?turns|turn[_ -]?limit)/i.test(
+            String(e.subtype ?? e.error ?? ""),
+          )
+        )
+          limitReason = "turns";
+      } catch {}
+    };
     const collect = (chunk: Buffer, events: boolean) => {
       const text = chunk.toString("utf8");
       total += chunk.length;
@@ -168,28 +207,7 @@ export const execute: Execute = (o) =>
       pending += text;
       const lines = pending.split("\n");
       pending = lines.pop()!.slice(-500000);
-      for (const line of lines) {
-        try {
-          const e = JSON.parse(line);
-          // Store event types only. Raw provider payloads remain in the private local log.
-          const type = String(e.type ?? "event").slice(0, 100);
-          o.onEvent(
-            type,
-            typeof (e.thread_id ?? e.session_id) === "string"
-              ? (e.thread_id ?? e.session_id)
-              : undefined,
-          );
-          if (e.type === "result" && e.structured_output)
-            structured = e.structured_output;
-          if (
-            e.type === "result" &&
-            /(?:max[_ -]?turns|turn[_ -]?limit)/i.test(
-              String(e.subtype ?? e.error ?? ""),
-            )
-          )
-            limitReason = "turns";
-        } catch {}
-      }
+      for (const line of lines) parseEvent(line);
     };
     child.stdout.on("data", (c) => collect(c, true));
     child.stderr.on("data", (c) => collect(c, false));
@@ -205,9 +223,17 @@ export const execute: Execute = (o) =>
       // A CLI may leave tool descendants behind even after closing stdout.
       kill("SIGKILL");
       o.signal.removeEventListener("abort", abort);
+      if (pending) parseEvent(pending);
       fs.closeSync(fd);
       if (error || stopped) reject(error ?? new Error(stopped));
-      else resolve({ code: code ?? -1, output, structured, limitReason });
+      else
+        resolve({
+          code: code ?? -1,
+          output,
+          structured,
+          limitReason,
+          permissionDenials,
+        });
     });
   });
 
@@ -243,7 +269,10 @@ export async function runAgent(
             ...(options.sessionId ? ["resume", options.sessionId] : []),
             "--json",
             ...(options.sessionId
-              ? []
+              ? [
+                  "-c",
+                  `sandbox_mode="${kind === "work" ? "workspace-write" : "read-only"}"`,
+                ]
               : [
                   "--color",
                   "never",
@@ -320,10 +349,17 @@ export async function runAgent(
       },
     });
   } catch (error) {
-    if (/time limit/i.test(String(error)))
+    if (
+      error instanceof Error &&
+      error.message === "Run exceeded its time limit"
+    )
       throw new AgentLimitError("timeout", sessionId);
     throw error;
   }
+  if (result.permissionDenials?.length)
+    throw new Error(
+      `Provider denied permission to use ${result.permissionDenials.join(", ")}. Review the managed worker grants and ambient provider policy, then resolve the ticket question to retry.`,
+    );
   if (result.limitReason)
     throw new AgentLimitError(result.limitReason, sessionId);
   if (result.code !== 0)

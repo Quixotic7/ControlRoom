@@ -9,6 +9,7 @@ import {
   AgentLimitError,
   execute,
   git,
+  processStart,
   runAgent,
   type Execute,
 } from "../src/agent-runner.js";
@@ -52,7 +53,11 @@ let prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('e
  console.log(JSON.stringify({type:'thread.started',thread_id:'fixture-session'}));
  const at = args.indexOf('--output-last-message');
  if (at >= 0) fs.writeFileSync(args[at+1], JSON.stringify(value));
- else console.log(JSON.stringify({type:'result',structured_output:value}));
+ else {
+   const event = JSON.stringify({type:'result',structured_output:value,...(process.env.FIXTURE_DENY_TOOL ? {permission_denials:[{tool_name:process.env.FIXTURE_DENY_TOOL,tool_use_id:'denied-fixture',tool_input:{secret:'never surface this value'}}]} : {})});
+   if (process.env.FIXTURE_DENY_TOOL) process.stdout.write(event);
+   else console.log(event);
+ }
 });
 `,
     { mode: 0o755 },
@@ -253,7 +258,9 @@ test("read-only head movement is rejected before writable repositories are commi
   await until(f.manager, () =>
     f.manager.status().runs.some((run) => run.state === "waiting_input"),
   );
-  const run = f.manager.status().runs.find((candidate) => candidate.kind === "work")!;
+  const run = f.manager
+    .status()
+    .runs.find((candidate) => candidate.kind === "work")!;
   assert.match(run.error ?? "", /Read-only repository companion changed/);
   assert.equal(git(run.worktree!, "rev-parse", "HEAD"), run.baseCommit);
 });
@@ -1622,6 +1629,112 @@ test("managed process environment cannot override identity or provider policy ro
   }
 });
 
+test("execute passes configured values to a real child while forcing managed identity", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cr-child-env-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const response = await execute({
+    command: process.execPath,
+    args: [
+      "-e",
+      `process.stdout.write(JSON.stringify({
+        cache: process.env.MODULE_CACHE_PATH,
+        managed: process.env.CONTROLROOM_MANAGED,
+        controlActor: process.env.CONTROLROOM_ACTOR,
+        controlKind: process.env.CONTROLROOM_ACTOR_KIND,
+        boardActor: process.env.WORKBOARD_ACTOR,
+        boardKind: process.env.WORKBOARD_ACTOR_KIND,
+      }) + "\\n")`,
+    ],
+    cwd: directory,
+    input: "",
+    timeout: 10_000,
+    signal: new AbortController().signal,
+    log: path.join(directory, "environment.log"),
+    environment: {
+      MODULE_CACHE_PATH: "/tmp/managed-cache",
+      CONTROLROOM_MANAGED: "0",
+      CONTROLROOM_ACTOR: "Spoofed human",
+      CONTROLROOM_ACTOR_KIND: "human",
+      WORKBOARD_ACTOR: "Spoofed human",
+      WORKBOARD_ACTOR_KIND: "human",
+    },
+    actorName: "Managed Worker",
+    onEvent: () => {},
+    onStart: () => {},
+  });
+  assert.deepEqual(JSON.parse(response.output.trim()), {
+    cache: "/tmp/managed-cache",
+    managed: "1",
+    controlActor: "Managed Worker",
+    controlKind: "agent",
+    boardActor: "Managed Worker",
+    boardKind: "agent",
+  });
+});
+
+test("an explicit provider permission denial stops a structured ready result", async (t) => {
+  const f = await fixture(t);
+  const config = structuredClone(f.config);
+  config.workerPermissions = {
+    claudeAllowedTools: ["Read"],
+    additionalDirectories: [],
+    environment: [
+      { name: "FIXTURE_DENY_TOOL", source: "literal", value: "Bash" },
+    ],
+  };
+  await f.manager.configure(config, f.manager.status().revision, human);
+  const ticket = await f.create("Denied command needs human attention");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 2",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => run.state === "waiting_input" && !!run.questionId,
+  );
+  assert.match(run.error ?? "", /denied permission to use Bash/);
+  assert.doesNotMatch(run.error ?? "", /never surface/);
+  const question = f.store.comments().find((row) => row.id === run.questionId)!;
+  assert.match(question.body, /denied permission to use Bash/);
+  assert.doesNotMatch(question.body, /never surface/);
+});
+
+test("permission denial takes precedence over a simultaneous turn limit", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cr-denied-limit-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  await assert.rejects(
+    runAgent(
+      { name: "Claude", provider: "claude", executable: "claude", model: "" },
+      "work",
+      "prompt",
+      {},
+      {
+        directory,
+        cwd: directory,
+        timeout: 10_000,
+        signal: new AbortController().signal,
+        log: path.join(directory, "agent.log"),
+        onEvent: () => {},
+        onStart: () => {},
+        maxTurns: 10,
+      },
+      async () => ({
+        code: 1,
+        output: "",
+        structured: result(),
+        limitReason: "turns",
+        permissionDenials: ["Bash"],
+      }),
+    ),
+    (error: unknown) =>
+      !(error instanceof AgentLimitError) &&
+      String(error).includes("denied permission to use Bash"),
+  );
+});
+
 test("profiles can use 400 turns and six hours while verification has its own timeout", async (t) => {
   const calls: Parameters<Execute>[0][] = [];
   const runner: Execute = async (options) => {
@@ -1671,6 +1784,7 @@ test("a turn-limited run resumes its retained session without a new attempt", as
     if (options.input.startsWith("Implement") && ++workerCalls === 1) {
       options.onStart(987_654_321);
       options.onEvent("thread.started", "retained-session");
+      fs.writeFileSync(options.log, "limited invocation retained\n");
       throw new AgentLimitError("turns", "retained-session");
     }
     return execute(options);
@@ -1695,6 +1809,17 @@ test("a turn-limited run resumes its retained session without a new attempt", as
     f.manager.resume(run.id, worker),
     /designated orchestrator/,
   );
+  run.lastProcess = {
+    pid: process.pid,
+    startedAt: processStart(process.pid),
+  };
+  await assert.rejects(f.manager.resume(run.id, reviewer), /still alive/);
+  run.lastProcess = { pid: process.pid };
+  await assert.rejects(
+    f.manager.resume(run.id, reviewer),
+    /exit cannot be verified/,
+  );
+  run.lastProcess = { pid: 987_654_321, startedAt: "not running" };
   const resumed = await f.manager.resume(run.id, reviewer);
   assert.equal(resumed, run);
   assert.equal(run.attempt, attempt);
@@ -1712,6 +1837,41 @@ test("a turn-limited run resumes its retained session without a new attempt", as
   )!;
   assert.equal(resumedWorker.cwd, worktree);
   assert.equal(workerCalls, 2);
+  const directory = f.store.file(`.local/orchestration/${run.id}`);
+  assert.equal(
+    fs.readFileSync(path.join(directory, "agent.log"), "utf8"),
+    "limited invocation retained\n",
+  );
+  assert.ok(fs.existsSync(path.join(directory, "agent-resume-1.log")));
+  assert.match(f.manager.log(run.id), /## agent\.log/);
+  assert.match(f.manager.log(run.id), /## agent-resume-1\.log/);
+});
+
+test("an explicit stop wins a race with a provider limit result", async (t) => {
+  let reportLimit!: () => void;
+  const runner: Execute = (options) =>
+    new Promise((_resolve, reject) => {
+      options.onStart(987_654_321);
+      options.onEvent("thread.started", "retained-session");
+      reportLimit = () =>
+        reject(new AgentLimitError("turns", "retained-session"));
+    });
+  const f = await fixture(t, runner);
+  const ticket = await f.create("Stop wins limit race");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () => run.state === "running");
+  await f.manager.stop(run.id, human);
+  reportLimit();
+  await until(f.manager, () => (f.manager as any).active.size === 0);
+  assert.equal(run.state, "interrupted");
+  assert.equal(run.failureKind, undefined);
+  assert.equal(run.limitReason, undefined);
 });
 
 test("limit resume keeps stale-context and missing-session safeguards", async (t) => {
@@ -1740,6 +1900,13 @@ test("limit resume keeps stale-context and missing-session safeguards", async (t
   await assert.rejects(
     f.manager.resume(run.id, human),
     /no retained provider session/,
+  );
+  await f.manager.stop(run.id, human);
+  assert.equal(run.failureKind, undefined);
+  assert.equal(run.limitReason, undefined);
+  await assert.rejects(
+    f.manager.resume(run.id, { name: f.config.reviewer.name, kind: "agent" }),
+    /human must configure or recover/i,
   );
 });
 
@@ -1795,6 +1962,7 @@ test("agent runners pass retained sessions to both providers and classify turn l
   ]);
   assert.equal(seen[0].args.includes("--sandbox"), false);
   assert.equal(seen[0].args.includes("--color"), false);
+  assert.ok(seen[0].args.includes('sandbox_mode="workspace-write"'));
   assert.ok(seen[0].args.includes("--output-schema"));
   assert.ok(seen[0].args.includes("--output-last-message"));
   assert.deepEqual(seen[1].args.slice(0, 3), [
@@ -1803,4 +1971,16 @@ test("agent runners pass retained sessions to both providers and classify turn l
     "prior-session",
   ]);
   assert.equal(seen[1].args[seen[1].args.indexOf("--max-turns") + 1], "400");
+  await assert.rejects(
+    runAgent(
+      { name: "Codex", provider: "codex", executable: "codex", model: "" },
+      "review",
+      "prompt",
+      {},
+      options,
+      runner,
+    ),
+    AgentLimitError,
+  );
+  assert.ok(seen[2].args.includes('sandbox_mode="read-only"'));
 });
