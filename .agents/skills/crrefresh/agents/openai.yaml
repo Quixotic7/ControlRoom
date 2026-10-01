@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refresh Control Room"
+  short_description: "Read board changes without changing tickets"
+  default_prompt: "Use $crrefresh to refresh this project’s Control Room board and summarize changes without modifying it."
