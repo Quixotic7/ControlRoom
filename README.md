@@ -315,3 +315,31 @@ Choose **Orchestration location → Existing chat orchestrator** and name that c
 The named chat reviewer retrieves `agents review-context RUN` (MCP `agent_review_context`), inspects the returned worktree/base diff and ticket context, then sends `agents review RUN --file review.json` (MCP `review_agent_submission`). The JSON contains the returned `token` and `result: {outcome, summary, criteria, evidence, question}`. Outcome is accept, changes or human; use an empty question when none is needed. The service reruns verification, enforces mandatory human review and scope, and rejects stale context/code/configuration. Review tokens confer no scope or role authority. Reviewer identity is workflow attribution on the shared local account.
 
 Worker selection is deliberate: every work assignment requires an explicit configured worker. The orchestrator chooses based on task complexity, uncertainty, risk and observed model performance, recording the reason in the ticket. The UI shows each worker's model and leaves delegation disabled until one is selected. Managed planners receive the model roster and include their selection reasons in child descriptions. There is no round-robin or automatic substitute when a profile is removed; retries retain the selected worker.
+
+### Test a Claude profile before delegating
+
+In **Agents → Test a Claude profile**, choose **Test this profile**, select the
+worker, planner or reviewer response schema, and explicitly confirm provider
+usage. The check runs the saved CLI executable/model in an empty workspace with
+tools, MCP servers and customizations disabled. It is limited to five turns and
+two minutes, never claims a ticket, and does not enable orchestration. It checks
+startup and a valid structured response, not project build permissions. Save
+configuration edits first; changed settings make an earlier result stale.
+Only a local human can launch this check. Managed work/verification must be idle.
+
+Claude schemas use draft-07 vocabulary without a `$schema` declaration; Codex
+keeps its existing schema dialect. Early provider exits include a bounded,
+redacted stderr excerpt in the managed ticket question. Full logs stay local.
+
+The native regression check is opt-in because it uses provider quota. Export the
+chosen saved Claude profile (name, provider, executable and model) to a local
+JSON file, then run from the source checkout:
+
+```sh
+CONTROLROOM_NATIVE_PROFILE_TEST=1 CONTROLROOM_NATIVE_PROFILE_FILE=/absolute/claude-profile.json \
+  .runtime/node_modules/node/bin/node --import tsx --test \
+  --test-name-pattern='native configured Claude' tests/profile-test.test.ts
+```
+
+Normal automated tests use local subprocess fixtures and do not spend provider
+quota. A successful schema check does not resume a paused managed assignment.

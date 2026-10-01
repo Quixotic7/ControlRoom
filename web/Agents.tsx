@@ -1,3 +1,5 @@
+import { ProfileSmokeTest } from "./ProfileSmokeTest";
+import type { ProfileTest } from "../src/orchestration";
 import { AgentConfigProposals } from "./AgentConfigProposals";
 import type { AgentConfigProposal } from "../src/agent-config-proposals";
 import { useEffect, useRef, useState } from "react";
@@ -12,6 +14,7 @@ import { WorkerPermissionsEditor } from "./WorkerPermissions";
 import "./agents.css";
 import { CompanionRepositories } from "./CompanionRepositories";
 type Snapshot = {
+  profileTest?: ProfileTest;
   proposals?: {
     proposals: AgentConfigProposal[];
     errors: { path: string; message: string }[];
@@ -171,6 +174,17 @@ export function Agents({
           </article>
         ))}
       </div>
+      <ProfileSmokeTest
+        config={snapshot.config}
+        revision={snapshot.revision}
+        latest={snapshot.profileTest}
+        disabled={
+          busy ||
+          JSON.stringify(draft) !== JSON.stringify(snapshot.config) ||
+          workerBrief !== snapshot.workerBrief.content
+        }
+        refresh={load}
+      />
       <AgentConfigProposals
         proposals={snapshot.proposals?.proposals ?? []}
         errors={snapshot.proposals?.errors ?? []}

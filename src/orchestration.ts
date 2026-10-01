@@ -16,6 +16,7 @@ import {
   processGroupAlive,
   runAgent,
   AgentLimitError,
+  redactStartupDiagnostic,
   type Execute,
 } from "./agent-runner.js";
 import type { Actor, RecordFile } from "./types.js";
@@ -137,6 +138,30 @@ const planSchema = z
       .max(20),
   })
   .strict();
+// Claude Code's validator does not load the default 2020-12 meta-schema.
+// Generate the older dialect rather than just relabelling unsupported keywords.
+export function agentResultJSONSchema(
+  kind: "plan" | "work" | "review",
+  provider: AgentProfile["provider"],
+) {
+  const schema = z.toJSONSchema(
+    kind === "plan" ? planSchema : resultSchema,
+    provider === "claude" ? { target: "draft-7" } : {},
+  );
+  if (provider === "claude") delete schema.$schema;
+  return schema;
+}
+export type ProfileTest = {
+  id: string;
+  profile: string;
+  model: string;
+  revision: string;
+  kind: "plan" | "work" | "review";
+  state: "running" | "passed" | "failed";
+  startedAt: string;
+  completedAt?: string;
+  error?: string;
+};
 const liveStates = new Set(["launching", "running", "verifying"]);
 const activeStates = new Set([
   "awaiting_review",
@@ -245,6 +270,9 @@ export function validateConfiguration(
 export class Orchestrator {
   private runs: ManagedRun[] = [];
   private active = new Map<string, AbortController>();
+  private profileTest?: ProfileTest;
+  private profileTestController?: AbortController;
+  private profileTestJob?: Promise<ProfileTest>;
   private tasks = new Set<Promise<void>>();
   private queue: Promise<unknown> = Promise.resolve();
   private timer?: NodeJS.Timeout;
@@ -564,6 +592,7 @@ export class Orchestrator {
   }
   status() {
     return {
+      profileTest: this.profileTest,
       proposals: readAgentConfigProposals(this.store),
       config: this.config(),
       revision: this.configHash(),
@@ -580,6 +609,148 @@ export class Orchestrator {
       integration:
         "Acceptance does not merge code. Merge the retained worker branch into the configured base before dependent work can start.",
     };
+  }
+  async testProfile(input: unknown, actor: Actor): Promise<ProfileTest> {
+    // Reserve under the same queue as delegation/configuration, then release the
+    // queue while the bounded native request runs so status stays readable.
+    const selected = await this.serial(() => {
+      this.human(actor);
+      const request = z
+        .object({
+          profile: z.string(),
+          kind: z.enum(["work", "plan", "review"]),
+          revision: z.string(),
+          confirmUsage: z.literal(true),
+        })
+        .strict()
+        .parse(input);
+      if (this.closing || this.store.branchState().branchChanged)
+        throw new Problem(
+          409,
+          "Project is closing or needs branch reconciliation",
+        );
+      if (request.revision !== this.configHash())
+        throw new Problem(409, "Saved profiles changed; reload before testing");
+      if (
+        this.profileTestController ||
+        this.active.size ||
+        this.runs.some((r) =>
+          [
+            "queued",
+            "launching",
+            "running",
+            "verifying",
+            "awaiting_review",
+          ].includes(r.state),
+        )
+      )
+        throw new Problem(
+          409,
+          "Wait for managed work and verification to finish before testing a profile",
+        );
+      const config = this.config();
+      const index = /^worker:(\d+)$/.exec(request.profile);
+      const profile =
+        request.profile === "reviewer"
+          ? config.reviewer
+          : index
+            ? config.workers[Number(index[1])]
+            : undefined;
+      if (!profile || profile.provider !== "claude")
+        throw new Problem(422, "Choose a saved Claude profile");
+      if (request.profile === "reviewer" && config.reviewerMode === "chat")
+        throw new Problem(
+          422,
+          "The existing chat reviewer has no native profile to test",
+        );
+      this.profileTestController = new AbortController();
+      this.profileTest = {
+        id: uid("profile-test"),
+        profile: profile.name,
+        model: profile.model,
+        revision: request.revision,
+        kind: request.kind,
+        state: "running",
+        startedAt: now(),
+      };
+      return {
+        request,
+        profile,
+        controller: this.profileTestController,
+        test: this.profileTest,
+      };
+    });
+    const job = (async () => {
+      const { request, profile, controller, test } = selected;
+      try {
+        const directory = this.store.file(`.local/orchestration/${test.id}`);
+        const cwd = path.join(directory, "workspace");
+        fs.mkdirSync(cwd, { recursive: true, mode: 0o700 });
+        const desired =
+          request.kind === "plan"
+            ? { summary: "Profile schema check", question: "", tasks: [] }
+            : {
+                outcome: request.kind === "review" ? "accept" : "ready",
+                summary: "Profile schema check",
+                criteria: "Structured response only",
+                evidence: "No project work performed",
+                question: "",
+              };
+        const raw = await runAgent(
+          profile,
+          request.kind,
+          `Return this exact structured result without using tools: ${JSON.stringify(desired)}`,
+          agentResultJSONSchema(request.kind, profile.provider),
+          {
+            directory,
+            cwd,
+            signal: controller.signal,
+            timeout: 120000,
+            maxTurns: 5,
+            smokeTest: true,
+            log: path.join(directory, "agent.log"),
+            onStart: () => {},
+            onEvent: () => {},
+          },
+          this.runner,
+        );
+        const result = (
+          request.kind === "plan" ? planSchema : resultSchema
+        ).parse(raw);
+        if (
+          "tasks" in result
+            ? result.tasks.length !== 0 || !!result.question
+            : result.outcome !== desired.outcome || !!result.question
+        )
+          throw new Error(
+            "Profile did not return the requested smoke-test result",
+          );
+        if (controller.signal.aborted || request.revision !== this.configHash())
+          throw new Error(
+            "Profile test was cancelled or saved configuration changed",
+          );
+        this.profileTest = { ...test, state: "passed", completedAt: now() };
+      } catch (error) {
+        // Never include raw structured output (including Zod input diagnostics).
+        const message =
+          error instanceof z.ZodError
+            ? "Provider returned a result that does not match the managed schema"
+            : error instanceof Error
+              ? error.message
+              : "Profile test failed";
+        this.profileTest = {
+          ...test,
+          state: "failed",
+          completedAt: now(),
+          error: redactStartupDiagnostic(message),
+        };
+      } finally {
+        this.profileTestController = undefined;
+      }
+      return this.profileTest!;
+    })();
+    this.profileTestJob = job;
+    return job;
   }
   log(id: string) {
     const run = this.run(id),
@@ -645,6 +816,11 @@ export class Orchestrator {
     workerBrief?: string,
   ) {
     this.human(actor);
+    if (this.profileTestController)
+      throw new Problem(
+        409,
+        "Wait for the profile test to finish before changing settings",
+      );
     if (revision !== this.configHash())
       throw new Problem(409, "Orchestration settings changed; reload first");
     const config = this.validateProjectConfiguration(input, workerBrief);
@@ -1010,6 +1186,7 @@ export class Orchestrator {
     return this.serial(async () => {
       if (
         this.closing ||
+        !!this.profileTestController ||
         !this.config().enabled ||
         this.store.branchState().branchChanged
       )
@@ -1330,7 +1507,7 @@ export class Orchestrator {
           run.agent,
           run.kind,
           prompt,
-          z.toJSONSchema(run.kind === "plan" ? planSchema : resultSchema),
+          agentResultJSONSchema(run.kind, run.agent.provider),
           {
             directory,
             cwd: run.worktree!,
@@ -1958,6 +2135,10 @@ export class Orchestrator {
     this.closing = true;
     if (this.timer) clearInterval(this.timer);
     for (const controller of this.active.values()) controller.abort();
-    await Promise.allSettled([...this.tasks]);
+    this.profileTestController?.abort();
+    await Promise.allSettled([
+      ...this.tasks,
+      ...(this.profileTestJob ? [this.profileTestJob] : []),
+    ]);
   }
 }

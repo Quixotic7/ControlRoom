@@ -81,6 +81,9 @@ export type ProcessResult = {
   structured?: unknown;
   limitReason?: "turns";
   permissionDenials?: string[];
+  eventCount?: number;
+  stderrPrefix?: string;
+  stderrTruncated?: boolean;
 };
 export class AgentLimitError extends Error {
   constructor(
@@ -108,6 +111,85 @@ export type Execute = (options: {
   environment?: Record<string, string>;
 }) => Promise<ProcessResult>;
 
+const stderrPrefixLimit = 8192,
+  diagnosticLineLimit = 6,
+  diagnosticLineLength = 500,
+  diagnosticLength = 2400;
+const secretEnvironmentValues = () =>
+  Object.entries(process.env)
+    .filter(([name, value]) => {
+      const parts = name.toUpperCase().split("_");
+      return (
+        !!value &&
+        (parts.some((part) =>
+          [
+            "KEY",
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "PASSWD",
+            "CREDENTIAL",
+            "CREDENTIALS",
+            "AUTH",
+            "AUTHORIZATION",
+            "COOKIE",
+          ].includes(part),
+        ) ||
+          /API_?KEY/i.test(name))
+      );
+    })
+    .map(([, value]) => value!);
+
+/** Sanitize a provider startup failure before placing it in API/UI diagnostics. */
+export function redactStartupDiagnostic(
+  input: string,
+  extraSecrets: Iterable<string> = [],
+) {
+  let value = String(input);
+  const secrets = [...secretEnvironmentValues(), ...extraSecrets]
+    .flatMap((secret) => [secret, ...secret.split(/\r?\n/)])
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  for (const secret of new Set(secrets))
+    value = value.split(secret).join("[REDACTED]");
+  value = value
+    // OSC, CSI and two-byte escape sequences, followed by remaining controls.
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/\r\n?/g, "\n")
+    .replace(
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+      "",
+    )
+    .replace(
+      /\b(authorization)\s*:\s*(?:bearer|basic)\s+[^\s,;]+/gi,
+      "$1: [REDACTED]",
+    )
+    .replace(/\bbearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(
+      /\b(api[_ -]?key|access[_ -]?token|auth[_ -]?token|token|secret|password|passwd|credentials?)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1=[REDACTED]",
+    )
+    .replace(
+      /(--(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|password|credentials?))\s+[^\s,;]+/gi,
+      "$1 [REDACTED]",
+    )
+    .replace(
+      /\b(?:sk-(?:ant-)?[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|AKIA[0-9A-Z]{16})\b/g,
+      "[REDACTED]",
+    )
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, "$1[REDACTED]@");
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, diagnosticLineLimit)
+    .map((line) => line.slice(0, diagnosticLineLength))
+    .join("\n")
+    .slice(0, diagnosticLength);
+}
+
 // Only retain bounded logs, never serialize the inherited environment or CLI credentials.
 // Child process groups let cancellation stop tool descendants, not just their parent CLI.
 export const execute: Execute = (o) =>
@@ -120,6 +202,10 @@ export const execute: Execute = (o) =>
       structured: unknown,
       limitReason: ProcessResult["limitReason"],
       permissionDenials: string[] = [],
+      eventCount = 0,
+      stderrPrefixParts: Buffer[] = [],
+      stderrPrefixBytes = 0,
+      stderrTruncated = false,
       total = 0,
       stopped = "",
       killTimer: NodeJS.Timeout | undefined;
@@ -163,8 +249,16 @@ export const execute: Execute = (o) =>
     const parseEvent = (line: string) => {
       try {
         const e = JSON.parse(line);
+        if (
+          !e ||
+          typeof e !== "object" ||
+          Array.isArray(e) ||
+          typeof e.type !== "string"
+        )
+          return;
+        eventCount++;
         // Store event types only. Raw provider payloads remain in the private local log.
-        const type = String(e.type ?? "event").slice(0, 100);
+        const type = e.type.slice(0, 100);
         o.onEvent(
           type,
           typeof (e.thread_id ?? e.session_id) === "string"
@@ -199,6 +293,15 @@ export const execute: Execute = (o) =>
     };
     const collect = (chunk: Buffer, events: boolean) => {
       const text = chunk.toString("utf8");
+      if (!events) {
+        const remaining = stderrPrefixLimit - stderrPrefixBytes;
+        if (remaining > 0) {
+          const prefix = chunk.subarray(0, remaining);
+          stderrPrefixParts.push(prefix);
+          stderrPrefixBytes += prefix.length;
+        }
+        if (chunk.length > remaining) stderrTruncated = true;
+      }
       total += chunk.length;
       if (total <= 2_000_000) fs.writeSync(fd, text);
       output = (output + text).slice(-100000);
@@ -233,6 +336,9 @@ export const execute: Execute = (o) =>
           structured,
           limitReason,
           permissionDenials,
+          eventCount,
+          stderrPrefix: Buffer.concat(stderrPrefixParts).toString("utf8"),
+          stderrTruncated,
         });
     });
   });
@@ -253,6 +359,7 @@ export async function runAgent(
       environment: string[];
     }) => void;
     sessionId?: string;
+    smokeTest?: boolean;
   },
   runner = execute,
 ) {
@@ -260,15 +367,19 @@ export async function runAgent(
     resultFile = path.join(options.directory, "result.json");
   atomic(schemaFile, JSON.stringify(schema), 0o600);
   if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile);
-  const extraDirectories =
-      kind === "work" ? (options.additionalDirectories ?? []) : [],
+  const smokeTest = options.smokeTest === true,
+    sessionId = smokeTest ? undefined : options.sessionId,
+    extraDirectories =
+      !smokeTest && kind === "work"
+        ? (options.additionalDirectories ?? [])
+        : [],
     args =
       profile.provider === "codex"
         ? [
             "exec",
-            ...(options.sessionId ? ["resume", options.sessionId] : []),
+            ...(sessionId ? ["resume", sessionId] : []),
             "--json",
-            ...(options.sessionId
+            ...(sessionId
               ? [
                   "-c",
                   `sandbox_mode="${kind === "work" ? "workspace-write" : "read-only"}"`,
@@ -277,11 +388,13 @@ export async function runAgent(
                   "--color",
                   "never",
                   "--sandbox",
-                  kind === "work" ? "workspace-write" : "read-only",
+                  !smokeTest && kind === "work"
+                    ? "workspace-write"
+                    : "read-only",
                 ]),
             "-c",
             'approval_policy="never"',
-            ...(options.sessionId && extraDirectories.length
+            ...(sessionId && extraDirectories.length
               ? [
                   "-c",
                   `sandbox_workspace_write.writable_roots=${JSON.stringify([
@@ -295,7 +408,7 @@ export async function runAgent(
             "--output-last-message",
             resultFile,
             ...(profile.model ? ["--model", profile.model] : []),
-            ...(!options.sessionId
+            ...(!sessionId
               ? extraDirectories.flatMap((directory) => [
                   "--add-dir",
                   directory,
@@ -305,7 +418,7 @@ export async function runAgent(
           ]
         : [
             "-p",
-            ...(options.sessionId ? ["--resume", options.sessionId] : []),
+            ...(sessionId ? ["--resume", sessionId] : []),
             "--output-format",
             "stream-json",
             "--verbose",
@@ -314,12 +427,26 @@ export async function runAgent(
             "--max-turns",
             String(options.maxTurns),
             "--permission-mode",
-            kind === "work" ? "acceptEdits" : "plan",
+            !smokeTest && kind === "work" ? "acceptEdits" : "plan",
             ...(profile.model ? ["--model", profile.model] : []),
+            ...(smokeTest
+              ? [
+                  "--safe-mode",
+                  "--tools",
+                  "",
+                  "--strict-mcp-config",
+                  "--mcp-config",
+                  '{"mcpServers":{}}',
+                  "--disable-slash-commands",
+                  "--no-session-persistence",
+                ]
+              : []),
             ...(extraDirectories.length
               ? ["--add-dir", ...extraDirectories]
               : []),
-            ...(kind === "work" && options.claudeAllowedTools?.length
+            ...(!smokeTest &&
+            kind === "work" &&
+            options.claudeAllowedTools?.length
               ? ["--allowedTools", options.claudeAllowedTools.join(",")]
               : []),
           ];
@@ -332,19 +459,20 @@ export async function runAgent(
       if (prior === "--output-last-message") return "<run result>";
       return arg;
     }),
-    environment: Object.keys(options.environment ?? {}).sort(),
+    environment: smokeTest ? [] : Object.keys(options.environment ?? {}).sort(),
   });
-  let sessionId = options.sessionId;
+  let retainedSessionId = sessionId;
   let result: ProcessResult;
   try {
     result = await runner({
       ...options,
+      environment: smokeTest ? undefined : options.environment,
       command: profile.executable,
       args,
       input: prompt,
       actorName: profile.name,
       onEvent: (event, session) => {
-        if (session) sessionId = session;
+        if (session) retainedSessionId = session;
         options.onEvent(event, session);
       },
     });
@@ -353,7 +481,7 @@ export async function runAgent(
       error instanceof Error &&
       error.message === "Run exceeded its time limit"
     )
-      throw new AgentLimitError("timeout", sessionId);
+      throw new AgentLimitError("timeout", retainedSessionId);
     throw error;
   }
   if (result.permissionDenials?.length)
@@ -361,11 +489,28 @@ export async function runAgent(
       `Provider denied permission to use ${result.permissionDenials.join(", ")}. Review the managed worker grants and ambient provider policy, then resolve the ticket question to retry.`,
     );
   if (result.limitReason)
-    throw new AgentLimitError(result.limitReason, sessionId);
-  if (result.code !== 0)
+    throw new AgentLimitError(result.limitReason, retainedSessionId);
+  if (result.code !== 0) {
+    if ((result.eventCount ?? 0) === 0 && result.stderrPrefix) {
+      const stderr =
+        result.stderrTruncated && !result.stderrPrefix.endsWith("\n")
+          ? result.stderrPrefix.slice(
+              0,
+              result.stderrPrefix.lastIndexOf("\n") + 1,
+            )
+          : result.stderrPrefix;
+      const diagnostic = redactStartupDiagnostic(stderr, [
+        ...Object.values(options.environment ?? {}),
+      ]);
+      if (diagnostic)
+        throw new Error(
+          `Agent exited ${result.code} before reporting a structured event. Provider stderr:\n${diagnostic}`,
+        );
+    }
     throw new Error(
       `Agent exited ${result.code}. Check the local log for authentication, permissions, usage limits or tool errors.`,
     );
+  }
   if (profile.provider === "codex") {
     if (!fs.existsSync(resultFile))
       throw new Error(

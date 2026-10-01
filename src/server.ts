@@ -111,6 +111,10 @@ export async function buildServer(
       req.body.workerBrief,
     ),
   );
+  app.post("/api/orchestration/profile-test", async (req: any) => {
+    const { actor: _actor, ...input } = req.body;
+    return orchestration.testProfile(input, actor(req.body));
+  });
   app.post("/api/orchestration/proposals", async (req: any) =>
     orchestration.proposeConfig(
       req.body.config,
