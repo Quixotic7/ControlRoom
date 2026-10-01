@@ -8,11 +8,13 @@ import type {
 } from "../src/orchestration-types";
 import type { ProjectState } from "../src/types";
 import { actor, api, isRemoteBrowser, recordId } from "./api";
+import { WorkerPermissionsEditor } from "./WorkerPermissions";
 import "./agents.css";
 type Snapshot = {
   proposals?: {proposals:AgentConfigProposal[];errors:{path:string;message:string}[]};
   config: OrchestrationConfig;
   revision: string;
+  workerBrief: { path: string; content: string; revision: string };
   runs: (ManagedRun & { verifiedRunning: boolean })[];
 };
 export function Agents({
@@ -26,6 +28,7 @@ export function Agents({
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(),
     [draft, setDraft] = useState<OrchestrationConfig>(),
+    [workerBrief, setWorkerBrief] = useState(""),
     [revision, setRevision] = useState("");
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
@@ -44,6 +47,7 @@ export function Agents({
       initialized.current = true;
       setDraft(next.config);
       setRevision(next.revision);
+      setWorkerBrief(next.workerBrief.content);
     }
   }
   useEffect(() => {
@@ -163,11 +167,11 @@ export function Agents({
           </article>
         ))}
       </div>
-      <AgentConfigProposals proposals={snapshot.proposals?.proposals ?? []} errors={snapshot.proposals?.errors ?? []} config={snapshot.config} revision={snapshot.revision} busy={busy}
+      <AgentConfigProposals proposals={snapshot.proposals?.proposals ?? []} errors={snapshot.proposals?.errors ?? []} config={snapshot.config} workerBrief={snapshot.workerBrief.content} revision={snapshot.revision} busy={busy}
         onApply={proposal => void action(async () => {
           const next = await api<Snapshot>(`/orchestration/proposals/${proposal.id}/apply`,"POST",{actor,revision:proposal.revision});
-          setDraft(next.config);setRevision(next.revision);
-        },"Proposal applied. No work was started.")}
+          setDraft(next.config);setRevision(next.revision);setWorkerBrief(next.workerBrief.content);
+        },"Proposal applied. Agent configuration updated.")}
         onDiscard={proposal => void action(() => api(`/orchestration/proposals/${proposal.id}/discard`,"POST",{actor,revision:proposal.revision}),"Proposal discarded. Configuration unchanged.")}
       />
       <details className="agent-settings">
@@ -179,6 +183,7 @@ export function Agents({
               const next = await api<Snapshot>("/orchestration/config", "PUT", {
                 config: draft,
                 revision,
+                workerBrief,
                 actor,
               });
               setDraft(next.config);
@@ -322,6 +327,18 @@ export function Agents({
               )}
             </div>
           ))}
+          <WorkerPermissionsEditor
+            value={
+              draft.workerPermissions ?? {
+                claudeAllowedTools: [],
+                additionalDirectories: [],
+                environment: [],
+              }
+            }
+            workerBrief={workerBrief}
+            onChange={(workerPermissions) => patch({ workerPermissions })}
+            onBriefChange={setWorkerBrief}
+          />
           <div className="agent-actions">
             <button
               className="button"
@@ -352,6 +369,7 @@ export function Agents({
               onClick={() => {
                 setDraft(snapshot.config);
                 setRevision(snapshot.revision);
+                setWorkerBrief(snapshot.workerBrief.content);
               }}
             >
               Reload saved configuration
@@ -534,6 +552,18 @@ export function Agents({
                   <dd>{run.snapshot || "No submission"}</dd>
                   <dt>Session</dt>
                   <dd>{run.sessionId || "Not reported"}</dd>
+                  <dt>Launch</dt>
+                  <dd>
+                    {run.launch
+                      ? [run.launch.command, ...run.launch.args].join(" ")
+                      : "Not launched"}
+                  </dd>
+                  <dt>Environment</dt>
+                  <dd>
+                    {run.launch?.environment.length
+                      ? run.launch.environment.join(", ") + " (values hidden)"
+                      : "No project variables"}
+                  </dd>
                 </dl>
                 {run.result && (
                   <>
@@ -716,6 +746,15 @@ function AgentFields({
             value={value.model}
             placeholder="Use CLI default"
             onChange={(e) => onChange({ ...value, model: e.target.value })}
+          />
+        </label>
+        <label>
+          {title} role note
+          <textarea
+            rows={3}
+            value={value.roleNote ?? ""}
+            placeholder="Optional working role for this profile"
+            onChange={(e) => onChange({ ...value, roleNote: e.target.value })}
           />
         </label>
       </div>

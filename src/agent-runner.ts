@@ -91,6 +91,7 @@ export type Execute = (options: {
   onEvent: (event: string, session?: string) => void;
   onStart: (pid: number) => void;
   actorName?: string;
+  environment?: Record<string, string>;
 }) => Promise<ProcessResult>;
 
 // Only retain bounded logs, never serialize the inherited environment or CLI credentials.
@@ -112,6 +113,7 @@ export const execute: Execute = (o) =>
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        ...o.environment,
         CONTROLROOM_MANAGED: "1",
         CONTROLROOM_ACTOR_KIND: "agent",
         WORKBOARD_ACTOR_KIND: "agent",
@@ -196,6 +198,13 @@ export async function runAgent(
   options: Omit<Parameters<Execute>[0], "command" | "args" | "input"> & {
     directory: string;
     maxTurns: number;
+    additionalDirectories?: string[];
+    claudeAllowedTools?: string[];
+    onLaunch?: (launch: {
+      command: string;
+      args: string[];
+      environment: string[];
+    }) => void;
   },
   runner = execute,
 ) {
@@ -203,37 +212,60 @@ export async function runAgent(
     resultFile = path.join(options.directory, "result.json");
   atomic(schemaFile, JSON.stringify(schema), 0o600);
   if (fs.existsSync(resultFile)) fs.unlinkSync(resultFile);
-  const args =
-    profile.provider === "codex"
-      ? [
-          "exec",
-          "--json",
-          "--color",
-          "never",
-          "--sandbox",
-          kind === "work" ? "workspace-write" : "read-only",
-          "-c",
-          'approval_policy="never"',
-          "--output-schema",
-          schemaFile,
-          "--output-last-message",
-          resultFile,
-          ...(profile.model ? ["--model", profile.model] : []),
-          "-",
-        ]
-      : [
-          "-p",
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          "--json-schema",
-          JSON.stringify(schema),
-          "--max-turns",
-          String(options.maxTurns),
-          "--permission-mode",
-          kind === "work" ? "acceptEdits" : "plan",
-          ...(profile.model ? ["--model", profile.model] : []),
-        ];
+  const extraDirectories =
+      kind === "work" ? (options.additionalDirectories ?? []) : [],
+    args =
+      profile.provider === "codex"
+        ? [
+            "exec",
+            "--json",
+            "--color",
+            "never",
+            "--sandbox",
+            kind === "work" ? "workspace-write" : "read-only",
+            "-c",
+            'approval_policy="never"',
+            "--output-schema",
+            schemaFile,
+            "--output-last-message",
+            resultFile,
+            ...(profile.model ? ["--model", profile.model] : []),
+            ...extraDirectories.flatMap((directory) => [
+              "--add-dir",
+              directory,
+            ]),
+            "-",
+          ]
+        : [
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--json-schema",
+            JSON.stringify(schema),
+            "--max-turns",
+            String(options.maxTurns),
+            "--permission-mode",
+            kind === "work" ? "acceptEdits" : "plan",
+            ...(profile.model ? ["--model", profile.model] : []),
+            ...(extraDirectories.length
+              ? ["--add-dir", ...extraDirectories]
+              : []),
+            ...(kind === "work" && options.claudeAllowedTools?.length
+              ? ["--allowedTools", options.claudeAllowedTools.join(",")]
+              : []),
+          ];
+  options.onLaunch?.({
+    command: profile.executable,
+    args: args.map((arg, index) => {
+      const prior = args[index - 1];
+      if (prior === "--json-schema") return "<generated schema>";
+      if (prior === "--output-schema") return "<run schema>";
+      if (prior === "--output-last-message") return "<run result>";
+      return arg;
+    }),
+    environment: Object.keys(options.environment ?? {}).sort(),
+  });
   const result = await runner({
     ...options,
     command: profile.executable,

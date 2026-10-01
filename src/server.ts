@@ -108,10 +108,11 @@ export async function buildServer(
       req.body.config,
       req.body.revision,
       actor(req.body),
+      req.body.workerBrief,
     ),
   );
   app.post("/api/orchestration/proposals", async (req:any) =>
-    orchestration.proposeConfig(req.body.config, req.body.revision, actor(req.body)));
+    orchestration.proposeConfig(req.body.config, req.body.revision, actor(req.body), req.body.workerBrief));
   app.post("/api/orchestration/proposals/:id/apply", async (req:any) =>
     orchestration.applyConfigProposal(req.params.id,req.body.revision,actor(req.body)));
   app.post("/api/orchestration/proposals/:id/discard", async (req:any) =>

@@ -1155,3 +1155,167 @@ test("ticket activity requires a verified running work process and clears on sto
   await manager.stop(run.id, human);
   assert.deepEqual(manager.activity(), []);
 });
+
+test("only humans can configure worker authority and worker brief revisions are guarded", async (t) => {
+  const f = await fixture(t),
+    before = f.manager.status();
+  await assert.rejects(
+    f.manager.configure(
+      before.config,
+      before.revision,
+      { name: "Managed worker", kind: "agent" },
+      "Agent-authored authority",
+    ),
+    (error: any) => error.status === 403,
+  );
+  assert.equal(f.manager.status().workerBrief.content, "");
+  const changed = await f.manager.configure(
+    before.config,
+    before.revision,
+    human,
+    "# Human worker brief\n",
+  );
+  assert.equal(changed.workerBrief.content, "# Human worker brief\n");
+  await assert.rejects(
+    f.manager.configure(
+      changed.config,
+      before.revision,
+      human,
+      "stale overwrite",
+    ),
+    (error: any) => error.status === 409,
+  );
+  assert.equal(
+    fs.readFileSync(f.store.file("agents/worker-brief.md"), "utf8"),
+    "# Human worker brief\n",
+  );
+});
+
+test("approved Claude patterns, directories, role and redacted environment reach a work launch", async (t) => {
+  const previousSecret = process.env.CR78_TEST_SECRET;
+  process.env.CR78_TEST_SECRET = "do-not-render";
+  t.after(() => {
+    if (previousSecret === undefined) delete process.env.CR78_TEST_SECRET;
+    else process.env.CR78_TEST_SECRET = previousSecret;
+  });
+  const calls: Parameters<Execute>[0][] = [];
+  const runner: Execute = async (options) => {
+    calls.push(options);
+    return {
+      code: 0,
+      output: "fixture output",
+      structured: result(),
+    };
+  };
+  const f = await fixture(t, runner),
+    before = f.manager.status(),
+    config = {
+      ...before.config,
+      reviewerMode: "chat" as const,
+      reviewer: { ...before.config.reviewer, name: "Chat reviewer" },
+      workers: [
+        {
+          name: "Claude builder",
+          provider: "claude" as const,
+          executable: f.executable,
+          model: "",
+          roleNote: "Principal engineer for audio-thread work",
+        },
+      ],
+      workerPermissions: {
+        claudeAllowedTools: [
+          "Bash(swift build *)",
+          "Bash(git add *)",
+          "Bash(git commit *)",
+        ],
+        additionalDirectories: [f.root],
+        environment: [
+          {
+            name: "MODULE_CACHE_PATH",
+            source: "literal" as const,
+            value: "/tmp/modules",
+          },
+          {
+            name: "PROJECT_TOKEN",
+            source: "host" as const,
+            value: "CR78_TEST_SECRET",
+          },
+        ],
+      },
+    };
+  await f.manager.configure(
+    config,
+    before.revision,
+    human,
+    "# Build guidance\nRun the focused self-test.",
+  );
+  const ticket = await f.create("Permission fixture");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Claude builder",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () =>
+    f.manager
+      .status()
+      .runs.some(
+        (candidate) =>
+          candidate.id === run.id && candidate.state === "completed",
+      ),
+  );
+  const workerCall = calls.find((call) => call.command === f.executable)!;
+  assert.ok(workerCall.args.includes("--allowedTools"));
+  const allowed =
+    workerCall.args[workerCall.args.indexOf("--allowedTools") + 1];
+  assert.match(allowed, /Bash\(swift build \*\)/);
+  assert.doesNotMatch(allowed, /swift package reset/);
+  assert.deepEqual(
+    workerCall.args.slice(
+      workerCall.args.indexOf("--add-dir"),
+      workerCall.args.indexOf("--allowedTools"),
+    ),
+    ["--add-dir", f.root],
+  );
+  assert.equal(workerCall.environment?.MODULE_CACHE_PATH, "/tmp/modules");
+  assert.equal(workerCall.environment?.PROJECT_TOKEN, "do-not-render");
+  assert.match(workerCall.input, /Principal engineer for audio-thread work/);
+  assert.match(workerCall.input, /Run the focused self-test/);
+  const verificationCall = calls.find((call) => call.command === "/bin/sh")!;
+  assert.equal(verificationCall.environment?.MODULE_CACHE_PATH, "/tmp/modules");
+  const launch = f.manager
+    .status()
+    .runs.find((candidate) => candidate.id === run.id)!.launch!;
+  assert.deepEqual(launch.environment, ["MODULE_CACHE_PATH", "PROJECT_TOKEN"]);
+  assert.doesNotMatch(JSON.stringify(launch), /do-not-render|\/tmp\/modules/);
+  assert.doesNotMatch(
+    JSON.stringify(f.manager.status().config),
+    /do-not-render/,
+  );
+  assert.doesNotMatch(JSON.stringify(launch), /dangerously-skip-permissions/);
+});
+
+test("managed process environment cannot override identity or provider policy roots", async (t) => {
+  const f = await fixture(t),
+    before = f.manager.status();
+  for (const name of [
+    "CONTROLROOM_ACTOR",
+    "CONTROLROOM_MANAGED",
+    "HOME",
+    "CODEX_HOME",
+    "CLAUDE_CONFIG_DIR",
+    "BASH_ENV",
+  ]) {
+    const config = structuredClone(before.config);
+    config.workerPermissions = {
+      claudeAllowedTools: [],
+      additionalDirectories: [],
+      environment: [{ name, source: "literal", value: "override" }],
+    };
+    await assert.rejects(
+      f.manager.configure(config, before.revision, human),
+      (error: any) => error.status === 422 && String(error).includes(name),
+    );
+  }
+});

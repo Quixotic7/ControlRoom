@@ -39,8 +39,8 @@ const schema = z
     baseRevision: z.string().min(1),
     baseConfig: z.record(z.string(), z.unknown()),
     config: z.record(z.string(), z.unknown()),
-    workerBrief: z.string().max(40000).optional(),
-    baseWorkerBrief: z.string().max(40000).optional(),
+    workerBrief: z.string().max(100000).optional(),
+    baseWorkerBrief: z.string().max(100000).optional(),
     decidedBy: actor.optional(),
     decidedAt: z.string().datetime().optional(),
   })

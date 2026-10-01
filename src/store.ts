@@ -2716,7 +2716,7 @@ export class Store {
       return readAgentConfigProposal(this,id);
     });
   }
-  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, proposal?: {id: string; revision: string}) {
+  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, options?: {proposal?: {id: string; revision: string}; workerBrief?: string}) {
     return this.write(() => {
       if ("orchestration" in patch && actor?.kind !== "human")
         throw new Problem(
@@ -2757,6 +2757,10 @@ export class Store {
             `Move tickets out of ${r.meta.status} before removing it`,
           );
       const before = this.config().orchestration;
+      const {proposal,workerBrief} = options ?? {};
+      if (workerBrief !== undefined && (actor?.kind !== "human" || !patch.orchestration)) throw new Problem(403, "Only a human can configure the worker brief");
+      const briefPath = "agents/worker-brief.md", briefExists = fs.existsSync(this.file(briefPath)), briefBefore = briefExists ? read(this.file(briefPath)) : "";
+      const briefFiles = workerBrief !== undefined ? [{path:briefPath,before:briefBefore,after:workerBrief,existed:briefExists}] : [];
       if (proposal) {
         if (actor?.kind !== "human" || !patch.orchestration) throw new Problem(403, "Only a human can apply an agent configuration proposal");
         const old = readAgentConfigProposal(this, proposal.id);
@@ -2767,9 +2771,16 @@ export class Store {
         const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal applied",at:now(),before:{orchestration:before},after:{orchestration:patch.orchestration,proposalId:old.id,proposedBy:old.proposedBy,approvedBy:actor,proposalRevision:old.revision}};
         this.commitFiles([
           {path:"config.yml",before:s,after:YAML.stringify(c)},
+          ...briefFiles,
           {path:proposalPath(old.id),before:read(this.file(proposalPath(old.id))),after:JSON.stringify(accepted,null,2)},
           {path:historyPath,before:historyBefore,after:historyBefore+JSON.stringify(event)+"\n",existed:fs.existsSync(this.file(historyPath))},
         ]);
+        return c;
+      }
+      if (workerBrief !== undefined) {
+        const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), historyBefore = existed ? read(this.file(historyPath)) : "";
+        const event = {id:uid("event"),record:"project",actor,action:"orchestration configured",at:now(),before:{orchestration:before,workerBrief:briefBefore},after:{orchestration:patch.orchestration,workerBrief}};
+        this.commitFiles([{path:"config.yml",before:s,after:YAML.stringify(c)},...briefFiles,{path:historyPath,before:historyBefore,after:historyBefore+JSON.stringify(event)+"\n",existed}]);
         return c;
       }
       atomic(p, YAML.stringify(c));

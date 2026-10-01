@@ -24,6 +24,7 @@ export function backup(store: Store) {
       ...walk(store.file("records")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("assets")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("staging")).map((f) => path.relative(store.dir, f)),
+      ...walk(store.file("agents")).map((f) => path.relative(store.dir, f)),
     ];
     let size = 0;
     const files = paths.map((p) => {
@@ -74,7 +75,9 @@ export function restore(store: Store, compressed: Buffer) {
     for (const f of pack.files) {
       if (
         typeof f.path !== "string" ||
-        !/^(config\.yml|records\/|assets\/|staging\/)/.test(f.path) ||
+        !/^(config\.yml|records\/|assets\/|staging\/|agents\/worker-brief\.md$)/.test(
+          f.path,
+        ) ||
         seen.has(f.path)
       )
         throw new Problem(422, "Invalid backup path");

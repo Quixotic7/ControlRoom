@@ -4,6 +4,17 @@ export type AgentProfile = {
   provider: Harness;
   executable: string;
   model: string;
+  roleNote?: string;
+};
+export type WorkerEnvironmentVariable = {
+  name: string;
+  source: "literal" | "host";
+  value: string;
+};
+export type WorkerPermissions = {
+  claudeAllowedTools: string[];
+  additionalDirectories: string[];
+  environment: WorkerEnvironmentVariable[];
 };
 export type OrchestrationConfig = {
   enabled: boolean;
@@ -18,6 +29,7 @@ export type OrchestrationConfig = {
   maxTurns: number;
   verificationCommand: string;
   humanPolicy: "flagged" | "parents" | "all";
+  workerPermissions?: WorkerPermissions;
 };
 export type RunState =
   | "queued"
@@ -64,6 +76,11 @@ export type ManagedRun = {
     criteria: string;
     evidence: string;
     question: string;
+  };
+  launch?: {
+    command: string;
+    args: string[];
+    environment: string[];
   };
 };
 export type Assignment = {

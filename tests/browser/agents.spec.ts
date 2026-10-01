@@ -17,11 +17,38 @@ test("Agents exposes disabled-by-default setup, preserves draft during refresh, 
   await expect(
     page.getByRole("button", { name: "Queue assignment" }),
   ).toBeDisabled();
+  const before = await (await page.request.get("/api/orchestration")).json();
+  const denied = await page.request.put("/api/orchestration/config", {
+    data: {
+      config: before.config,
+      revision: before.revision,
+      workerBrief: "Agent-authored authority",
+      actor: { name: "Browser agent", kind: "agent" },
+    },
+  });
+  expect(denied.status()).toBe(403);
   await page.getByText("Agent configuration", { exact: true }).click();
   await page
     .getByLabel("Orchestrator name", { exact: true })
     .fill("Review captain");
   await page.getByLabel("Worker 1 model", { exact: true }).fill("custom-model");
+  await page
+    .getByLabel("Worker 1 role note", { exact: true })
+    .fill("Focused implementation worker");
+  await page
+    .getByLabel("Claude allowed tool patterns", { exact: true })
+    .fill("Bash(npm test *)\nBash(git commit *)");
+  await page
+    .getByLabel("Additional writable directories", { exact: true })
+    .fill("/tmp");
+  await page
+    .getByLabel("Project worker brief", { exact: true })
+    .fill("# Project build guidance");
+  await page.getByRole("button", { name: "Add environment variable" }).click();
+  await page
+    .getByLabel("Variable name", { exact: true })
+    .fill("MODULE_CACHE_PATH");
+  await page.getByLabel("Value", { exact: true }).fill("/tmp/module-cache");
   // A periodic process refresh must not overwrite human configuration edits.
   await page.waitForTimeout(3200);
   await expect(
@@ -34,6 +61,19 @@ test("Agents exposes disabled-by-default setup, preserves draft during refresh, 
   const config = await (await page.request.get("/api/orchestration")).json();
   expect(config.config.enabled).toBe(false);
   expect(config.config.workers[0].model).toBe("custom-model");
+  expect(config.config.workers[0].roleNote).toBe(
+    "Focused implementation worker",
+  );
+  expect(config.config.workerPermissions.claudeAllowedTools).toEqual([
+    "Bash(npm test *)",
+    "Bash(git commit *)",
+  ]);
+  expect(config.config.workerPermissions.environment[0]).toEqual({
+    name: "MODULE_CACHE_PATH",
+    source: "literal",
+    value: "/tmp/module-cache",
+  });
+  expect(config.workerBrief.content).toBe("# Project build guidance");
   const response = await page.request.post("/api/records", {
     data: {
       kind: "ticket",

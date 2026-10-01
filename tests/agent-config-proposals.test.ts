@@ -183,3 +183,21 @@ test("malformed proposal files surface in state, and path traversal is rejected"
     /Invalid/,
   );
 });
+
+
+test("worker brief proposal applies atomically and brief edits invalidate proposals", async (t) => {
+  const {store,manager} = fixture(t);
+  const original = manager.status();
+  const p = await manager.proposeConfig(original.config, original.revision, agent, "# Build\nUse the project caches.");
+  assert.equal(manager.workerBrief().content, "");
+  await manager.applyConfigProposal(p.id,p.revision,human);
+  assert.equal(manager.workerBrief().content, "# Build\nUse the project caches.");
+  assert.equal(readAgentConfigProposal(store,p.id).status,"applied");
+  const next = await manager.proposeConfig(manager.config(),undefined,agent,"Replacement");
+  await manager.configure(manager.config(),manager.status().revision,human,"Human edit");
+  await assert.rejects(manager.applyConfigProposal(next.id,next.revision,human), /stale/);
+  assert.equal(manager.workerBrief().content,"Human edit");
+  const preserved = await manager.proposeConfig(manager.config(),undefined,agent);
+  await manager.applyConfigProposal(preserved.id,preserved.revision,human);
+  assert.equal(manager.workerBrief().content,"Human edit");
+});
