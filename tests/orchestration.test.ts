@@ -5,7 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import { Store } from "../src/store.js";
 import { Orchestrator, defaultOrchestration } from "../src/orchestration.js";
-import { execute, git, type Execute } from "../src/agent-runner.js";
+import {
+  AgentLimitError,
+  execute,
+  git,
+  runAgent,
+  type Execute,
+} from "../src/agent-runner.js";
 import type { Actor } from "../src/types.js";
 const human: Actor = { name: "Human", kind: "human" },
   worker: Actor = { name: "Worker 1", kind: "agent" };
@@ -1318,4 +1324,183 @@ test("managed process environment cannot override identity or provider policy ro
       (error: any) => error.status === 422 && String(error).includes(name),
     );
   }
+});
+
+test("profiles can use 400 turns and six hours while verification has its own timeout", async (t) => {
+  const calls: Parameters<Execute>[0][] = [];
+  const runner: Execute = async (options) => {
+    calls.push(options);
+    return execute(options);
+  };
+  const f = await fixture(t, runner);
+  const config = {
+    ...f.config,
+    verificationTimeoutMinutes: 7,
+    workers: f.config.workers.map((profile) =>
+      profile.name === "Worker 2"
+        ? { ...profile, maxTurns: 400, timeoutMinutes: 360 }
+        : profile,
+    ),
+  };
+  await f.manager.configure(config, f.manager.status().revision, human);
+  const ticket = await f.create("Long-running profile");
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 2",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  const worker = calls.find(
+    (call) =>
+      call.command === f.executable && call.args.includes("--max-turns"),
+  )!;
+  assert.equal(worker.args[worker.args.indexOf("--max-turns") + 1], "400");
+  assert.equal(worker.timeout, 360 * 60_000);
+  assert.equal(
+    calls.find((call) => call.command === "/bin/sh")!.timeout,
+    7 * 60_000,
+  );
+});
+
+test("a turn-limited run resumes its retained session without a new attempt", async (t) => {
+  let workerCalls = 0;
+  const calls: Parameters<Execute>[0][] = [];
+  const runner: Execute = async (options) => {
+    calls.push(options);
+    if (options.input.startsWith("Implement") && ++workerCalls === 1) {
+      options.onStart(987_654_321);
+      options.onEvent("thread.started", "retained-session");
+      throw new AgentLimitError("turns", "retained-session");
+    }
+    return execute(options);
+  };
+  const f = await fixture(t, runner);
+  const ticket = await f.create("Resume retained session");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => run.state === "waiting_input" && run.failureKind === "limit",
+  );
+  const reviewer: Actor = { name: f.config.reviewer.name, kind: "agent" };
+  const worktree = run.worktree;
+  const attempt = run.attempt;
+  await assert.rejects(
+    f.manager.resume(run.id, worker),
+    /designated orchestrator/,
+  );
+  const resumed = await f.manager.resume(run.id, reviewer);
+  assert.equal(resumed, run);
+  assert.equal(run.attempt, attempt);
+  assert.equal(run.worktree, worktree);
+  assert.equal(run.sessionId, "retained-session");
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  const resumedWorker = calls.find(
+    (call) =>
+      call.input.startsWith("Implement") &&
+      call.args.includes("resume") &&
+      call.args.includes("retained-session"),
+  )!;
+  assert.equal(resumedWorker.cwd, worktree);
+  assert.equal(workerCalls, 2);
+});
+
+test("limit resume keeps stale-context and missing-session safeguards", async (t) => {
+  const runner: Execute = async (options) => {
+    if (options.input.startsWith("Implement")) {
+      options.onStart(987_654_321);
+      options.onEvent("thread.started", "retained-session");
+      throw new AgentLimitError("turns", "retained-session");
+    }
+    return execute(options);
+  };
+  const f = await fixture(t, runner);
+  const ticket = await f.create("Guard retained session");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () => run.failureKind === "limit");
+  await f.store.comment(ticket.meta.id, "Acceptance detail changed", human);
+  await assert.rejects(f.manager.resume(run.id, human), /Discussion.*changed/);
+  run.contextHash = undefined;
+  run.sessionId = undefined;
+  await assert.rejects(
+    f.manager.resume(run.id, human),
+    /no retained provider session/,
+  );
+});
+
+test("agent runners pass retained sessions to both providers and classify turn limits", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cr-agent-resume-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const seen: Parameters<Execute>[0][] = [];
+  const runner: Execute = async (options) => {
+    seen.push(options);
+    options.onEvent("thread.started", "continued-session");
+    return { code: 1, output: "", limitReason: "turns" };
+  };
+  const options = {
+    directory,
+    cwd: directory,
+    input: "",
+    timeout: 360 * 60_000,
+    signal: new AbortController().signal,
+    log: path.join(directory, "agent.log"),
+    onEvent: () => {},
+    onStart: () => {},
+    maxTurns: 400,
+    sessionId: "prior-session",
+  };
+  await assert.rejects(
+    runAgent(
+      { name: "Codex", provider: "codex", executable: "codex", model: "" },
+      "work",
+      "prompt",
+      {},
+      options,
+      runner,
+    ),
+    (error: unknown) =>
+      error instanceof AgentLimitError &&
+      error.sessionId === "continued-session",
+  );
+  await assert.rejects(
+    runAgent(
+      { name: "Claude", provider: "claude", executable: "claude", model: "" },
+      "work",
+      "prompt",
+      {},
+      options,
+      runner,
+    ),
+    AgentLimitError,
+  );
+  assert.deepEqual(seen[0].args.slice(0, 3), [
+    "exec",
+    "resume",
+    "prior-session",
+  ]);
+  assert.deepEqual(seen[1].args.slice(0, 3), [
+    "-p",
+    "--resume",
+    "prior-session",
+  ]);
+  assert.equal(seen[1].args[seen[1].args.indexOf("--max-turns") + 1], "400");
 });

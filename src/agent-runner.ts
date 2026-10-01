@@ -79,7 +79,20 @@ export type ProcessResult = {
   code: number;
   output: string;
   structured?: unknown;
+  limitReason?: "turns";
 };
+export class AgentLimitError extends Error {
+  constructor(
+    readonly reason: "turns" | "timeout",
+    readonly sessionId?: string,
+  ) {
+    super(
+      reason === "turns"
+        ? "Agent reached its configured turn limit"
+        : "Agent reached its configured time limit",
+    );
+  }
+}
 export type Execute = (options: {
   command: string;
   args: string[];
@@ -104,6 +117,7 @@ export const execute: Execute = (o) =>
     let output = "",
       pending = "",
       structured: unknown,
+      limitReason: ProcessResult["limitReason"],
       total = 0,
       stopped = "",
       killTimer: NodeJS.Timeout | undefined;
@@ -167,6 +181,13 @@ export const execute: Execute = (o) =>
           );
           if (e.type === "result" && e.structured_output)
             structured = e.structured_output;
+          if (
+            e.type === "result" &&
+            /(?:max[_ -]?turns|turn[_ -]?limit)/i.test(
+              String(e.subtype ?? e.error ?? ""),
+            )
+          )
+            limitReason = "turns";
         } catch {}
       }
     };
@@ -186,7 +207,7 @@ export const execute: Execute = (o) =>
       o.signal.removeEventListener("abort", abort);
       fs.closeSync(fd);
       if (error || stopped) reject(error ?? new Error(stopped));
-      else resolve({ code: code ?? -1, output, structured });
+      else resolve({ code: code ?? -1, output, structured, limitReason });
     });
   });
 
@@ -205,6 +226,7 @@ export async function runAgent(
       args: string[];
       environment: string[];
     }) => void;
+    sessionId?: string;
   },
   runner = execute,
 ) {
@@ -218,6 +240,7 @@ export async function runAgent(
       profile.provider === "codex"
         ? [
             "exec",
+            ...(options.sessionId ? ["resume", options.sessionId] : []),
             "--json",
             "--color",
             "never",
@@ -238,6 +261,7 @@ export async function runAgent(
           ]
         : [
             "-p",
+            ...(options.sessionId ? ["--resume", options.sessionId] : []),
             "--output-format",
             "stream-json",
             "--verbose",
@@ -266,13 +290,27 @@ export async function runAgent(
     }),
     environment: Object.keys(options.environment ?? {}).sort(),
   });
-  const result = await runner({
-    ...options,
-    command: profile.executable,
-    args,
-    input: prompt,
-    actorName: profile.name,
-  });
+  let sessionId = options.sessionId;
+  let result: ProcessResult;
+  try {
+    result = await runner({
+      ...options,
+      command: profile.executable,
+      args,
+      input: prompt,
+      actorName: profile.name,
+      onEvent: (event, session) => {
+        if (session) sessionId = session;
+        options.onEvent(event, session);
+      },
+    });
+  } catch (error) {
+    if (/time limit/i.test(String(error)))
+      throw new AgentLimitError("timeout", sessionId);
+    throw error;
+  }
+  if (result.limitReason)
+    throw new AgentLimitError(result.limitReason, sessionId);
   if (result.code !== 0)
     throw new Error(
       `Agent exited ${result.code}. Check the local log for authentication, permissions, usage limits or tool errors.`,

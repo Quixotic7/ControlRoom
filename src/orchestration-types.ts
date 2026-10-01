@@ -5,6 +5,8 @@ export type AgentProfile = {
   executable: string;
   model: string;
   roleNote?: string;
+  maxTurns?: number;
+  timeoutMinutes?: number;
 };
 export type WorkerEnvironmentVariable = {
   name: string;
@@ -27,6 +29,7 @@ export type OrchestrationConfig = {
   timeoutMinutes: number;
   maxAttempts: number;
   maxTurns: number;
+  verificationTimeoutMinutes?: number;
   verificationCommand: string;
   humanPolicy: "flagged" | "parents" | "all";
   workerPermissions?: WorkerPermissions;
@@ -68,7 +71,8 @@ export type ManagedRun = {
   snapshot?: string;
   changedFiles?: string[];
   error?: string;
-  failureKind?: "verification";
+  failureKind?: "verification" | "limit";
+  limitReason?: "turns" | "timeout";
   questionId?: string;
   result?: {
     outcome: string;
