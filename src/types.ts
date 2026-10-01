@@ -114,6 +114,12 @@ export type Comment = {
   body: string;
   resolved?: boolean;
   resolvedBy?: Actor;
+  replies?: {
+    actor: Actor;
+    at: string;
+    body: string;
+    runId: string;
+  }[];
   questions?: import("./questionnaire.js").QuestionSpec;
   answers?: {
     actor: Actor;
@@ -250,6 +256,16 @@ export type ProjectState = {
   claims: Claim[];
   errors: { path: string; message: string }[];
   referenceChecks?: Record<string, ReferenceCheck[]>;
+  managedQuestions?: Record<
+    string,
+    {
+      runId: string;
+      state: string;
+      error?: string;
+      retryRunId?: string;
+      canAct: boolean;
+    }
+  >;
   branch: string;
   canonical: string;
   branchChanged: boolean;

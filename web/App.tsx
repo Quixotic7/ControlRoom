@@ -526,7 +526,11 @@ export function App() {
           name={state.config.name}
           branch={state.branch}
           page={page}
-          attentionCount={attention.length + changedDocs.length + (state.agentConfigProposals?.length ?? 0)}
+          attentionCount={
+            attention.length +
+            changedDocs.length +
+            (state.agentConfigProposals?.length ?? 0)
+          }
           reviewCount={reviewRecords.length}
           density={density}
           theme={theme}
@@ -614,6 +618,8 @@ export function App() {
             )}
             {page === "attention" && (
               <AttentionPage
+                comments={state.comments}
+                managedQuestions={state.managedQuestions}
                 proposals={state.agentConfigProposals}
                 onOpenAgents={() => go("agents")}
                 items={attention}

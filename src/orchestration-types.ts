@@ -90,6 +90,7 @@ export type ManagedRun = {
   failureKind?: "verification" | "limit";
   limitReason?: "turns" | "timeout";
   questionId?: string;
+  questionRetryBlocked?: boolean;
   result?: {
     outcome: string;
     summary: string;

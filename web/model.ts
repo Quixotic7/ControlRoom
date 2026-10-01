@@ -519,7 +519,10 @@ export function attentionReason(
   if (role === "review") return "review";
   if (
     state.comments.some(
-      (c) => c.ticket === r.meta.id && c.kind === "question" && !c.resolved,
+      (c) =>
+        c.ticket === r.meta.id &&
+        c.kind === "question" &&
+        (!c.resolved || state.managedQuestions?.[c.id]?.canAct),
     )
   )
     return "question";

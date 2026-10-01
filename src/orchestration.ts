@@ -19,7 +19,7 @@ import {
   redactStartupDiagnostic,
   type Execute,
 } from "./agent-runner.js";
-import type { Actor, RecordFile } from "./types.js";
+import type { Actor, ProjectState, RecordFile } from "./types.js";
 import type {
   AgentProfile,
   ManagedRun,
@@ -58,6 +58,14 @@ const companionRepository = z.object({
   relativePath: z.string().trim().min(1).max(500),
   mode: z.enum(["writable", "read-only"]),
 });
+const managedQuestionAction = z
+  .object({
+    questionId: z.string().min(1).max(200),
+    revision: z.string().min(1),
+    action: z.enum(["answer_retry", "answer_only", "stop"]),
+    answer: z.string().max(10000).optional(),
+  })
+  .strict();
 export const orchestrationSchema = z
   .object({
     enabled: z.boolean(),
@@ -608,6 +616,51 @@ export class Orchestrator {
       })),
       integration:
         "Acceptance does not merge code. Merge the retained worker branch into the configured base before dependent work can start.",
+    };
+  }
+  projectState(state: ProjectState): ProjectState {
+    const comments = new Map(
+        state.comments.map((comment) => [comment.id, comment]),
+      ),
+      successors = new Map<string, ManagedRun>(),
+      managedQuestions: NonNullable<ProjectState["managedQuestions"]> = {};
+    for (const run of this.runs) {
+      if (!run.previous) continue;
+      const prior = successors.get(run.previous);
+      if (
+        !prior ||
+        run.createdAt > prior.createdAt ||
+        (run.createdAt === prior.createdAt && run.id > prior.id)
+      )
+        successors.set(run.previous, run);
+    }
+    for (const source of this.runs) {
+      if (!source.questionId) continue;
+      let current = source;
+      const seen = new Set([source.id]);
+      while (true) {
+        const next = successors.get(current.id);
+        if (!next || seen.has(next.id)) break;
+        current = next;
+        seen.add(next.id);
+      }
+      const question = comments.get(source.questionId);
+      managedQuestions[source.questionId] = {
+        runId: source.id,
+        state: current.state,
+        ...(current.error ? { error: current.error } : {}),
+        ...(current.id !== source.id ? { retryRunId: current.id } : {}),
+        canAct:
+          current.id === source.id &&
+          !!question &&
+          (!question.resolved || !!source.questionRetryBlocked) &&
+          ["waiting_input", "recovery"].includes(source.state),
+      };
+    }
+    return {
+      ...state,
+      managedQuestions,
+      revision: hash(`${state.revision}\n${JSON.stringify(managedQuestions)}`),
     };
   }
   async testProfile(input: unknown, actor: Actor): Promise<ProfileTest> {
@@ -1192,7 +1245,10 @@ export class Orchestrator {
       )
         return;
       for (const run of this.runs.filter(
-        (r) => r.state === "waiting_input" && r.failureKind === "verification",
+        (r) =>
+          r.state === "waiting_input" &&
+          r.failureKind === "verification" &&
+          !r.questionRetryBlocked,
       )) {
         if (this.active.has(run.id)) continue;
         try {
@@ -1229,6 +1285,7 @@ export class Orchestrator {
         if (
           question?.resolved &&
           question.resolvedBy?.kind === "human" &&
+          !run.questionRetryBlocked &&
           !this.active.has(run.id)
         ) {
           try {
@@ -1291,7 +1348,7 @@ export class Orchestrator {
         )
           await this.question(
             run,
-            `${String(e)}\n\nInspect the run log and retained worktree, then resolve this question to retry. You can also stop the run or accept/reopen the ticket yourself.`,
+            `${String(e)}\n\nInspect the run log and retained worktree, then use Answer and retry on this question. Answer only keeps it paused; Stop run retains its work without retrying. You can also accept/reopen the ticket yourself.`,
           ).catch(() => {});
       })
       .finally(() => {
@@ -1912,27 +1969,166 @@ export class Orchestrator {
         ),
       );
   }
+  private stopNow(run: ManagedRun, actor: Actor) {
+    if (actor.kind !== "human" && actor.name !== this.config().reviewer.name)
+      throw new Problem(403, "Only the orchestrator or a human can stop a run");
+    if (!this.active.has(run.id) && this.originalProcessAlive(run))
+      throw new Problem(
+        409,
+        "Recovered process is not owned by this service. Stop it in its terminal before recovering; its PID will not be blindly killed.",
+      );
+    this.active.get(run.id)?.abort();
+    this.save(run, {
+      state: "interrupted",
+      failureKind: undefined,
+      limitReason: undefined,
+      questionRetryBlocked: undefined,
+      error: "Stopped explicitly; checkout and logs retained",
+    });
+    return run;
+  }
   async stop(id: string, actor: Actor) {
+    return this.serial(() => this.stopNow(this.run(id), actor));
+  }
+  async questionAction(id: string, input: unknown, actor: Actor) {
     return this.serial(async () => {
-      if (actor.kind !== "human" && actor.name !== this.config().reviewer.name)
-        throw new Problem(
-          403,
-          "Only the orchestrator or a human can stop a run",
-        );
-      const run = this.run(id);
-      if (!this.active.has(id) && this.originalProcessAlive(run))
+      this.human(actor);
+      const action = managedQuestionAction.parse(input),
+        run = this.run(id),
+        originalState = run.state;
+      if (!run.questionId || run.questionId !== action.questionId)
         throw new Problem(
           409,
-          "Recovered process is not owned by this service. Stop it in its terminal before recovering; its PID will not be blindly killed.",
+          "This question is not the current question for the selected run",
         );
-      this.active.get(id)?.abort();
-      this.save(run, {
-        state: "interrupted",
-        failureKind: undefined,
-        limitReason: undefined,
-        error: "Stopped explicitly; checkout and logs retained",
-      });
-      return run;
+      if (this.runs.some((candidate) => candidate.previous === run.id))
+        throw new Problem(
+          409,
+          "This question already has a retry run; use its current status",
+        );
+      if (!["waiting_input", "recovery"].includes(run.state))
+        throw new Problem(409, "This managed run is not waiting for an answer");
+      const comments = this.store.comments(),
+        question = comments.find((comment) => comment.id === action.questionId);
+      if (
+        !question ||
+        question.ticket !== run.ticket ||
+        question.kind !== "question"
+      )
+        throw new Problem(409, "The managed run question is unavailable");
+      if (question.revision !== action.revision)
+        throw new Problem(
+          409,
+          "Managed question changed; reload before choosing an action",
+        );
+      if (action.action === "stop")
+        return {
+          run: this.stopNow(run, actor),
+          question,
+          retried: false,
+        };
+      const answer = action.answer?.trim() ?? "",
+        hasHumanReply =
+          question.replies?.some((reply) => reply.actor.kind === "human") ||
+          comments.some(
+            (comment) =>
+              comment.ticket === run.ticket &&
+              comment.actor.kind === "human" &&
+              comment.body.startsWith(`Reply to question ${question.id} from `),
+          );
+      if (
+        question.resolved &&
+        !(action.action === "answer_retry" && run.questionRetryBlocked)
+      )
+        throw new Problem(409, "This managed question is no longer open");
+      if (!answer && !(action.action === "answer_retry" && hasHumanReply))
+        throw new Problem(422, "Write an answer before submitting");
+      if (action.action === "answer_retry")
+        this.save(run, { questionRetryBlocked: true });
+      let saved = question;
+      if (question.resolved && answer) {
+        const reopened = await this.store.resolveComment(
+          question.id,
+          question.revision,
+          false,
+          actor,
+        );
+        saved = await this.store.replyManagedQuestion(
+          reopened.id,
+          reopened.revision,
+          run.ticket,
+          run.id,
+          answer,
+          true,
+          actor,
+        );
+      } else if (answer)
+        saved = await this.store.replyManagedQuestion(
+          question.id,
+          question.revision,
+          run.ticket,
+          run.id,
+          answer,
+          action.action === "answer_retry",
+          actor,
+        );
+      else if (action.action === "answer_retry")
+        saved = await this.store.resolveComment(
+          question.id,
+          question.revision,
+          true,
+          actor,
+        );
+      if (action.action === "answer_only")
+        return { run, question: saved, retried: false };
+      try {
+        const retried = await this.resumeNow(run, actor);
+        this.save(run, { questionRetryBlocked: undefined });
+        return { run: retried, question: saved, retried: true };
+      } catch (error) {
+        let current = this.store
+          .comments()
+          .find((comment) => comment.id === question.id);
+        let retryError = redactStartupDiagnostic(
+          error instanceof Error ? error.message : String(error),
+        );
+        if (current?.resolved)
+          if (current.revision !== saved.revision) {
+            saved = current;
+            retryError +=
+              " Question changed concurrently and remains retry-blocked; reload before acting.";
+          } else
+            try {
+              saved = await this.store.resolveComment(
+                current.id,
+                current.revision,
+                false,
+                actor,
+              );
+            } catch (reopenError) {
+              current = this.store
+                .comments()
+                .find((comment) => comment.id === question.id);
+              if (current) saved = current;
+              retryError += ` Question remains retry-blocked because it could not be reopened: ${redactStartupDiagnostic(
+                reopenError instanceof Error
+                  ? reopenError.message
+                  : String(reopenError),
+              )}`;
+            }
+        if (!this.runs.some((candidate) => candidate.previous === run.id))
+          this.save(run, {
+            state: originalState,
+            questionRetryBlocked: true,
+            error: retryError,
+          });
+        return {
+          run,
+          question: saved,
+          retried: false,
+          retryError,
+        };
+      }
     });
   }
   async takeover(id: string, revision: string, actor: Actor) {
@@ -2096,7 +2292,7 @@ export class Orchestrator {
       if (question && !question.resolved)
         throw new Problem(
           409,
-          "Answer and resolve the ticket question before resuming",
+          "Use Answer and retry on the ticket question before resuming",
         );
     }
     if (!this.store.scope(ticket))

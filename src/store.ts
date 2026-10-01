@@ -2175,6 +2175,62 @@ export class Store {
       return this.loadComment(p);
     });
   }
+  replyManagedQuestion(
+    id: string,
+    revision: string,
+    ticket: string,
+    runId: string,
+    body: string,
+    resolve: boolean,
+    actor: Actor,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Managed run questions require a human reply");
+      if (!/^[A-Za-z0-9_-]+$/.test(id) || !/^[A-Za-z0-9_-]+$/.test(runId))
+        throw new Problem(400, "Invalid managed question identity");
+      const answer = z.string().trim().min(1).max(10000).parse(body),
+        p = this.file(`records/comments/${id}.md`),
+        s = read(p);
+      if (hash(s) !== revision)
+        throw new Problem(
+          409,
+          "Managed question changed; reload before replying",
+        );
+      const original = this.loadComment(p);
+      if (
+        original.kind !== "question" ||
+        original.ticket !== ticket ||
+        original.resolved
+      )
+        throw new Problem(409, "This managed question is no longer open");
+      const reply = { actor, at: now(), body: answer, runId },
+        patch = {
+          replies: [...(original.replies ?? []), reply],
+          ...(resolve
+            ? {
+                resolved: true,
+                resolvedBy: actor,
+                resolvedAt: reply.at,
+              }
+            : {}),
+        },
+        nextBody =
+          original.body +
+          `\n\n## Reply from ${actor.name} at ${reply.at}\n\n${answer}`;
+      atomic(p, patchMd(s, patch, nextBody));
+      const updated = this.loadComment(p);
+      this.history(
+        original.ticket,
+        actor,
+        resolve ? "answered managed question" : "replied to managed question",
+        original,
+        updated,
+      );
+      return updated;
+    });
+  }
   claim(ticket: string, actor: Actor, worktree: string, release = false) {
     return this.write(() => {
       const r = this.get(ticket);

@@ -85,7 +85,7 @@ export async function buildServer(
     ok: true,
     project: store.config().projectId,
   }));
-  app.get("/api/state", async () => store.state());
+  app.get("/api/state", async () => orchestration.projectState(store.state()));
   app.get("/api/feed", async (req: any) =>
     store.feed({
       cursor: req.query?.cursor,
@@ -157,6 +157,10 @@ export async function buildServer(
   app.post("/api/orchestration/:id/resume", async (req: any) =>
     orchestration.resume(req.params.id, actor(req.body)),
   );
+  app.post("/api/orchestration/:id/question-action", async (req: any) => {
+    const { actor: _actor, ...input } = req.body;
+    return orchestration.questionAction(req.params.id, input, actor(req.body));
+  });
   app.post("/api/orchestration/:id/review-context", async (req: any) =>
     orchestration.reviewContext(req.params.id, actor(req.body)),
   );

@@ -240,6 +240,38 @@ test("attention covers blockers, reviews, open questions, and changed rules", ()
   );
 });
 
+test("failed managed retry stays in attention even if its question could not reopen", () => {
+  const ticketRecord = ticket({ status: "progress" });
+  const state = stateOf([ticketRecord], {
+    comments: [
+      {
+        id: "question",
+        ticket: ticketRecord.meta.id,
+        actor: { name: "Agent", kind: "agent" },
+        at: "",
+        kind: "question",
+        body: "Choose a behavior",
+        resolved: true,
+        revision: "saved",
+      },
+    ],
+    managedQuestions: {
+      question: {
+        runId: "run",
+        state: "recovery",
+        canAct: true,
+        error: "Question could not be reopened",
+      },
+    },
+  });
+  assert.equal(
+    attentionReason(ticketRecord, state, context(state)),
+    "question",
+  );
+  state.managedQuestions!.question.canAct = false;
+  assert.equal(attentionReason(ticketRecord, state, context(state)), null);
+});
+
 test("saved views are validated in the project configuration", async (t) => {
   const root = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), "workboard-test-")),
@@ -296,9 +328,11 @@ test("status display edits and ordering preserve ticket IDs, history, and views"
   const before = s.get(ticket.meta.id);
   const columns = [
     { id: "concept", name: "Concept", role: "backlog" as const },
-    ...s.config().columns.map((column) =>
-      column.id === "backlog" ? { ...column, name: "Ideas" } : column,
-    ),
+    ...s
+      .config()
+      .columns.map((column) =>
+        column.id === "backlog" ? { ...column, name: "Ideas" } : column,
+      ),
   ];
   await s.updateConfig(revision(), { columns } as any);
   assert.equal(s.get(ticket.meta.id).meta.status, "backlog");

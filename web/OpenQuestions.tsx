@@ -1,6 +1,7 @@
 import { Questionnaire } from "./Questionnaire";
 import { useRef, useState } from "react";
-import type { Comment } from "../src/types";
+import type { Comment, ProjectState } from "../src/types";
+import { ManagedQuestionReply } from "./ManagedQuestion";
 import { actor, ago, api } from "./api";
 import { RecordMarkdown } from "./RecordMarkdown";
 
@@ -12,6 +13,8 @@ function Question({
   reload,
   onThread,
   openImage,
+  managedQuestions,
+  comments,
 }: {
   question: Comment;
   projectId: string;
@@ -20,6 +23,8 @@ function Question({
   reload: () => Promise<void>;
   onThread: (id: string) => void;
   openImage: (id: string) => void;
+  managedQuestions?: ProjectState["managedQuestions"];
+  comments: Comment[];
 }) {
   const key = `question-reply:${projectId}:${question.id}`;
   const [draft, setDraft] = useState(() => {
@@ -76,6 +81,7 @@ function Question({
   return (
     <article
       className="open-question"
+      id={`question-${question.id}`}
       aria-label={`Question from ${question.actor.name}`}
     >
       <div className="comment-heading">
@@ -86,45 +92,66 @@ function Question({
       <div className="markdown question-prompt">
         <RecordMarkdown openImage={openImage}>{question.body}</RecordMarkdown>
       </div>
-      {error && (
-        <p className="banner error" role="alert">
-          {error}
-        </p>
+      {managedQuestions?.[question.id] ? (
+        <>
+          <ManagedQuestionReply
+            question={question}
+            run={managedQuestions[question.id]}
+            comments={comments}
+            projectId={projectId}
+            disabled={disabled}
+            reload={reload}
+          />
+          <button className="text-button" onClick={() => onThread(question.id)}>
+            View in conversation
+          </button>
+        </>
+      ) : (
+        <>
+          {error && (
+            <p className="banner error" role="alert">
+              {error}
+            </p>
+          )}
+          {posted && (
+            <p role="status">
+              Answer posted to the conversation. Resolve this question when it
+              is answered.
+            </p>
+          )}
+          <label className="field">
+            Answer this question
+            <textarea
+              rows={2}
+              value={draft}
+              onChange={(e) => change(e.target.value)}
+              disabled={pending || disabled}
+            />
+          </label>
+          <div className="inline-actions">
+            <button
+              className="button"
+              disabled={pending || disabled || !draft.trim()}
+              onClick={() => void act(false)}
+            >
+              Post answer
+            </button>
+            <button
+              className="button subtle"
+              disabled={pending || disabled}
+              onClick={() => void act(true)}
+            >
+              Resolve question
+            </button>
+            <button
+              className="text-button"
+              onClick={() => onThread(question.id)}
+            >
+              View in conversation
+            </button>
+          </div>
+        </>
       )}
-      {posted && (
-        <p role="status">
-          Answer posted to the conversation. Resolve this question when it is
-          answered.
-        </p>
-      )}
-      <label className="field">
-        Answer this question
-        <textarea
-          rows={2}
-          value={draft}
-          onChange={(e) => change(e.target.value)}
-          disabled={pending || disabled}
-        />
-      </label>
-      <div className="inline-actions">
-        <button
-          className="button"
-          disabled={pending || disabled || !draft.trim()}
-          onClick={() => void act(false)}
-        >
-          Post answer
-        </button>
-        <button
-          className="button subtle"
-          disabled={pending || disabled}
-          onClick={() => void act(true)}
-        >
-          Resolve question
-        </button>
-        <button className="text-button" onClick={() => onThread(question.id)}>
-          View in conversation
-        </button>
-      </div>
     </article>
   );
 }

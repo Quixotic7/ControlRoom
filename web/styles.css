@@ -2388,6 +2388,18 @@ dialog::backdrop {
   overflow: auto;
   margin: 10px 0;
 }
+.managed-question-status {
+  border-left: 2px solid var(--accent);
+  padding: 8px 12px;
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+.managed-question-status small {
+  display: block;
+}
+.managed-question-status p {
+  margin: 6px 0 0;
+}
 .review-actions .inline-actions {
   align-items: end;
 }

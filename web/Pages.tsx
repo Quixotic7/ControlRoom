@@ -1,4 +1,5 @@
 import { ticketNavigation } from "./ticketNavigation";
+import { hasHumanReply } from "./ManagedQuestion";
 import React, { useState } from "react";
 import type { ProjectState, RecordFile } from "../src/types";
 import { ago, recordId } from "./api";
@@ -47,6 +48,8 @@ export function AttentionPage({
   onMarkSeen,
   proposals = [],
   onOpenAgents,
+  comments = [],
+  managedQuestions,
 }: {
   items: [RecordFile, AttentionReason][];
   changedDocs: RecordFile[];
@@ -54,6 +57,8 @@ export function AttentionPage({
   onMarkSeen: () => void;
   proposals?: NonNullable<ProjectState["agentConfigProposals"]>;
   onOpenAgents?: () => void;
+  comments?: ProjectState["comments"];
+  managedQuestions?: ProjectState["managedQuestions"];
 }) {
   return (
     <>
@@ -62,9 +67,27 @@ export function AttentionPage({
         description="Questions, blockers, and work ready for your judgment."
       />
       <div className="list-panel">
-        {proposals.map(proposal => <button key={proposal.id} className="list-row" onClick={onOpenAgents}><span className="row-main"><strong>Agent configuration proposal</strong><small>Proposed by {proposal.proposedBy.name} · review and apply in Agents</small></span></button>)}
+        {proposals.map((proposal) => (
+          <button key={proposal.id} className="list-row" onClick={onOpenAgents}>
+            <span className="row-main">
+              <strong>Agent configuration proposal</strong>
+              <small>
+                Proposed by {proposal.proposedBy.name} · review and apply in
+                Agents
+              </small>
+            </span>
+          </button>
+        ))}
         {items.map(([r, reason]) => {
           const Icon = reasons[reason][0];
+          const answeredOpen = comments.some(
+            (q) =>
+              q.ticket === r.meta.id &&
+              q.kind === "question" &&
+              (!q.resolved || managedQuestions?.[q.id]?.canAct) &&
+              managedQuestions?.[q.id] &&
+              hasHumanReply(q, comments),
+          );
           return (
             <button
               className="list-row"
@@ -79,6 +102,8 @@ export function AttentionPage({
                 <strong>{r.meta.title}</strong>
                 <small>
                   {reason === "blocked" ? r.meta.blocked : reasons[reason][1]}
+                  {answeredOpen &&
+                    " · Answer received; managed question still open"}
                 </small>
               </span>
               <span className="record-id">{recordId(r)}</span>

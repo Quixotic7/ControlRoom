@@ -11,6 +11,7 @@ import { ScreenshotPicker } from "./ScreenshotPicker";
 import { ImageThumbnail } from "./ImageThumbnail";
 import { ReviewActions, type ReviewActionDraft } from "./ReviewActions";
 import { OpenQuestions } from "./OpenQuestions";
+import { ManagedQuestionStatus } from "./ManagedQuestion";
 import { ReviewBrief } from "./ReviewBrief";
 import { QuickTicket } from "./QuickTicket";
 import { ExistingChild } from "./ExistingChild";
@@ -697,7 +698,9 @@ export function RecordDetail({
       {label}
       <input
         key={baseline?.revision ?? "new"}
-        defaultValue={(m[key] ?? (key === "repositories" ? ["main"] : [])).join(", ")}
+        defaultValue={(m[key] ?? (key === "repositories" ? ["main"] : [])).join(
+          ", ",
+        )}
         placeholder={placeholder}
         onChange={(e) => set(key, split(e.target.value))}
       />
@@ -785,7 +788,11 @@ export function RecordDetail({
                 </strong>
                 {c.kind === "question" && (
                   <span className="tag">
-                    {c.resolved ? "Resolved" : "Needs an answer"}
+                    {c.resolved && !state.managedQuestions?.[c.id]?.canAct
+                      ? "Resolved"
+                      : state.managedQuestions?.[c.id]
+                        ? "Needs your action"
+                        : "Needs an answer"}
                   </span>
                 )}
               </div>
@@ -798,6 +805,27 @@ export function RecordDetail({
               <div className="markdown">
                 <RecordMarkdown openImage={openImage}>{c.body}</RecordMarkdown>
               </div>
+              {state.managedQuestions?.[c.id] && (
+                <>
+                  <ManagedQuestionStatus
+                    question={c}
+                    run={state.managedQuestions[c.id]}
+                    comments={state.comments}
+                  />
+                  {(!c.resolved || state.managedQuestions?.[c.id]?.canAct) && (
+                    <button
+                      className="button subtle"
+                      onClick={() =>
+                        document
+                          .getElementById(`question-${c.id}`)
+                          ?.scrollIntoView({ block: "center" })
+                      }
+                    >
+                      Go to question actions
+                    </button>
+                  )}
+                </>
+              )}
               {c.questions && c.resolved && baseline && (
                 <Questionnaire
                   question={c}
@@ -806,25 +834,27 @@ export function RecordDetail({
                   reload={() => onSaved(baseline.meta.id)}
                 />
               )}
-              {c.kind === "question" && !c.questions && (
-                <button
-                  className="button subtle"
-                  onClick={async () => {
-                    try {
-                      await api(`/comments/${c.id}`, "PATCH", {
-                        revision: c.revision,
-                        resolved: !c.resolved,
-                        actor,
-                      });
-                      await onSaved(baseline!.meta.id);
-                    } catch (e) {
-                      setError(String(e));
-                    }
-                  }}
-                >
-                  {c.resolved ? "Reopen question" : "Resolve question"}
-                </button>
-              )}
+              {c.kind === "question" &&
+                !c.questions &&
+                !state.managedQuestions?.[c.id] && (
+                  <button
+                    className="button subtle"
+                    onClick={async () => {
+                      try {
+                        await api(`/comments/${c.id}`, "PATCH", {
+                          revision: c.revision,
+                          resolved: !c.resolved,
+                          actor,
+                        });
+                        await onSaved(baseline!.meta.id);
+                      } catch (e) {
+                        setError(String(e));
+                      }
+                    }}
+                  >
+                    {c.resolved ? "Reopen question" : "Resolve question"}
+                  </button>
+                )}
             </article>
           ))}
       </div>
@@ -1186,11 +1216,13 @@ export function RecordDetail({
             <OpenQuestions
               projectId={state.config.projectId}
               ticket={baseline.meta.id}
+              managedQuestions={state.managedQuestions}
+              comments={state.comments}
               questions={state.comments.filter(
                 (c) =>
                   c.ticket === baseline.meta.id &&
                   c.kind === "question" &&
-                  !c.resolved,
+                  (!c.resolved || state.managedQuestions?.[c.id]?.canAct),
               )}
               disabled={saving || state.branchChanged}
               openImage={openImage}
