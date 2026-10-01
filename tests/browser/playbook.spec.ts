@@ -36,6 +36,76 @@ test("playbook searches recipes and uses stable labelled group headings", async 
   );
 });
 
+test("top short command list distinguishes Codex and Claude Code and copies", async ({
+  page,
+}) => {
+  await openPlaybook(page);
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  const commands = page.getByRole("region", { name: "Short command skills" });
+  await expect(commands).toBeVisible();
+  await expect(commands).toContainText("Install the bundled skills");
+  await expect(commands).toContainText("Codex: $crrefresh");
+  await expect(commands).toContainText("Claude Code: /crrefresh");
+  await expect(commands).toContainText("Codex: $crnext");
+  await expect(commands).toContainText("Claude Code: /crnext");
+  await expect(commands).toContainText("Codex: $ccrefresh");
+  await expect(commands).toContainText("Claude Code: /ccrefresh");
+  await expect(commands).toContainText("these are not slash commands");
+
+  await commands.getByRole("button", { name: "Copy command list" }).click();
+  await expect(page.locator("[aria-live='polite']")).toHaveText(
+    "Prompt copied successfully.",
+  );
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toContain("Codex: $crrefresh");
+});
+
+test("short command list reveals its selected text if clipboard access is denied", async ({
+  page,
+}) => {
+  await openPlaybook(page);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error("Denied")) },
+    });
+    document.execCommand = () => false;
+  });
+  const commands = page.getByRole("region", { name: "Short command skills" });
+  await commands.getByRole("button", { name: "Copy command list" }).click();
+  const list = page.getByLabel("Short command list");
+  await expect(page.getByRole("status")).toHaveText(
+    "Copy is unavailable here. The prompt is selected; copy it manually.",
+  );
+  await expect(list).toBeVisible();
+  await expect(list).toBeFocused();
+  await expect(list).toHaveJSProperty("selectionStart", 0);
+  await expect(list).toHaveJSProperty(
+    "selectionEnd",
+    await list.evaluate((element: HTMLTextAreaElement) => element.value.length),
+  );
+});
+
+for (const width of [390, 768]) {
+  test(`short command list does not overflow at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openPlaybook(page);
+    await expect(
+      page.getByRole("region", { name: "Short command skills" }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  });
+}
+
 test("prompts can switch from the open project to a reusable template", async ({
   page,
 }) => {

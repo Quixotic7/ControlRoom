@@ -12,6 +12,13 @@ function publicTicketNumber(value: string) {
   return /^\d+$/.test(value.trim()) ? value.trim() : "TICKET_NUMBER";
 }
 
+const shortCommandList = `Codex: $crrefresh — refresh the board
+Claude Code: /crrefresh — refresh the board
+Codex: $crnext — inspect the next eligible approved ticket
+Claude Code: /crnext — inspect the next eligible approved ticket
+Codex: $ccrefresh — crrefresh compatibility alias
+Claude Code: /ccrefresh — crrefresh compatibility alias`;
+
 export function Playbook({
   project,
   branch,
@@ -24,6 +31,7 @@ export function Playbook({
   const [useCurrentProject, setUseCurrentProject] = useState(true);
   const [copied, setCopied] = useState("");
   const [copyError, setCopyError] = useState("");
+  const [copyFallbackId, setCopyFallbackId] = useState("");
   const prompts = useRef(new Map<string, HTMLTextAreaElement>());
   const ticket = publicTicketNumber(ticketNumber);
   const context: PlaybookContext = {
@@ -45,6 +53,7 @@ export function Playbook({
 
   async function copy(recipeId: string, prompt: string) {
     setCopyError("");
+    setCopyFallbackId("");
     try {
       await copyText(prompt);
       setCopied(recipeId);
@@ -53,6 +62,7 @@ export function Playbook({
       field?.focus();
       field?.select();
       setCopied("");
+      setCopyFallbackId(recipeId);
       setCopyError(
         "Copy is unavailable here. The prompt is selected; copy it manually.",
       );
@@ -65,6 +75,74 @@ export function Playbook({
         title="Help & playbook"
         description="Short, safe prompts for your existing coding agent. Copying only copies text—you choose where to paste or run it."
       />
+      <section
+        className="playbook-short-commands"
+        aria-labelledby="playbook-short-commands"
+      >
+        <div>
+          <h2 id="playbook-short-commands">Short command skills</h2>
+          <p>
+            Install the bundled skills in the checkout where the agent runs
+            first. The <strong>Install short command skills</strong> recipe
+            below has the setup command.
+          </p>
+        </div>
+        <dl>
+          <div>
+            <dt>Refresh board</dt>
+            <dd>
+              <code>Codex: $crrefresh</code>
+              <code>Claude Code: /crrefresh</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Next approved ticket</dt>
+            <dd>
+              <code>Codex: $crnext</code>
+              <code>Claude Code: /crnext</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Refresh compatibility alias</dt>
+            <dd>
+              <code>Codex: $ccrefresh</code>
+              <code>Claude Code: /ccrefresh</code>
+            </dd>
+          </div>
+        </dl>
+        <p className="playbook-command-note">
+          In Codex, select a skill or type <code>$name</code>; these are not
+          slash commands. In Claude Code, type <code>/name</code>.
+        </p>
+        <label className="sr-only" htmlFor="playbook-short-command-list">
+          Short command list
+        </label>
+        <textarea
+          ref={(element) => {
+            if (element) prompts.current.set("short-command-list", element);
+            else prompts.current.delete("short-command-list");
+          }}
+          className={`playbook-command-copy${
+            copyFallbackId === "short-command-list" ? " is-visible" : ""
+          }`}
+          id="playbook-short-command-list"
+          readOnly
+          value={shortCommandList}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+        <button
+          className="button playbook-command-copy-button"
+          onClick={() => void copy("short-command-list", shortCommandList)}
+        >
+          {copied === "short-command-list" ? (
+            <>
+              <CheckIcon /> Copied
+            </>
+          ) : (
+            "Copy command list"
+          )}
+        </button>
+      </section>
       <section className="playbook-intro" aria-label="Playbook context">
         <div>
           <strong>Current context</strong>
