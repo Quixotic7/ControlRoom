@@ -1,4 +1,7 @@
-import { readAgentConfigProposal, readAgentConfigProposals } from "./agent-config-proposals.js";
+import {
+  readAgentConfigProposal,
+  readAgentConfigProposals,
+} from "./agent-config-proposals.js";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -258,6 +261,8 @@ export class Orchestrator {
           activeStates.has(run.state) &&
           !["waiting_input", "awaiting_review"].includes(run.state)
         ) {
+          if (liveStates.has(run.state) && !run.pid)
+            run.processIdentityMissing = true;
           run.state = "recovery";
           run.error =
             "Service restarted. Inspect the retained checkout and process before resuming. No duplicate agent was launched.";
@@ -470,6 +475,7 @@ export class Orchestrator {
   }
   private stoppedProcessState(run: ManagedRun) {
     if (this.active.has(run.id)) return "active" as const;
+    if (run.processIdentityMissing) return "uncertain" as const;
     const processes = [
       run.pid ? { pid: run.pid, startedAt: run.processStartedAt } : undefined,
       run.lastProcess,
@@ -599,45 +605,113 @@ export class Orchestrator {
       .join("\n");
   }
   private validateProjectConfiguration(input: unknown, workerBrief?: string) {
-    const config = validateConfiguration(input,workerBrief);
+    const config = validateConfiguration(input, workerBrief);
     const companions = config.companionRepositories ?? [];
-    const names = companions.map(repo=>repo.name);
-    if(names.includes("main") || new Set(names).size !== names.length) throw new Problem(422,"Companion repository names must be unique; main is reserved");
-    if(config.enabled) {
-      for(const repo of companions) repo.repository=this.validateRepositoryRoot(repo.repository,repo.baseRef);
-      this.repositoryPlan({id:"validation",ticket:"validation"} as ManagedRun,config,null);
+    const names = companions.map((repo) => repo.name);
+    if (names.includes("main") || new Set(names).size !== names.length)
+      throw new Problem(
+        422,
+        "Companion repository names must be unique; main is reserved",
+      );
+    if (config.enabled) {
+      for (const repo of companions)
+        repo.repository = this.validateRepositoryRoot(
+          repo.repository,
+          repo.baseRef,
+        );
+      this.repositoryPlan(
+        { id: "validation", ticket: "validation" } as ManagedRun,
+        config,
+        null,
+      );
     }
     return config;
   }
-  async configure(input: unknown, revision: string, actor: Actor, workerBrief?: string) {
-    return this.serial(() => this.configureLocked(input, revision, actor, undefined, workerBrief));
+  async configure(
+    input: unknown,
+    revision: string,
+    actor: Actor,
+    workerBrief?: string,
+  ) {
+    return this.serial(() =>
+      this.configureLocked(input, revision, actor, undefined, workerBrief),
+    );
   }
-  private async configureLocked(input: unknown, revision: string, actor: Actor, proposal?: {id:string; revision:string}, workerBrief?: string) {
+  private async configureLocked(
+    input: unknown,
+    revision: string,
+    actor: Actor,
+    proposal?: { id: string; revision: string },
+    workerBrief?: string,
+  ) {
     this.human(actor);
-    if (revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; reload first");
+    if (revision !== this.configHash())
+      throw new Problem(409, "Orchestration settings changed; reload first");
     const config = this.validateProjectConfiguration(input, workerBrief);
-    await this.store.updateConfig(hash(read(this.store.file("config.yml"))), {orchestration:config}, actor, {proposal,workerBrief,expectedBriefRevision:this.workerBrief().revision});
+    await this.store.updateConfig(
+      hash(read(this.store.file("config.yml"))),
+      { orchestration: config },
+      actor,
+      {
+        proposal,
+        workerBrief,
+        expectedBriefRevision: this.workerBrief().revision,
+      },
+    );
     for (const controller of this.active.values()) controller.abort();
     return this.status();
   }
-  async proposeConfig(input: unknown, revision: string | undefined, actor: Actor, workerBrief?: string) {
+  async proposeConfig(
+    input: unknown,
+    revision: string | undefined,
+    actor: Actor,
+    workerBrief?: string,
+  ) {
     return this.serial(async () => {
-      if (revision && revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; refresh before proposing");
+      if (revision && revision !== this.configHash())
+        throw new Problem(
+          409,
+          "Orchestration settings changed; refresh before proposing",
+        );
       const config = this.validateProjectConfiguration(input, workerBrief);
-      return this.store.proposeAgentConfig({config,baseConfig:this.config(),baseRevision:this.configHash(),proposedBy:actor,...(workerBrief !== undefined ? {workerBrief,baseWorkerBrief:this.workerBrief().content} : {})}, actor);
+      return this.store.proposeAgentConfig(
+        {
+          config,
+          baseConfig: this.config(),
+          baseRevision: this.configHash(),
+          proposedBy: actor,
+          ...(workerBrief !== undefined
+            ? { workerBrief, baseWorkerBrief: this.workerBrief().content }
+            : {}),
+        },
+        actor,
+      );
     });
   }
   async applyConfigProposal(id: string, revision: string, actor: Actor) {
     return this.serial(async () => {
       this.human(actor);
-      const proposal = readAgentConfigProposal(this.store,id);
-      if (proposal.status !== "pending" || proposal.revision !== revision) throw new Problem(409, "Proposal changed; reload before applying");
-      if (proposal.baseRevision !== this.configHash()) throw new Problem(409, "Proposal is stale: configuration changed since it was proposed. Request a fresh proposal.");
-      return this.configureLocked(proposal.config, proposal.baseRevision, actor, {id,revision}, proposal.workerBrief);
+      const proposal = readAgentConfigProposal(this.store, id);
+      if (proposal.status !== "pending" || proposal.revision !== revision)
+        throw new Problem(409, "Proposal changed; reload before applying");
+      if (proposal.baseRevision !== this.configHash())
+        throw new Problem(
+          409,
+          "Proposal is stale: configuration changed since it was proposed. Request a fresh proposal.",
+        );
+      return this.configureLocked(
+        proposal.config,
+        proposal.baseRevision,
+        actor,
+        { id, revision },
+        proposal.workerBrief,
+      );
     });
   }
   async discardConfigProposal(id: string, revision: string, actor: Actor) {
-    return this.serial(() => this.store.discardAgentConfigProposal(id,revision,actor));
+    return this.serial(() =>
+      this.store.discardAgentConfigProposal(id, revision, actor),
+    );
   }
   private available(ticket: RecordFile) {
     if (
@@ -1093,7 +1167,7 @@ export class Orchestrator {
         token: this.reviewToken(run),
         context: this.store.contextMarkdown(run.ticket),
         instructions:
-          "Inspect the code diff in the retained worktree against baseCommit, acceptance criteria, rules and evidence. Submit accept, changes or human with summary, criteria, evidence and question. The service independently verifies and refuses stale tokens. Human gates remain enforced.",
+          "Inspect the diff for every entry in run.repositories using its worktree and baseCommit (or the legacy run.worktree/baseCommit when repositories are absent), together with acceptance criteria, rules and evidence. Check all writable branches and confirm read-only repositories remain unchanged. Submit accept, changes or human with summary, criteria, evidence and question. The service independently verifies and refuses stale tokens. Human gates remain enforced.",
       };
     });
   }
@@ -1264,8 +1338,16 @@ export class Orchestrator {
             timeout: limits.timeoutMinutes * 60000,
             maxTurns: limits.maxTurns,
             sessionId: run.sessionId,
-            additionalDirectories:
-              [...new Set([...(config.workerPermissions?.additionalDirectories ?? []),...(run.repositories ?? []).filter(repo=>repo.name !== "main" && repo.mode === "writable").map(repo=>repo.worktree)])],
+            additionalDirectories: [
+              ...new Set([
+                ...(config.workerPermissions?.additionalDirectories ?? []),
+                ...(run.repositories ?? [])
+                  .filter(
+                    (repo) => repo.name !== "main" && repo.mode === "writable",
+                  )
+                  .map((repo) => repo.worktree),
+              ]),
+            ],
             claudeAllowedTools:
               config.workerPermissions?.claudeAllowedTools ?? [],
             environment:
@@ -1340,9 +1422,17 @@ export class Orchestrator {
         pid: undefined,
         processStartedAt: undefined,
       });
+      const configuredNames = new Set([
+        config.reviewer.name,
+        ...config.workers.map((profile) => profile.name),
+      ]);
+      let verificationActor = "Control Room verifier";
+      while (configuredNames.has(verificationActor))
+        verificationActor += " (verification)";
       const verification = await this.runner({
         command: "/bin/sh",
         args: ["-lc", config.verificationCommand],
+        actorName: verificationActor,
         cwd: run.worktree!,
         input: "",
         timeout: this.verificationTimeout(config) * 60000,
@@ -1616,6 +1706,7 @@ export class Orchestrator {
           {
             title: task.title,
             parent: run.ticket,
+            repositories: this.store.get(run.ticket).meta.repositories,
             labels: this.store.get(run.ticket).meta.labels ?? [],
             rules: this.store.get(run.ticket).meta.rules ?? [],
             decisions: this.store.get(run.ticket).meta.decisions ?? [],

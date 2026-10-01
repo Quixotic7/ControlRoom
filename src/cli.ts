@@ -386,7 +386,16 @@ async function main() {
   if (command === "agents") {
     if (!id || id === "status") output(await api(store, "/api/orchestration"));
     else if (id === "propose") {
-      output(await api(store,"/api/orchestration/proposals","POST",{config:inputJson(),revision:option("etag"),actor:who,...(option("brief-file") ? {workerBrief:read(path.resolve(option("brief-file")!))} : {})}));
+      output(
+        await api(store, "/api/orchestration/proposals", "POST", {
+          config: inputJson(),
+          revision: option("etag"),
+          actor: who,
+          ...(option("brief-file")
+            ? { workerBrief: read(path.resolve(option("brief-file")!)) }
+            : {}),
+        }),
+      );
     } else if (id === "configure") {
       if (!option("etag"))
         throw new Error(

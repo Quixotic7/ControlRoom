@@ -13,6 +13,7 @@ export type AgentConfigProposal = {
   proposedBy: Actor;
   createdAt: string;
   baseRevision: string;
+  baseConfigSourceRevision?: string;
   baseConfig: OrchestrationConfig;
   config: OrchestrationConfig;
   workerBrief?: string;
@@ -37,6 +38,7 @@ const schema = z
     proposedBy: actor,
     createdAt: z.string().datetime(),
     baseRevision: z.string().min(1),
+    baseConfigSourceRevision: z.string().min(1).optional(),
     baseConfig: z.record(z.string(), z.unknown()),
     config: z.record(z.string(), z.unknown()),
     workerBrief: z.string().max(100000).optional(),

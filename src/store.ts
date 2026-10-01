@@ -1,4 +1,9 @@
-import { readAgentConfigProposal, readAgentConfigProposals, proposalPath, type AgentConfigProposal } from "./agent-config-proposals.js";
+import {
+  readAgentConfigProposal,
+  readAgentConfigProposals,
+  proposalPath,
+  type AgentConfigProposal,
+} from "./agent-config-proposals.js";
 import {
   questionsSchema,
   questionText,
@@ -440,7 +445,14 @@ export class Store {
     const proposals = readAgentConfigProposals(this);
     errors.push(...proposals.errors);
     const state = {
-      agentConfigProposals: proposals.proposals.filter(p => p.status === "pending").map(({id, proposedBy, createdAt, revision}) => ({id, proposedBy, createdAt, revision})),
+      agentConfigProposals: proposals.proposals
+        .filter((p) => p.status === "pending")
+        .map(({ id, proposedBy, createdAt, revision }) => ({
+          id,
+          proposedBy,
+          createdAt,
+          revision,
+        })),
       config: this.config(),
       configRevision: hash(read(this.file("config.yml"))),
       records,
@@ -468,7 +480,7 @@ export class Store {
         ...comments.map((c) => c.id + c.revision),
         ...attachments.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
         JSON.stringify(state.claims),
-        ...proposals.proposals.map(p => p.id + p.revision),
+        ...proposals.proposals.map((p) => p.id + p.revision),
         JSON.stringify(errors),
         state.branch,
         state.acknowledgedBranch,
@@ -643,7 +655,8 @@ export class Store {
         "A record transaction was interrupted and a file changed independently. Inspect .controlroom/.local/record-transaction.json before continuing.",
       );
     for (const entry of tx.files) {
-      if (entry.existed === false) fs.rmSync(this.file(entry.path), {force: true});
+      if (entry.existed === false)
+        fs.rmSync(this.file(entry.path), { force: true });
       else atomic(this.file(entry.path), entry.before);
     }
     fs.unlinkSync(journal);
@@ -781,7 +794,9 @@ export class Store {
     this.commitFiles(files);
     return changes.map((change) => this.get(change.old.meta.id));
   }
-  private commitFiles(files: {path:string; before:string; after:string; existed?:boolean}[]) {
+  private commitFiles(
+    files: { path: string; before: string; after: string; existed?: boolean }[],
+  ) {
     const journal = this.file(".local/record-transaction.json");
     atomic(journal, JSON.stringify({ schema: 1, at: now(), files }, null, 2));
     const written: typeof files = [];
@@ -795,7 +810,8 @@ export class Store {
       const recoveryErrors: string[] = [];
       for (const file of written.reverse())
         try {
-          if (file.existed === false) fs.rmSync(this.file(file.path), {force: true});
+          if (file.existed === false)
+            fs.rmSync(this.file(file.path), { force: true });
           else atomic(this.file(file.path), file.before);
         } catch (rollback) {
           recoveryErrors.push(`${file.path}: ${String(rollback)}`);
@@ -2689,15 +2705,55 @@ export class Store {
     const markdown = lines.join("\n") + "\n";
     return { markdown, tokens: Math.ceil(markdown.length / 4) };
   }
-  proposeAgentConfig(input: Omit<AgentConfigProposal, "revision" | "schema" | "id" | "createdAt" | "status">, actor: Actor) {
+  proposeAgentConfig(
+    input: Omit<
+      AgentConfigProposal,
+      "revision" | "schema" | "id" | "createdAt" | "status"
+    >,
+    actor: Actor,
+  ) {
     return this.write(() => {
       actorSchema.parse(actor);
-      const proposal = { ...input, proposedBy: actor, schema: 1 as const, id: uid("agent-proposal"), createdAt: now(), status: "pending" as const };
-      const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), before = existed ? read(this.file(historyPath)) : "";
-      const event = {id:uid("event"), record:"project", actor, action:"agent configuration proposed", at:now(), before:null, after:{id:proposal.id, proposedBy:actor, baseRevision:proposal.baseRevision}};
+      const proposal = {
+        ...input,
+        baseConfigSourceRevision: hash(
+          JSON.stringify(this.config().orchestration ?? null),
+        ),
+        proposedBy: actor,
+        schema: 1 as const,
+        id: uid("agent-proposal"),
+        createdAt: now(),
+        status: "pending" as const,
+      };
+      const historyPath = "records/history.jsonl",
+        existed = fs.existsSync(this.file(historyPath)),
+        before = existed ? read(this.file(historyPath)) : "";
+      const event = {
+        id: uid("event"),
+        record: "project",
+        actor,
+        action: "agent configuration proposed",
+        at: now(),
+        before: null,
+        after: {
+          id: proposal.id,
+          proposedBy: actor,
+          baseRevision: proposal.baseRevision,
+        },
+      };
       this.commitFiles([
-        {path:proposalPath(proposal.id), before:"", after:JSON.stringify(proposal,null,2), existed:false},
-        {path:historyPath,before,after:before+JSON.stringify(event)+"\n",existed},
+        {
+          path: proposalPath(proposal.id),
+          before: "",
+          after: JSON.stringify(proposal, null, 2),
+          existed: false,
+        },
+        {
+          path: historyPath,
+          before,
+          after: before + JSON.stringify(event) + "\n",
+          existed,
+        },
       ]);
       return readAgentConfigProposal(this, proposal.id);
     });
@@ -2705,20 +2761,62 @@ export class Store {
   discardAgentConfigProposal(id: string, revision: string, actor: Actor) {
     return this.write(() => {
       actorSchema.parse(actor);
-      if (actor.kind !== "human") throw new Problem(403, "Only a human can discard an agent configuration proposal");
+      if (actor.kind !== "human")
+        throw new Problem(
+          403,
+          "Only a human can discard an agent configuration proposal",
+        );
       const old = readAgentConfigProposal(this, id);
-      if (old.revision !== revision || old.status !== "pending") throw new Problem(409, "Proposal changed; reload before discarding");
-      const {revision: _, ...data} = old;
-      const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), before = existed ? read(this.file(historyPath)) : "";
-      const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal discarded",at:now(),before:{id,proposedBy:old.proposedBy},after:{id,decidedBy:actor}};
+      if (old.revision !== revision || old.status !== "pending")
+        throw new Problem(409, "Proposal changed; reload before discarding");
+      const { revision: _, ...data } = old;
+      const historyPath = "records/history.jsonl",
+        existed = fs.existsSync(this.file(historyPath)),
+        before = existed ? read(this.file(historyPath)) : "";
+      const event = {
+        id: uid("event"),
+        record: "project",
+        actor,
+        action: "agent configuration proposal discarded",
+        at: now(),
+        before: { id, proposedBy: old.proposedBy },
+        after: { id, decidedBy: actor },
+      };
       this.commitFiles([
-        {path:proposalPath(id),before:read(this.file(proposalPath(id))),after:JSON.stringify({...data,status:"discarded",decidedBy:actor,decidedAt:now()},null,2)},
-        {path:historyPath,before,after:before+JSON.stringify(event)+"\n",existed},
+        {
+          path: proposalPath(id),
+          before: read(this.file(proposalPath(id))),
+          after: JSON.stringify(
+            {
+              ...data,
+              status: "discarded",
+              decidedBy: actor,
+              decidedAt: now(),
+            },
+            null,
+            2,
+          ),
+        },
+        {
+          path: historyPath,
+          before,
+          after: before + JSON.stringify(event) + "\n",
+          existed,
+        },
       ]);
-      return readAgentConfigProposal(this,id);
+      return readAgentConfigProposal(this, id);
     });
   }
-  updateConfig(revision: string, patch: Partial<Config>, actor?: Actor, options?: {proposal?: {id: string; revision: string}; workerBrief?: string; expectedBriefRevision?: string}) {
+  updateConfig(
+    revision: string,
+    patch: Partial<Config>,
+    actor?: Actor,
+    options?: {
+      proposal?: { id: string; revision: string };
+      workerBrief?: string;
+      expectedBriefRevision?: string;
+    },
+  ) {
     return this.write(() => {
       if ("orchestration" in patch && actor?.kind !== "human")
         throw new Problem(
@@ -2759,33 +2857,129 @@ export class Store {
             `Move tickets out of ${r.meta.status} before removing it`,
           );
       const before = this.config().orchestration;
-      const {proposal,workerBrief} = options ?? {};
-      if (workerBrief !== undefined && (actor?.kind !== "human" || !patch.orchestration)) throw new Problem(403, "Only a human can configure the worker brief");
-      const briefPath = "agents/worker-brief.md", briefExists = fs.existsSync(this.file(briefPath)), briefBefore = briefExists ? read(this.file(briefPath)) : "";
-      if (options?.expectedBriefRevision && options.expectedBriefRevision !== hash(briefBefore)) throw new Problem(409, "Worker brief changed; reload first");
-      const briefFiles = workerBrief !== undefined ? [{path:briefPath,before:briefBefore,after:workerBrief,existed:briefExists}] : [];
+      const { proposal, workerBrief } = options ?? {};
+      if (
+        workerBrief !== undefined &&
+        (actor?.kind !== "human" || !patch.orchestration)
+      )
+        throw new Problem(403, "Only a human can configure the worker brief");
+      const briefPath = "agents/worker-brief.md",
+        briefExists = fs.existsSync(this.file(briefPath)),
+        briefBefore = briefExists ? read(this.file(briefPath)) : "";
+      if (
+        options?.expectedBriefRevision &&
+        options.expectedBriefRevision !== hash(briefBefore)
+      )
+        throw new Problem(409, "Worker brief changed; reload first");
+      const briefFiles =
+        workerBrief !== undefined
+          ? [
+              {
+                path: briefPath,
+                before: briefBefore,
+                after: workerBrief,
+                existed: briefExists,
+              },
+            ]
+          : [];
       if (proposal) {
-        if (actor?.kind !== "human" || !patch.orchestration) throw new Problem(403, "Only a human can apply an agent configuration proposal");
+        if (actor?.kind !== "human" || !patch.orchestration)
+          throw new Problem(
+            403,
+            "Only a human can apply an agent configuration proposal",
+          );
         const old = readAgentConfigProposal(this, proposal.id);
-        if (old.status !== "pending" || old.revision !== proposal.revision) throw new Problem(409, "Proposal changed; reload before applying");
-        if (!isDeepStrictEqual(patch.orchestration, old.config) || workerBrief !== old.workerBrief) throw new Problem(409, "Applied configuration must exactly match the reviewed proposal");
-        if (!isDeepStrictEqual({...old.baseConfig,...(before as Record<string,unknown> | undefined)},old.baseConfig) || hash(JSON.stringify({config:old.baseConfig,workerBrief:hash(briefBefore)})) !== old.baseRevision) throw new Problem(409, "Proposal is stale: configuration or worker brief changed");
-        const {revision: _, ...data} = old;
-        const accepted = {...data,status:"applied",decidedBy:actor,decidedAt:now()};
-        const historyPath = "records/history.jsonl", historyBefore = fs.existsSync(this.file(historyPath)) ? read(this.file(historyPath)) : "";
-        const event = {id:uid("event"),record:"project",actor,action:"agent configuration proposal applied",at:now(),before:{orchestration:before,workerBrief:briefBefore},after:{orchestration:patch.orchestration,workerBrief:workerBrief ?? briefBefore,proposalId:old.id,proposedBy:old.proposedBy,approvedBy:actor,proposalRevision:old.revision}};
+        if (old.status !== "pending" || old.revision !== proposal.revision)
+          throw new Problem(409, "Proposal changed; reload before applying");
+        if (
+          !isDeepStrictEqual(patch.orchestration, old.config) ||
+          workerBrief !== old.workerBrief
+        )
+          throw new Problem(
+            409,
+            "Applied configuration must exactly match the reviewed proposal",
+          );
+        if (
+          old.baseConfigSourceRevision !==
+            hash(JSON.stringify(before ?? null)) ||
+          hash(
+            JSON.stringify({
+              config: old.baseConfig,
+              workerBrief: hash(briefBefore),
+            }),
+          ) !== old.baseRevision
+        )
+          throw new Problem(
+            409,
+            "Proposal is stale: configuration or worker brief changed",
+          );
+        const { revision: _, ...data } = old;
+        const accepted = {
+          ...data,
+          status: "applied",
+          decidedBy: actor,
+          decidedAt: now(),
+        };
+        const historyPath = "records/history.jsonl",
+          historyBefore = fs.existsSync(this.file(historyPath))
+            ? read(this.file(historyPath))
+            : "";
+        const event = {
+          id: uid("event"),
+          record: "project",
+          actor,
+          action: "agent configuration proposal applied",
+          at: now(),
+          before: { orchestration: before, workerBrief: briefBefore },
+          after: {
+            orchestration: patch.orchestration,
+            workerBrief: workerBrief ?? briefBefore,
+            proposalId: old.id,
+            proposedBy: old.proposedBy,
+            approvedBy: actor,
+            proposalRevision: old.revision,
+          },
+        };
         this.commitFiles([
-          {path:"config.yml",before:s,after:YAML.stringify(c)},
+          { path: "config.yml", before: s, after: YAML.stringify(c) },
           ...briefFiles,
-          {path:proposalPath(old.id),before:read(this.file(proposalPath(old.id))),after:JSON.stringify(accepted,null,2)},
-          {path:historyPath,before:historyBefore,after:historyBefore+JSON.stringify(event)+"\n",existed:fs.existsSync(this.file(historyPath))},
+          {
+            path: proposalPath(old.id),
+            before: read(this.file(proposalPath(old.id))),
+            after: JSON.stringify(accepted, null, 2),
+          },
+          {
+            path: historyPath,
+            before: historyBefore,
+            after: historyBefore + JSON.stringify(event) + "\n",
+            existed: fs.existsSync(this.file(historyPath)),
+          },
         ]);
         return c;
       }
       if (workerBrief !== undefined) {
-        const historyPath = "records/history.jsonl", existed = fs.existsSync(this.file(historyPath)), historyBefore = existed ? read(this.file(historyPath)) : "";
-        const event = {id:uid("event"),record:"project",actor,action:"orchestration configured",at:now(),before:{orchestration:before,workerBrief:briefBefore},after:{orchestration:patch.orchestration,workerBrief}};
-        this.commitFiles([{path:"config.yml",before:s,after:YAML.stringify(c)},...briefFiles,{path:historyPath,before:historyBefore,after:historyBefore+JSON.stringify(event)+"\n",existed}]);
+        const historyPath = "records/history.jsonl",
+          existed = fs.existsSync(this.file(historyPath)),
+          historyBefore = existed ? read(this.file(historyPath)) : "";
+        const event = {
+          id: uid("event"),
+          record: "project",
+          actor,
+          action: "orchestration configured",
+          at: now(),
+          before: { orchestration: before, workerBrief: briefBefore },
+          after: { orchestration: patch.orchestration, workerBrief },
+        };
+        this.commitFiles([
+          { path: "config.yml", before: s, after: YAML.stringify(c) },
+          ...briefFiles,
+          {
+            path: historyPath,
+            before: historyBefore,
+            after: historyBefore + JSON.stringify(event) + "\n",
+            existed,
+          },
+        ]);
         return c;
       }
       atomic(p, YAML.stringify(c));

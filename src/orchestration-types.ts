@@ -73,6 +73,7 @@ export type ManagedRun = {
   processStartedAt?: string;
   sessionId?: string;
   resumeCount?: number;
+  processIdentityMissing?: boolean;
   lastProcess?: { pid: number; startedAt?: string };
   worktree?: string;
   branch?: string;

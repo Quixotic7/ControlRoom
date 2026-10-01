@@ -1984,3 +1984,130 @@ test("agent runners pass retained sessions to both providers and classify turn l
   );
   assert.ok(seen[2].args.includes('sandbox_mode="read-only"'));
 });
+
+test("planned children retain an approved goal's repository selection", async (t) => {
+  const f = await fixture(t),
+    companion = createRepository(f.root, "goal-companion");
+  await f.manager.configure(
+    {
+      ...f.config,
+      companionRepositories: [
+        {
+          name: "companion",
+          repository: companion,
+          baseRef: "main",
+          relativePath: "../companion",
+          mode: "writable",
+        },
+      ],
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const parent = await f.create("Companion-only goal", {
+    repositories: ["companion"],
+  });
+  const run = await f.manager.enqueue(
+    parent.meta.id,
+    "plan",
+    undefined,
+    human,
+    parent.revision,
+  );
+  await until(
+    f.manager,
+    () =>
+      f.manager.status().runs.find((r) => r.id === run.id)?.state ===
+      "completed",
+  );
+  const children = f.store
+    .list()
+    .filter((r) => r.meta.parent === parent.meta.id);
+  assert.equal(children.length, 2);
+  for (const child of children)
+    assert.deepEqual(child.meta.repositories, ["companion"]);
+});
+
+test("verification subprocesses replace inherited reviewer identity with a distinct agent", async (t) => {
+  const f = await fixture(t);
+  const names = [
+    "CONTROLROOM_ACTOR",
+    "WORKBOARD_ACTOR",
+    "CONTROLROOM_ACTOR_KIND",
+    "WORKBOARD_ACTOR_KIND",
+  ];
+  const saved = Object.fromEntries(
+    names.map((name) => [name, process.env[name]]),
+  );
+  t.after(() => {
+    for (const name of names) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+  });
+  process.env.CONTROLROOM_ACTOR = "Control Room verifier";
+  process.env.WORKBOARD_ACTOR = "Control Room verifier";
+  process.env.CONTROLROOM_ACTOR_KIND = "human";
+  process.env.WORKBOARD_ACTOR_KIND = "human";
+  await f.manager.configure(
+    {
+      ...f.config,
+      reviewer: { ...f.config.reviewer, name: "Control Room verifier" },
+      verificationCommand:
+        'test "$CONTROLROOM_ACTOR_KIND" = agent && test "$WORKBOARD_ACTOR_KIND" = agent && test "$CONTROLROOM_ACTOR" = "Control Room verifier (verification)" && test "$WORKBOARD_ACTOR" = "$CONTROLROOM_ACTOR"',
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Verifier attribution");
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  assert.equal(f.store.get(ticket.meta.id).meta.verification?.exitCode, 0);
+});
+
+test("restart cannot resume live work whose process identity was never persisted", async (t) => {
+  const f = await fixture(t),
+    ticket = await f.create("Unknown process after crash");
+  const run = await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await f.manager.close();
+  const journal = f.store.file(".local/orchestration/runs.json"),
+    runs = JSON.parse(fs.readFileSync(journal, "utf8"));
+  runs[0].state = "launching";
+  delete runs[0].pid;
+  delete runs[0].lastProcess;
+  delete runs[0].sessionId;
+  delete runs[0].lastEvent;
+  fs.writeFileSync(journal, JSON.stringify(runs));
+  const restored = new Orchestrator(f.store);
+  t.after(() => restored.close());
+  assert.equal(restored.status().runs[0].processIdentityMissing, true);
+  await assert.rejects(
+    restored.resume(run.id, human),
+    /exit cannot be verified/,
+  );
+  await restored.stop(run.id, human);
+  await assert.rejects(
+    restored.resume(run.id, human),
+    /exit cannot be verified/,
+  );
+  await restored.close();
+  const again = new Orchestrator(f.store);
+  t.after(() => again.close());
+  await assert.rejects(again.resume(run.id, human), /exit cannot be verified/);
+  assert.equal(again.status().runs.length, 1);
+});

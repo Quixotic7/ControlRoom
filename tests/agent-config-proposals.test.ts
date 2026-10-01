@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import YAML from "yaml";
 import os from "node:os";
 import path from "node:path";
-import {backup,restore} from "../src/transfer.js";
-import {hash} from "../src/files.js";
+import { backup, restore } from "../src/transfer.js";
+import { hash } from "../src/files.js";
 import { Store } from "../src/store.js";
 import { Orchestrator, defaultOrchestration } from "../src/orchestration.js";
 import {
@@ -186,44 +187,147 @@ test("malformed proposal files surface in state, and path traversal is rejected"
   );
 });
 
-
 test("worker brief proposal applies atomically and brief edits invalidate proposals", async (t) => {
-  const {store,manager} = fixture(t);
+  const { store, manager } = fixture(t);
   const original = manager.status();
-  const p = await manager.proposeConfig(original.config, original.revision, agent, "# Build\nUse the project caches.");
+  const p = await manager.proposeConfig(
+    original.config,
+    original.revision,
+    agent,
+    "# Build\nUse the project caches.",
+  );
   assert.equal(manager.workerBrief().content, "");
-  await manager.applyConfigProposal(p.id,p.revision,human);
-  assert.equal(manager.workerBrief().content, "# Build\nUse the project caches.");
-  assert.equal(readAgentConfigProposal(store,p.id).status,"applied");
-  const next = await manager.proposeConfig(manager.config(),undefined,agent,"Replacement");
-  await manager.configure(manager.config(),manager.status().revision,human,"Human edit");
-  await assert.rejects(manager.applyConfigProposal(next.id,next.revision,human), /stale/);
-  assert.equal(manager.workerBrief().content,"Human edit");
-  const preserved = await manager.proposeConfig(manager.config(),undefined,agent);
-  await manager.applyConfigProposal(preserved.id,preserved.revision,human);
-  assert.equal(manager.workerBrief().content,"Human edit");
+  await manager.applyConfigProposal(p.id, p.revision, human);
+  assert.equal(
+    manager.workerBrief().content,
+    "# Build\nUse the project caches.",
+  );
+  assert.equal(readAgentConfigProposal(store, p.id).status, "applied");
+  const next = await manager.proposeConfig(
+    manager.config(),
+    undefined,
+    agent,
+    "Replacement",
+  );
+  await manager.configure(
+    manager.config(),
+    manager.status().revision,
+    human,
+    "Human edit",
+  );
+  await assert.rejects(
+    manager.applyConfigProposal(next.id, next.revision, human),
+    /stale/,
+  );
+  assert.equal(manager.workerBrief().content, "Human edit");
+  const preserved = await manager.proposeConfig(
+    manager.config(),
+    undefined,
+    agent,
+  );
+  await manager.applyConfigProposal(preserved.id, preserved.revision, human);
+  assert.equal(manager.workerBrief().content, "Human edit");
 });
 
-
-test("store refuses proposal substitution and changed brief under the write lock", async(t) => {
-  const {store,manager} = fixture(t);
-  const p=await manager.proposeConfig(manager.config(),undefined,agent,"Proposed brief");
-  const revision=()=>hash(fs.readFileSync(store.file("config.yml"),"utf8"));
-  await assert.rejects(store.updateConfig(revision(),{orchestration:{...p.config,maxTurns:31}},human,{proposal:{id:p.id,revision:p.revision},workerBrief:p.workerBrief}),/exactly match/);
-  await assert.rejects(store.updateConfig(revision(),{orchestration:p.config},human,{proposal:{id:p.id,revision:p.revision},workerBrief:"Different"}),/exactly match/);
-  fs.mkdirSync(store.file("agents"),{recursive:true});fs.writeFileSync(store.file("agents/worker-brief.md"),"External edit");
-  await assert.rejects(store.updateConfig(revision(),{orchestration:p.config},human,{proposal:{id:p.id,revision:p.revision},workerBrief:p.workerBrief}),/stale/);
-  assert.equal(readAgentConfigProposal(store,p.id).status,"pending");
+test("store refuses proposal substitution and changed brief under the write lock", async (t) => {
+  const { store, manager } = fixture(t);
+  const p = await manager.proposeConfig(
+    manager.config(),
+    undefined,
+    agent,
+    "Proposed brief",
+  );
+  const revision = () =>
+    hash(fs.readFileSync(store.file("config.yml"), "utf8"));
+  await assert.rejects(
+    store.updateConfig(
+      revision(),
+      { orchestration: { ...p.config, maxTurns: 31 } },
+      human,
+      {
+        proposal: { id: p.id, revision: p.revision },
+        workerBrief: p.workerBrief,
+      },
+    ),
+    /exactly match/,
+  );
+  await assert.rejects(
+    store.updateConfig(revision(), { orchestration: p.config }, human, {
+      proposal: { id: p.id, revision: p.revision },
+      workerBrief: "Different",
+    }),
+    /exactly match/,
+  );
+  fs.mkdirSync(store.file("agents"), { recursive: true });
+  fs.writeFileSync(store.file("agents/worker-brief.md"), "External edit");
+  await assert.rejects(
+    store.updateConfig(revision(), { orchestration: p.config }, human, {
+      proposal: { id: p.id, revision: p.revision },
+      workerBrief: p.workerBrief,
+    }),
+    /stale/,
+  );
+  assert.equal(readAgentConfigProposal(store, p.id).status, "pending");
 });
 
+test("backup and restore preserve pending proposals and worker brief", async (t) => {
+  const a = fixture(t),
+    b = fixture(t);
+  await a.manager.configure(
+    a.manager.config(),
+    a.manager.status().revision,
+    human,
+    "Existing guidance",
+  );
+  const p = await a.manager.proposeConfig(
+    a.manager.config(),
+    undefined,
+    agent,
+    "Proposed guidance",
+  );
+  const pack = await backup(a.store);
+  await restore(b.store, pack);
+  assert.equal(b.manager.workerBrief().content, "Existing guidance");
+  assert.equal(
+    readAgentConfigProposal(b.store, p.id).workerBrief,
+    "Proposed guidance",
+  );
+  await b.manager.applyConfigProposal(p.id, p.revision, human);
+  assert.equal(b.manager.workerBrief().content, "Proposed guidance");
+});
 
-test("backup and restore preserve pending proposals and worker brief",async(t)=>{
- const a=fixture(t),b=fixture(t);
- await a.manager.configure(a.manager.config(),a.manager.status().revision,human,"Existing guidance");
- const p=await a.manager.proposeConfig(a.manager.config(),undefined,agent,"Proposed guidance");
- const pack=await backup(a.store);await restore(b.store,pack);
- assert.equal(b.manager.workerBrief().content,"Existing guidance");
- assert.equal(readAgentConfigProposal(b.store,p.id).workerBrief,"Proposed guidance");
- await b.manager.applyConfigProposal(p.id,p.revision,human);
- assert.equal(b.manager.workerBrief().content,"Proposed guidance");
+test("proposal apply rejects a deleted configuration key inside the write lock", async (t) => {
+  const { store, manager } = fixture(t);
+  await manager.configure(
+    {
+      ...manager.config(),
+      workerPermissions: {
+        claudeAllowedTools: ["Bash(swift build *)"],
+        additionalDirectories: [],
+        environment: [],
+      },
+    },
+    manager.status().revision,
+    human,
+  );
+  const p = await manager.proposeConfig(manager.config(), undefined, agent);
+  const file = store.file("config.yml"),
+    config = YAML.parse(fs.readFileSync(file, "utf8"));
+  delete config.orchestration.workerPermissions;
+  fs.writeFileSync(file, YAML.stringify(config));
+  await assert.rejects(
+    store.updateConfig(
+      hash(fs.readFileSync(file, "utf8")),
+      { orchestration: p.config },
+      human,
+      { proposal: { id: p.id, revision: p.revision } },
+    ),
+    /stale/,
+  );
+  assert.equal(
+    store.config().orchestration &&
+      (store.config().orchestration as any).workerPermissions,
+    undefined,
+  );
+  assert.equal(readAgentConfigProposal(store, p.id).status, "pending");
 });
