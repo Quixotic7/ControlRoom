@@ -168,6 +168,7 @@ const metaSchema = z
     supersedes: z.string().optional(),
     references: strings.optional(),
     worktree: z.string().optional(),
+    repositories: strings.optional(),
     branch: z.string().max(300).optional(),
     pr: z.string().max(500).optional(),
     commits: strings.optional(),

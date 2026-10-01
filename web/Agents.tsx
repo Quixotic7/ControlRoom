@@ -10,6 +10,7 @@ import type { ProjectState } from "../src/types";
 import { actor, api, isRemoteBrowser, recordId } from "./api";
 import { WorkerPermissionsEditor } from "./WorkerPermissions";
 import "./agents.css";
+import { CompanionRepositories } from "./CompanionRepositories";
 type Snapshot = {
   proposals?: {
     proposals: AgentConfigProposal[];
@@ -316,6 +317,12 @@ export function Agents({
               <small>Blank uses the model step limit.</small>
             </label>
           </div>
+          <CompanionRepositories
+            value={draft.companionRepositories ?? []}
+            onChange={(companionRepositories) =>
+              patch({ companionRepositories })
+            }
+          />
           <label>
             Orchestration location
             <select
@@ -606,6 +613,16 @@ export function Agents({
                   <dd>{run.worktree || "Not allocated"}</dd>
                   <dt>Branch</dt>
                   <dd>{run.branch || "Not allocated"}</dd>
+                  {run.repositories?.map((repository) => (
+                    <div key={repository.name}>
+                      <dt>{repository.name} repository</dt>
+                      <dd>
+                        {repository.worktree} · {repository.mode} ·{" "}
+                        {repository.branch ??
+                          `detached ${repository.baseCommit}`}
+                      </dd>
+                    </div>
+                  ))}
                   <dt>Code identity</dt>
                   <dd>{run.snapshot || "No submission"}</dd>
                   <dt>Session</dt>

@@ -1285,6 +1285,11 @@ export function RecordDetail({
                       )}
                       onChange={(v) => set("labels", v)}
                     />
+                    {array(
+                      "repositories",
+                      "Writable repositories",
+                      "main, companion-name (empty keeps single-repo default)",
+                    )}
                     {field(
                       "worktree",
                       "Code worktree / branch",

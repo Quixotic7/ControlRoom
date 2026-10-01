@@ -18,11 +18,24 @@ export type WorkerPermissions = {
   additionalDirectories: string[];
   environment: WorkerEnvironmentVariable[];
 };
+export type CompanionRepository = {
+  name: string;
+  repository: string;
+  baseRef: string;
+  relativePath: string;
+  mode: "writable" | "read-only";
+};
+export type ManagedRepository = CompanionRepository & {
+  worktree: string;
+  baseCommit: string;
+  branch?: string;
+};
 export type OrchestrationConfig = {
   enabled: boolean;
   reviewerMode?: "managed" | "chat";
   repository: string;
   baseRef: string;
+  companionRepositories?: CompanionRepository[];
   reviewer: AgentProfile;
   workers: AgentProfile[];
   concurrency: number;
@@ -63,6 +76,7 @@ export type ManagedRun = {
   worktree?: string;
   branch?: string;
   baseCommit?: string;
+  repositories?: ManagedRepository[];
   revision: string;
   contextHash?: string;
   configHash: string;
@@ -109,4 +123,12 @@ export type AgentReviewReceipt = {
   criteria: string;
   evidence: string;
   integration: "not-integrated";
+  repositories?: Array<{
+    name: string;
+    branch?: string;
+    baseCommit: string;
+    head: string;
+    mode: "writable" | "read-only";
+    code: string;
+  }>;
 };

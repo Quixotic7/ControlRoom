@@ -88,6 +88,231 @@ async function until(m: Orchestrator, predicate: () => boolean) {
   }
   assert.fail(JSON.stringify(m.status().runs, null, 2));
 }
+function createRepository(root: string, name: string) {
+  const repository = path.join(root, name);
+  fs.mkdirSync(repository);
+  git(repository, "init", "-b", "main");
+  git(repository, "config", "user.name", "Test");
+  git(repository, "config", "user.email", "test@localhost");
+  fs.writeFileSync(path.join(repository, "README.md"), `${name}\n`);
+  git(repository, "add", ".");
+  git(repository, "commit", "-m", "Initial");
+  return repository;
+}
+
+test("managed runs lay out companion repositories and review a two-repository submission", async (t) => {
+  const runner: Execute = async (options) => {
+    const response = await execute(options);
+    if (!options.input.startsWith("Independently"))
+      fs.writeFileSync(
+        path.resolve(options.cwd, "../companion/feature.txt"),
+        "companion change\n",
+      );
+    return response;
+  };
+  const f = await fixture(t, runner);
+  const companion = createRepository(f.root, "companion-source");
+  await f.manager.configure(
+    {
+      ...f.config,
+      verificationCommand:
+        "test -f README.md && test -f ../companion/README.md",
+      companionRepositories: [
+        {
+          name: "companion",
+          repository: companion,
+          baseRef: "main",
+          relativePath: "../companion",
+          mode: "writable",
+        },
+      ],
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Cross repository", {
+    repositories: ["main", "companion"],
+  });
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(
+    f.manager,
+    () => f.store.get(ticket.meta.id).meta.status === "done",
+  );
+  const work = f.manager.status().runs.find((run) => run.kind === "work")!;
+  assert.deepEqual(
+    work.repositories?.map((repo) => repo.mode),
+    ["writable", "writable"],
+  );
+  assert.equal(
+    path.relative(work.worktree!, work.repositories![1].worktree),
+    "../companion",
+  );
+  assert.ok(work.changedFiles?.some((file) => file.startsWith("main:")));
+  assert.ok(work.changedFiles?.includes("companion:feature.txt"));
+  const receipt = f.store.get(ticket.meta.id).meta.agentReview!;
+  assert.deepEqual(
+    receipt.repositories?.map((repo) => repo.name),
+    ["main", "companion"],
+  );
+  assert.ok(receipt.repositories?.every((repo) => repo.branch));
+});
+
+test("unselected companions are detached and changed read-only repositories are rejected", async (t) => {
+  const runner: Execute = async (options) => {
+    const response = await execute(options);
+    if (!options.input.startsWith("Independently"))
+      fs.writeFileSync(
+        path.resolve(options.cwd, "../companion/forbidden.txt"),
+        "changed\n",
+      );
+    return response;
+  };
+  const f = await fixture(t, runner);
+  const companion = createRepository(f.root, "readonly-source");
+  await f.manager.configure(
+    {
+      ...f.config,
+      companionRepositories: [
+        {
+          name: "companion",
+          repository: companion,
+          baseRef: "main",
+          relativePath: "../companion",
+          mode: "writable",
+        },
+      ],
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Main only");
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () =>
+    f.manager.status().runs.some((run) => run.state === "waiting_input"),
+  );
+  const run = f.manager
+    .status()
+    .runs.find((candidate) => candidate.kind === "work")!;
+  assert.equal(run.repositories?.[1].mode, "read-only");
+  assert.equal(run.repositories?.[1].branch, undefined);
+  assert.match(run.error ?? "", /Read-only repository companion changed/);
+  assert.equal(f.store.get(ticket.meta.id).meta.status, "progress");
+});
+
+test("two-repository chat review rejects a companion change after submission", async (t) => {
+  const runner: Execute = async (options) => {
+    const response = await execute(options);
+    if (!options.input.startsWith("Independently"))
+      fs.writeFileSync(
+        path.resolve(options.cwd, "../companion/submitted.txt"),
+        "submitted\n",
+      );
+    return response;
+  };
+  const f = await fixture(t, runner);
+  const companion = createRepository(f.root, "stale-source");
+  await f.manager.configure(
+    {
+      ...f.config,
+      reviewerMode: "chat",
+      companionRepositories: [
+        {
+          name: "companion",
+          repository: companion,
+          baseRef: "main",
+          relativePath: "../companion",
+          mode: "writable",
+        },
+      ],
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Stale companion review", {
+    repositories: ["main", "companion"],
+  });
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () =>
+    f.manager
+      .status()
+      .runs.some(
+        (run) => run.kind === "review" && run.state === "awaiting_review",
+      ),
+  );
+  const review = f.manager.status().runs.find((run) => run.kind === "review")!;
+  const companionWorktree = review.repositories!.find(
+    (repo) => repo.name === "companion",
+  )!.worktree;
+  fs.writeFileSync(
+    path.join(companionWorktree, "after-submission.txt"),
+    "stale\n",
+  );
+  await assert.rejects(
+    f.manager.reviewContext(review.id, { name: "Orchestrator", kind: "agent" }),
+    /Submitted code changed/,
+  );
+});
+
+test("companion configuration rejects duplicate roots and escaping destinations", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(
+    f.manager.configure(
+      {
+        ...f.config,
+        companionRepositories: [
+          {
+            name: "duplicate",
+            repository: f.repository,
+            baseRef: "main",
+            relativePath: "../duplicate",
+            mode: "read-only",
+          },
+        ],
+      },
+      f.manager.status().revision,
+      human,
+    ),
+    /destinations overlap/,
+  );
+  const companion = createRepository(f.root, "escape-source");
+  await assert.rejects(
+    f.manager.configure(
+      {
+        ...f.config,
+        companionRepositories: [
+          {
+            name: "escape",
+            repository: companion,
+            baseRef: "main",
+            relativePath: "../../../outside",
+            mode: "read-only",
+          },
+        ],
+      },
+      f.manager.status().revision,
+      human,
+    ),
+    /escapes the run workspace/,
+  );
+});
 test("managed plan launches two distinct harness workers, independently reviews both, and preserves parent and main checkout", async (t) => {
   const { manager, store, create, repository } = await fixture(t);
   const parent = await create("Approved goal");

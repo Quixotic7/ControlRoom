@@ -81,6 +81,7 @@ export type Meta = {
   supersedes?: string;
   references?: string[];
   worktree?: string;
+  repositories?: string[];
   // Links from a ticket to the code that implements it.
   branch?: string;
   pr?: string;

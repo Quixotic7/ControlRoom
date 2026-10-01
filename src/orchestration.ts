@@ -21,6 +21,7 @@ import type {
   ManagedRun,
   OrchestrationConfig,
   AgentReviewReceipt,
+  ManagedRepository,
 } from "./orchestration-types.js";
 
 const profile = z.object({
@@ -46,12 +47,20 @@ const workerPermissions = z
     environment: z.array(environmentVariable).max(100),
   })
   .strict();
+const companionRepository = z.object({
+  name: z.string().trim().min(1).max(80),
+  repository: z.string().max(2000),
+  baseRef: z.string().max(200),
+  relativePath: z.string().trim().min(1).max(500),
+  mode: z.enum(["writable", "read-only"]),
+});
 export const orchestrationSchema = z
   .object({
     enabled: z.boolean(),
     reviewerMode: z.enum(["managed", "chat"]).default("managed"),
     repository: z.string().max(2000),
     baseRef: z.string().max(200),
+    companionRepositories: z.array(companionRepository).max(12).default([]),
     reviewer: profile,
     workers: z.array(profile).min(1).max(8),
     concurrency: z.number().int().min(1).max(8),
@@ -73,6 +82,7 @@ export const defaultOrchestration: OrchestrationConfig = {
   reviewerMode: "managed",
   repository: "",
   baseRef: "HEAD",
+  companionRepositories: [],
   reviewer: {
     name: "Orchestrator",
     provider: "codex",
@@ -316,6 +326,125 @@ export class Orchestrator {
     Object.assign(run, patch, { updatedAt: now() });
     this.persist();
   }
+  private code(run: ManagedRun) {
+    const repositories = run.repositories?.length
+      ? run.repositories
+      : run.worktree && run.baseCommit
+        ? [{ name: "main", worktree: run.worktree, baseCommit: run.baseCommit }]
+        : [];
+    const identities = repositories
+      .map((repo) => ({
+        name: repo.name,
+        ...codeIdentity(repo.worktree, repo.baseCommit),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      hash: hash(
+        JSON.stringify(identities.map(({ name, hash }) => ({ name, hash }))),
+      ),
+      files: identities.flatMap((identity) =>
+        identity.files.map((file) => `${identity.name}:${file}`),
+      ),
+    };
+  }
+  private validateRepositoryRoot(repository: string, baseRef: string) {
+    if (!path.isAbsolute(repository) || !fs.existsSync(repository))
+      throw new Problem(422, "Choose an existing absolute Git repository path");
+    const root = fs.realpathSync(repository);
+    if (git(root, "rev-parse", "--show-toplevel") !== root)
+      throw new Problem(422, "Choose the repository root");
+    if (!baseRef || baseRef.startsWith("-"))
+      throw new Problem(422, "Choose a Git base ref");
+    git(root, "rev-parse", "--verify", `${baseRef}^{commit}`);
+    return root;
+  }
+  private repositoryPlan(
+    run: ManagedRun,
+    config = this.config(),
+    requestedOverride?: string[] | null,
+  ) {
+    const runRoot = this.store.file(`.local/orchestration/worktrees/${run.id}`);
+    const mainRoot = fs.realpathSync(config.repository);
+    const mainWorktree = config.companionRepositories?.length
+      ? path.join(runRoot, path.basename(mainRoot))
+      : runRoot;
+    const requested =
+      requestedOverride === undefined
+        ? this.store.get(run.ticket).meta.repositories
+        : (requestedOverride ?? undefined);
+    const selected = requested ? new Set(requested) : new Set(["main"]);
+    const known = new Set([
+      "main",
+      ...(config.companionRepositories ?? []).map((r) => r.name),
+    ]);
+    for (const name of selected)
+      if (!known.has(name))
+        throw new Problem(422, `Unknown ticket repository: ${name}`);
+    const specs = [
+      {
+        name: "main",
+        repository: mainRoot,
+        baseRef: config.baseRef,
+        relativePath: ".",
+        mode: selected.has("main")
+          ? ("writable" as const)
+          : ("read-only" as const),
+        worktree: mainWorktree,
+      },
+      ...(config.companionRepositories ?? []).map((repo) => {
+        if (path.isAbsolute(repo.relativePath))
+          throw new Problem(
+            422,
+            `Companion ${repo.name} path must be relative`,
+          );
+        return {
+          ...repo,
+          repository: fs.realpathSync(repo.repository),
+          mode:
+            repo.mode === "writable" && selected.has(repo.name)
+              ? ("writable" as const)
+              : ("read-only" as const),
+          worktree: path.resolve(mainWorktree, repo.relativePath),
+        };
+      }),
+    ];
+    const canonicalRunRoot = path.resolve(runRoot);
+    for (const spec of specs) {
+      if (
+        spec.worktree !== canonicalRunRoot &&
+        !spec.worktree.startsWith(`${canonicalRunRoot}${path.sep}`)
+      )
+        throw new Problem(
+          422,
+          `Companion ${spec.name} path escapes the run workspace`,
+        );
+      let ancestor = path.dirname(spec.worktree);
+      while (
+        ancestor.startsWith(canonicalRunRoot) &&
+        ancestor !== canonicalRunRoot
+      ) {
+        if (fs.existsSync(ancestor) && fs.lstatSync(ancestor).isSymbolicLink())
+          throw new Problem(
+            422,
+            `Companion ${spec.name} path crosses a symbolic link`,
+          );
+        ancestor = path.dirname(ancestor);
+      }
+    }
+    for (let i = 0; i < specs.length; i++)
+      for (let j = i + 1; j < specs.length; j++)
+        if (
+          specs[i].repository === specs[j].repository ||
+          specs[i].worktree === specs[j].worktree ||
+          specs[i].worktree.startsWith(`${specs[j].worktree}${path.sep}`) ||
+          specs[j].worktree.startsWith(`${specs[i].worktree}${path.sep}`)
+        )
+          throw new Problem(
+            422,
+            `Repository destinations overlap: ${specs[i].name} and ${specs[j].name}`,
+          );
+    return { runRoot, specs };
+  }
   private role(r: RecordFile) {
     return this.store.config().columns.find((c) => c.id === r.meta.status)
       ?.role;
@@ -451,13 +580,24 @@ export class Orchestrator {
       )
       .join("\n");
   }
+  private validateProjectConfiguration(input: unknown, workerBrief?: string) {
+    const config = validateConfiguration(input,workerBrief);
+    const companions = config.companionRepositories ?? [];
+    const names = companions.map(repo=>repo.name);
+    if(names.includes("main") || new Set(names).size !== names.length) throw new Problem(422,"Companion repository names must be unique; main is reserved");
+    if(config.enabled) {
+      for(const repo of companions) repo.repository=this.validateRepositoryRoot(repo.repository,repo.baseRef);
+      this.repositoryPlan({id:"validation",ticket:"validation"} as ManagedRun,config,null);
+    }
+    return config;
+  }
   async configure(input: unknown, revision: string, actor: Actor, workerBrief?: string) {
     return this.serial(() => this.configureLocked(input, revision, actor, undefined, workerBrief));
   }
   private async configureLocked(input: unknown, revision: string, actor: Actor, proposal?: {id:string; revision:string}, workerBrief?: string) {
     this.human(actor);
     if (revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; reload first");
-    const config = validateConfiguration(input, workerBrief);
+    const config = this.validateProjectConfiguration(input, workerBrief);
     await this.store.updateConfig(hash(read(this.store.file("config.yml"))), {orchestration:config}, actor, {proposal,workerBrief,expectedBriefRevision:this.workerBrief().revision});
     for (const controller of this.active.values()) controller.abort();
     return this.status();
@@ -465,7 +605,7 @@ export class Orchestrator {
   async proposeConfig(input: unknown, revision: string | undefined, actor: Actor, workerBrief?: string) {
     return this.serial(async () => {
       if (revision && revision !== this.configHash()) throw new Problem(409, "Orchestration settings changed; refresh before proposing");
-      const config = validateConfiguration(input, workerBrief);
+      const config = this.validateProjectConfiguration(input, workerBrief);
       return this.store.proposeAgentConfig({config,baseConfig:this.config(),baseRevision:this.configHash(),proposedBy:actor,...(workerBrief !== undefined ? {workerBrief,baseWorkerBrief:this.workerBrief().content} : {})}, actor);
     });
   }
@@ -589,11 +729,7 @@ export class Orchestrator {
             worktree: prior.worktree,
             branch: prior.branch,
             baseCommit: prior.baseCommit,
-            ...("repositories" in prior
-              ? {
-                  repositories: (prior as Record<string, unknown>).repositories,
-                }
-              : {}),
+            repositories: prior.repositories,
             ...(kind === "review"
               ? {
                   submission:
@@ -658,15 +794,42 @@ export class Orchestrator {
         if (!submitted?.worktree)
           return `Dependency #${dep.meta.number} needs integration verification`;
         try {
-          git(
-            this.config().repository,
-            "merge-base",
-            "--is-ancestor",
-            git(submitted.worktree, "rev-parse", "HEAD"),
-            this.config().baseRef,
-          );
+          const config = this.config();
+          const configured = new Map<
+            string,
+            { repository: string; baseRef: string }
+          >([
+            [
+              "main",
+              { repository: config.repository, baseRef: config.baseRef },
+            ],
+            ...(config.companionRepositories ?? []).map(
+              (repo) => [repo.name, repo] as const,
+            ),
+          ]);
+          for (const repo of submitted.repositories?.filter(
+            (r) => r.mode === "writable",
+          ) ?? []) {
+            const target = configured.get(repo.name);
+            if (!target) throw new Error("Repository configuration changed");
+            git(
+              target.repository,
+              "merge-base",
+              "--is-ancestor",
+              git(repo.worktree, "rev-parse", "HEAD"),
+              target.baseRef,
+            );
+          }
+          if (!submitted.repositories)
+            git(
+              config.repository,
+              "merge-base",
+              "--is-ancestor",
+              git(submitted.worktree, "rev-parse", "HEAD"),
+              config.baseRef,
+            );
         } catch {
-          return `Merge dependency #${dep.meta.number}'s retained branch into ${this.config().baseRef} before starting this ticket`;
+          return `Merge dependency #${dep.meta.number}'s retained repository branches before starting this ticket`;
         }
       }
     }
@@ -886,7 +1049,7 @@ export class Orchestrator {
         id: run.id,
         revision: this.store.get(run.ticket).revision,
         context: this.contextHash(run.ticket),
-        code: codeIdentity(run.worktree!, run.baseCommit!).hash,
+        code: this.code(run).hash,
         config: this.configHash(),
       }),
     );
@@ -898,7 +1061,7 @@ export class Orchestrator {
       if (run.kind !== "review" || run.state !== "awaiting_review")
         throw new Problem(409, "This run is not awaiting chat review");
       this.guard(run, false);
-      if (codeIdentity(run.worktree!, run.baseCommit!).hash !== run.snapshot)
+      if (this.code(run).hash !== run.snapshot)
         throw new Problem(
           409,
           "Submitted code changed; request a new submission",
@@ -969,27 +1132,41 @@ export class Orchestrator {
     const directory = this.store.file(`.local/orchestration/${run.id}`);
     fs.mkdirSync(directory, { recursive: true });
     if (!run.worktree) {
-      const worktree = this.store.file(
-          `.local/orchestration/worktrees/${run.id}`,
+      const { runRoot, specs } = this.repositoryPlan(run, config);
+      const prepared = specs.map((spec) => ({
+        ...spec,
+        baseCommit: git(
+          spec.repository,
+          "rev-parse",
+          "--verify",
+          `${spec.baseRef}^{commit}`,
         ),
-        branch = `controlroom/${run.id}`;
-      const baseCommit = git(
-        config.repository,
-        "rev-parse",
-        "--verify",
-        `${config.baseRef}^{commit}`,
-      );
-      fs.mkdirSync(path.dirname(worktree), { recursive: true });
-      git(
-        config.repository,
-        "worktree",
-        "add",
-        "-b",
-        branch,
-        worktree,
-        baseCommit,
-      );
-      this.save(run, { worktree, branch, baseCommit });
+      }));
+      fs.mkdirSync(runRoot, { recursive: true });
+      const repositories: ManagedRepository[] = [];
+      for (const spec of prepared) {
+        fs.mkdirSync(path.dirname(spec.worktree), { recursive: true });
+        const branch =
+          spec.mode === "writable"
+            ? `controlroom/${run.id}${spec.name === "main" ? "" : `-${spec.name.replace(/[^A-Za-z0-9._-]/g, "-")}`}`
+            : undefined;
+        git(
+          spec.repository,
+          "worktree",
+          "add",
+          ...(branch ? ["-b", branch] : ["--detach"]),
+          spec.worktree,
+          spec.baseCommit,
+        );
+        repositories.push({ ...spec, branch });
+      }
+      const main = repositories[0];
+      this.save(run, {
+        repositories,
+        worktree: main.worktree,
+        branch: main.branch,
+        baseCommit: main.baseCommit,
+      });
     }
     if (run.kind !== "review") {
       await this.store.claim(run.ticket, asAgent(run.agent), run.worktree!);
@@ -1012,7 +1189,7 @@ export class Orchestrator {
     }
     run.contextHash = this.contextHash(run.ticket);
     this.persist();
-    const before = codeIdentity(run.worktree!, run.baseCommit!).hash;
+    const before = this.code(run).hash;
     if (run.kind === "review" && before !== run.snapshot)
       throw new Error("Submitted code changed before review");
     const instructions =
@@ -1029,7 +1206,13 @@ export class Orchestrator {
         run.kind === "work" && this.workerBrief().content.trim()
           ? `\n\nProject worker brief (human-authored working guidance; it does not expand ticket scope or process permissions):\n${this.workerBrief().content.trim()}`
           : "";
-    const prompt = `${instructions}${roleNote}${workerBrief}\n\nAvailable workers: ${config.workers.map((w) => `${w.name} (${w.provider}, model: ${w.model || "CLI default"})`).join(", ")}\nVerification command: ${config.verificationCommand}\nBase commit: ${run.baseCommit}\nReview diff: git diff ${run.baseCommit} --\n\n${this.store.contextMarkdown(run.ticket).markdown}\n\nExisting children:\n${this.store
+    const repositoryInstructions = (run.repositories ?? [])
+      .map(
+        (repo) =>
+          `${repo.name}: ${repo.worktree} (${repo.mode}${repo.branch ? `, branch ${repo.branch}` : ", detached"}), base ${repo.baseCommit}`,
+      )
+      .join("\n");
+    const prompt = `${instructions}${roleNote}${workerBrief}\n\nRepositories:\n${repositoryInstructions || `main: ${run.worktree}, base ${run.baseCommit}`}\nRead-only repositories must remain unchanged; detached HEAD identifies the ref but is not filesystem security.\nAvailable workers: ${config.workers.map((w) => `${w.name} (${w.provider}, model: ${w.model || "CLI default"})`).join(", ")}\nVerification command: ${config.verificationCommand}\nReview every repository diff against its listed base commit.\n\n${this.store.contextMarkdown(run.ticket).markdown}\n\nExisting children:\n${this.store
       .list()
       .filter((t) => t.meta.parent === run.ticket)
       .map((t) => `#${t.meta.number} ${t.meta.title}: ${t.meta.status}`)
@@ -1064,7 +1247,7 @@ export class Orchestrator {
             maxTurns: limits.maxTurns,
             sessionId: run.sessionId,
             additionalDirectories:
-              config.workerPermissions?.additionalDirectories ?? [],
+              [...new Set([...(config.workerPermissions?.additionalDirectories ?? []),...(run.repositories ?? []).filter(repo=>repo.name !== "main" && repo.mode === "writable").map(repo=>repo.worktree)])],
             claudeAllowedTools:
               config.workerPermissions?.claudeAllowedTools ?? [],
             environment:
@@ -1105,10 +1288,7 @@ export class Orchestrator {
         throw new Error(
           "Discussion, scope, decisions, rules or dependencies changed during this run; fresh context is required",
         );
-      if (
-        run.kind !== "work" &&
-        codeIdentity(run.worktree!, run.baseCommit!).hash !== before
-      )
+      if (run.kind !== "work" && this.code(run).hash !== before)
         throw new Error(
           "Planner/reviewer changed the checkout; independent human review is required",
         );
@@ -1157,10 +1337,7 @@ export class Orchestrator {
           `Independent verification failed with exit ${verification.code}. Inspect the verification log.`,
         );
       }
-      if (
-        run.kind === "review" &&
-        codeIdentity(run.worktree!, run.baseCommit!).hash !== run.snapshot
-      )
+      if (run.kind === "review" && this.code(run).hash !== run.snapshot)
         throw new Error(
           "Reviewed code changed during verification; acceptance was refused",
         );
@@ -1173,21 +1350,42 @@ export class Orchestrator {
       };
       if (run.kind === "work") {
         // Commit only inside this service-created checkout, leaving the user's checkout untouched.
-        git(run.worktree!, "add", "--all");
-        if (git(run.worktree!, "diff", "--cached", "--name-only"))
-          git(
-            run.worktree!,
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "user.name=Control Room",
-            "-c",
-            "user.email=controlroom@localhost",
-            "commit",
-            "-m",
-            `Control Room submission ${run.id}`,
-          );
-        const code = codeIdentity(run.worktree!, run.baseCommit!);
+        const managedRepositories = run.repositories ?? [
+          {
+            name: "main",
+            repository: config.repository,
+            baseRef: config.baseRef,
+            relativePath: ".",
+            mode: "writable" as const,
+            worktree: run.worktree!,
+            baseCommit: run.baseCommit!,
+            branch: run.branch,
+          },
+        ];
+        for (const repo of managedRepositories) {
+          const changed = codeIdentity(repo.worktree, repo.baseCommit);
+          if (repo.mode === "read-only" && changed.files.length)
+            throw new Problem(
+              409,
+              `Read-only repository ${repo.name} changed; acceptance refused`,
+            );
+          if (repo.mode !== "writable") continue;
+          git(repo.worktree, "add", "--all");
+          if (git(repo.worktree, "diff", "--cached", "--name-only"))
+            git(
+              repo.worktree,
+              "-c",
+              "core.hooksPath=/dev/null",
+              "-c",
+              "user.name=Control Room",
+              "-c",
+              "user.email=controlroom@localhost",
+              "commit",
+              "-m",
+              `Control Room submission ${run.id}`,
+            );
+        }
+        const code = this.code(run);
         this.save(run, { snapshot: code.hash, changedFiles: code.files });
         const saved = await this.store.managedUpdate(
           run.ticket,
@@ -1204,7 +1402,9 @@ export class Orchestrator {
               ...this.store.get(run.ticket).meta.assignment!,
               state: "submitted",
             },
-            commits: [git(run.worktree!, "rev-parse", "HEAD")],
+            commits: managedRepositories
+              .filter((repo) => repo.mode === "writable")
+              .map((repo) => git(repo.worktree, "rev-parse", "HEAD")),
           },
           asAgent(run.agent),
           () => this.guard(run),
@@ -1269,6 +1469,14 @@ export class Orchestrator {
           criteria: result.criteria,
           evidence: result.evidence,
           integration: "not-integrated",
+          repositories: (submission.repositories ?? []).map((repo) => ({
+            name: repo.name,
+            branch: repo.branch,
+            baseCommit: repo.baseCommit,
+            head: git(repo.worktree, "rev-parse", "HEAD"),
+            mode: repo.mode,
+            code: codeIdentity(repo.worktree, repo.baseCommit).hash,
+          })),
         };
         const saved = await this.store.managedUpdate(
           run.ticket,
@@ -1288,7 +1496,7 @@ export class Orchestrator {
             this.guard(run);
             if (
               this.contextHash(run.ticket) !== run.contextHash ||
-              codeIdentity(run.worktree!, run.baseCommit!).hash !== run.snapshot
+              this.code(run).hash !== run.snapshot
             )
               throw new Problem(
                 409,
@@ -1299,7 +1507,7 @@ export class Orchestrator {
         );
         await this.store.comment(
           run.ticket,
-          `## Orchestrator review: ${outcome}\n\n${result.summary}\n\n### Acceptance criteria checked\n${result.criteria}\n\n### Evidence\n${result.evidence}\n\nReviewer: ${run.agent.name}; worker: ${submission.agent.name}\nCode identity: ${run.snapshot}\nIntegration: not performed. Retained branch: ${run.branch}`,
+          `## Orchestrator review: ${outcome}\n\n${result.summary}\n\n### Acceptance criteria checked\n${result.criteria}\n\n### Evidence\n${result.evidence}\n\nReviewer: ${run.agent.name}; worker: ${submission.agent.name}\nCode identity: ${run.snapshot}\nIntegration: not performed. Retained repositories: ${(submission.repositories ?? []).map((repo) => `${repo.name}=${repo.branch ?? `${repo.baseCommit} (read-only)`}`).join(", ") || run.branch}`,
           asAgent(run.agent),
           "review",
         );
