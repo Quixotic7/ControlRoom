@@ -45,7 +45,7 @@ export function WorkerPermissionsEditor({
           rows={6}
           value={value.claudeAllowedTools.join("\n")}
           placeholder={
-            "Bash(swift build *)\nBash(git add *)\nBash(git commit *)"
+            "Bash(swift build:*)\nBash(git add:*)\nBash(git commit:*)"
           }
           onChange={(event) =>
             onChange({
@@ -62,6 +62,18 @@ export function WorkerPermissionsEditor({
           command allow-list flag: it keeps its workspace sandbox and any
           trusted ambient Codex rules. Control Room does not create or broaden
           those rules.
+        </small>
+        <small>
+          For Bash, a trailing <code>:*</code> is the command-prefix form:{" "}
+          <code>Bash(node:*)</code> matches <code>node</code> with or without
+          arguments at a word boundary, while <code>Bash(node*)</code> can also
+          match names such as <code>nodejs</code>. File rules use separate
+          gitignore-style path patterns such as <code>Read(/path/**)</code>.
+          Every part of a compound command such as <code>a &amp;&amp; b</code>{" "}
+          must match independently. Invocation forms are distinct, so{" "}
+          <code>Bash(git status:*)</code> does not cover{" "}
+          <code>git -C /path status</code>; add the specific required form
+          instead of a broad Git grant.
         </small>
       </label>
       <label>
