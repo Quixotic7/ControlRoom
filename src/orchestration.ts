@@ -409,6 +409,18 @@ export class Orchestrator {
       }),
     ];
     const canonicalRunRoot = path.resolve(runRoot);
+    const rejectSymlink = (candidate: string, name: string) => {
+      try {
+        if (fs.lstatSync(candidate).isSymbolicLink())
+          throw new Problem(
+            422,
+            `Companion ${name} path crosses a symbolic link`,
+          );
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    };
+    rejectSymlink(canonicalRunRoot, "workspace");
     for (const spec of specs) {
       if (
         spec.worktree !== canonicalRunRoot &&
@@ -418,16 +430,10 @@ export class Orchestrator {
           422,
           `Companion ${spec.name} path escapes the run workspace`,
         );
-      let ancestor = path.dirname(spec.worktree);
-      while (
-        ancestor.startsWith(canonicalRunRoot) &&
-        ancestor !== canonicalRunRoot
-      ) {
-        if (fs.existsSync(ancestor) && fs.lstatSync(ancestor).isSymbolicLink())
-          throw new Problem(
-            422,
-            `Companion ${spec.name} path crosses a symbolic link`,
-          );
+      let ancestor = spec.worktree;
+      while (ancestor.startsWith(canonicalRunRoot)) {
+        rejectSymlink(ancestor, spec.name);
+        if (ancestor === canonicalRunRoot) break;
         ancestor = path.dirname(ancestor);
       }
     }
@@ -1364,11 +1370,17 @@ export class Orchestrator {
         ];
         for (const repo of managedRepositories) {
           const changed = codeIdentity(repo.worktree, repo.baseCommit);
-          if (repo.mode === "read-only" && changed.files.length)
+          if (
+            repo.mode === "read-only" &&
+            (changed.files.length ||
+              git(repo.worktree, "rev-parse", "HEAD") !== repo.baseCommit)
+          )
             throw new Problem(
               409,
               `Read-only repository ${repo.name} changed; acceptance refused`,
             );
+        }
+        for (const repo of managedRepositories) {
           if (repo.mode !== "writable") continue;
           git(repo.worktree, "add", "--all");
           if (git(repo.worktree, "diff", "--cached", "--name-only"))

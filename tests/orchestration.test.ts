@@ -211,6 +211,53 @@ test("unselected companions are detached and changed read-only repositories are 
   assert.equal(f.store.get(ticket.meta.id).meta.status, "progress");
 });
 
+test("read-only head movement is rejected before writable repositories are committed", async (t) => {
+  const runner: Execute = async (options) => {
+    const response = await execute(options);
+    if (!options.input.startsWith("Independently"))
+      git(
+        path.resolve(options.cwd, "../companion"),
+        "commit",
+        "--allow-empty",
+        "-m",
+        "forbidden detached commit",
+      );
+    return response;
+  };
+  const f = await fixture(t, runner);
+  const companion = createRepository(f.root, "head-source");
+  await f.manager.configure(
+    {
+      ...f.config,
+      companionRepositories: [
+        {
+          name: "companion",
+          repository: companion,
+          baseRef: "main",
+          relativePath: "../companion",
+          mode: "writable",
+        },
+      ],
+    },
+    f.manager.status().revision,
+    human,
+  );
+  const ticket = await f.create("Reject read-only commit");
+  await f.manager.enqueue(
+    ticket.meta.id,
+    "work",
+    "Worker 1",
+    human,
+    ticket.revision,
+  );
+  await until(f.manager, () =>
+    f.manager.status().runs.some((run) => run.state === "waiting_input"),
+  );
+  const run = f.manager.status().runs.find((candidate) => candidate.kind === "work")!;
+  assert.match(run.error ?? "", /Read-only repository companion changed/);
+  assert.equal(git(run.worktree!, "rev-parse", "HEAD"), run.baseCommit);
+});
+
 test("two-repository chat review rejects a companion change after submission", async (t) => {
   const runner: Execute = async (options) => {
     const response = await execute(options);
@@ -311,6 +358,30 @@ test("companion configuration rejects duplicate roots and escaping destinations"
       human,
     ),
     /escapes the run workspace/,
+  );
+  const validationRoot = f.store.file(
+    ".local/orchestration/worktrees/validation",
+  );
+  fs.mkdirSync(path.dirname(validationRoot), { recursive: true });
+  fs.symlinkSync(f.root, validationRoot);
+  await assert.rejects(
+    f.manager.configure(
+      {
+        ...f.config,
+        companionRepositories: [
+          {
+            name: "linked",
+            repository: companion,
+            baseRef: "main",
+            relativePath: "../linked",
+            mode: "read-only",
+          },
+        ],
+      },
+      f.manager.status().revision,
+      human,
+    ),
+    /[Ss]ymbolic link/,
   );
 });
 test("managed plan launches two distinct harness workers, independently reviews both, and preserves parent and main checkout", async (t) => {
