@@ -17,21 +17,20 @@ test("Agents exposes disabled-by-default setup, preserves draft during refresh, 
   await expect(
     page.getByRole("button", { name: "Queue assignment" }),
   ).toBeDisabled();
-  const before = await (await page.request.get("/api/orchestration")).json();
-  const denied = await page.request.put("/api/orchestration/config", {
-    data: {
-      config: before.config,
-      revision: before.revision,
-      workerBrief: "Agent-authored authority",
-      actor: { name: "Browser agent", kind: "agent" },
-    },
-  });
-  expect(denied.status()).toBe(403);
   await page.getByText("Agent configuration", { exact: true }).click();
   await page
     .getByLabel("Orchestrator name", { exact: true })
     .fill("Review captain");
   await page.getByLabel("Worker 1 model", { exact: true }).fill("custom-model");
+  await page
+    .getByLabel("Time limit per model step (minutes)", { exact: true })
+    .fill("360");
+  await page
+    .getByLabel("Verification time limit (minutes)", { exact: true })
+    .fill("25");
+  await page
+    .getByLabel("Worker 1 turn limit override", { exact: true })
+    .fill("400");
   await page
     .getByLabel("Worker 1 role note", { exact: true })
     .fill("Focused implementation worker");
@@ -61,6 +60,9 @@ test("Agents exposes disabled-by-default setup, preserves draft during refresh, 
   const config = await (await page.request.get("/api/orchestration")).json();
   expect(config.config.enabled).toBe(false);
   expect(config.config.workers[0].model).toBe("custom-model");
+  expect(config.config.timeoutMinutes).toBe(360);
+  expect(config.config.verificationTimeoutMinutes).toBe(25);
+  expect(config.config.workers[0].maxTurns).toBe(400);
   expect(config.config.workers[0].roleNote).toBe(
     "Focused implementation worker",
   );

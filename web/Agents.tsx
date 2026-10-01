@@ -1,5 +1,5 @@
-import {AgentConfigProposals} from "./AgentConfigProposals";
-import type {AgentConfigProposal} from "../src/agent-config-proposals";
+import { AgentConfigProposals } from "./AgentConfigProposals";
+import type { AgentConfigProposal } from "../src/agent-config-proposals";
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentProfile,
@@ -11,7 +11,10 @@ import { actor, api, isRemoteBrowser, recordId } from "./api";
 import { WorkerPermissionsEditor } from "./WorkerPermissions";
 import "./agents.css";
 type Snapshot = {
-  proposals?: {proposals:AgentConfigProposal[];errors:{path:string;message:string}[]};
+  proposals?: {
+    proposals: AgentConfigProposal[];
+    errors: { path: string; message: string }[];
+  };
   config: OrchestrationConfig;
   revision: string;
   workerBrief: { path: string; content: string; revision: string };
@@ -167,12 +170,35 @@ export function Agents({
           </article>
         ))}
       </div>
-      <AgentConfigProposals proposals={snapshot.proposals?.proposals ?? []} errors={snapshot.proposals?.errors ?? []} config={snapshot.config} workerBrief={snapshot.workerBrief.content} revision={snapshot.revision} busy={busy}
-        onApply={proposal => void action(async () => {
-          const next = await api<Snapshot>(`/orchestration/proposals/${proposal.id}/apply`,"POST",{actor,revision:proposal.revision});
-          setDraft(next.config);setRevision(next.revision);setWorkerBrief(next.workerBrief.content);
-        },"Proposal applied. Agent configuration updated.")}
-        onDiscard={proposal => void action(() => api(`/orchestration/proposals/${proposal.id}/discard`,"POST",{actor,revision:proposal.revision}),"Proposal discarded. Configuration unchanged.")}
+      <AgentConfigProposals
+        proposals={snapshot.proposals?.proposals ?? []}
+        errors={snapshot.proposals?.errors ?? []}
+        config={snapshot.config}
+        workerBrief={snapshot.workerBrief.content}
+        revision={snapshot.revision}
+        busy={busy}
+        onApply={(proposal) =>
+          void action(async () => {
+            const next = await api<Snapshot>(
+              `/orchestration/proposals/${proposal.id}/apply`,
+              "POST",
+              { actor, revision: proposal.revision },
+            );
+            setDraft(next.config);
+            setRevision(next.revision);
+            setWorkerBrief(next.workerBrief.content);
+          }, "Proposal applied. Agent configuration updated.")
+        }
+        onDiscard={(proposal) =>
+          void action(
+            () =>
+              api(`/orchestration/proposals/${proposal.id}/discard`, "POST", {
+                actor,
+                revision: proposal.revision,
+              }),
+            "Proposal discarded. Configuration unchanged.",
+          )
+        }
       />
       <details className="agent-settings">
         <summary>Agent configuration</summary>
@@ -250,9 +276,14 @@ export function Agents({
             {(
               [
                 ["concurrency", "Concurrent processes", 1, 8],
-                ["timeoutMinutes", "Time limit per step (minutes)", 1, 180],
+                [
+                  "timeoutMinutes",
+                  "Time limit per model step (minutes)",
+                  1,
+                  720,
+                ],
                 ["maxAttempts", "Maximum attempts", 1, 10],
-                ["maxTurns", "Claude turn limit", 1, 100],
+                ["maxTurns", "Claude turn limit", 1, 1000],
               ] as const
             ).map(([key, label, min, max]) => (
               <label key={key}>
@@ -266,6 +297,24 @@ export function Agents({
                 />
               </label>
             ))}
+            <label>
+              Verification time limit (minutes)
+              <input
+                type="number"
+                min={1}
+                max={720}
+                placeholder={`Use model limit (${draft.timeoutMinutes})`}
+                value={draft.verificationTimeoutMinutes ?? ""}
+                onChange={(e) =>
+                  patch({
+                    verificationTimeoutMinutes: e.target.value
+                      ? Number(e.target.value)
+                      : undefined,
+                  })
+                }
+              />
+              <small>Blank uses the model step limit.</small>
+            </label>
           </div>
           <label>
             Orchestration location
@@ -523,6 +572,15 @@ export function Agents({
                 {new Date(run.updatedAt).toLocaleString()}
               </small>
               {run.error && <p className="agent-error">{run.error}</p>}
+              {run.failureKind === "limit" && (
+                <p className="agent-limit">
+                  {run.limitReason === "turns"
+                    ? "Turn limit reached"
+                    : "Time limit reached"}
+                  . Resume continues this retained checkout and provider
+                  session; it does not start another attempt.
+                </p>
+              )}
               {run.result && <p>{run.result.summary}</p>}
               {t?.meta.agentReview?.runId === run.id && (
                 <p>
@@ -629,7 +687,9 @@ export function Agents({
                       )
                     }
                   >
-                    Resume with current context
+                    {run.failureKind === "limit"
+                      ? "Resume retained session"
+                      : "Resume with current context"}
                   </button>
                 )}
                 {run.kind === "work" &&
@@ -746,6 +806,40 @@ function AgentFields({
             value={value.model}
             placeholder="Use CLI default"
             onChange={(e) => onChange({ ...value, model: e.target.value })}
+          />
+        </label>
+        <label>
+          {title} turn limit override
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            placeholder="Use global limit"
+            value={value.maxTurns ?? ""}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                maxTurns: e.target.value ? Number(e.target.value) : undefined,
+              })
+            }
+          />
+        </label>
+        <label>
+          {title} time limit override (minutes)
+          <input
+            type="number"
+            min={1}
+            max={720}
+            placeholder="Use global limit"
+            value={value.timeoutMinutes ?? ""}
+            onChange={(e) =>
+              onChange({
+                ...value,
+                timeoutMinutes: e.target.value
+                  ? Number(e.target.value)
+                  : undefined,
+              })
+            }
           />
         </label>
         <label>

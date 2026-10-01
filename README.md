@@ -123,11 +123,11 @@ Install the bundled skills explicitly into the code checkout where your agent ru
 
 With no destination, installation targets the current execution directory (or `--worktree`), not the canonical board selected by `--project`. It does not initialize a board. The command copies portable skills to `.agents/skills/` for Codex and `.claude/skills/` for Claude Code; these can be committed with the project. Run it in another checkout if that checkout does not contain the skills. Application upgrades package the latest skills but do not overwrite installed project skills. Repeating the skill installation is safe when files match; differing existing files are refused so you can review and reconcile customizations first. Agent instruction files are not changed.
 
-| Action | Codex skill | Claude Code command |
-| --- | --- | --- |
-| Refresh tickets and conversations | `$crrefresh` | `/crrefresh` |
-| Inspect the next eligible approved ticket | `$crnext` | `/crnext` |
-| Refresh compatibility alias | `$ccrefresh` | `/ccrefresh` |
+| Action                                    | Codex skill  | Claude Code command |
+| ----------------------------------------- | ------------ | ------------------- |
+| Refresh tickets and conversations         | `$crrefresh` | `/crrefresh`        |
+| Inspect the next eligible approved ticket | `$crnext`    | `/crnext`           |
+| Refresh compatibility alias               | `$ccrefresh` | `/ccrefresh`        |
 
 Select the skill in Codex's skill picker or type its `$name`; these are not custom Codex slash commands. If the host has not discovered new skills, reopen the project session. In Claude Code, use `/name`. The same instructions run through the project's existing CLI or matching MCP connection, with your agent identity. Both commands are read-only: they do not claim, move, assign, accept or implement tickets.
 
@@ -230,7 +230,14 @@ This does not create a certificate or notarize the app. Live permission state an
 Select source documents, UI components, token files, and screenshots in Import project knowledge, copy the generated briefing to your existing agent, and have it return a JSON array. Screenshot briefings include local file paths for the agent to open; they do not embed image bytes:
 
 ```json
-[{"kind":"decision","title":"Prefer inline validation","body":"## Why\nKeep corrections close to their fields.","references":["docs/design-notes.md"]}]
+[
+  {
+    "kind": "decision",
+    "title": "Prefer inline validation",
+    "body": "## Why\nKeep corrections close to their fields.",
+    "references": ["docs/design-notes.md"]
+  }
+]
 ```
 
 Load that JSON in the browser or run `./controlroom import stage --file proposals.json --agent --actor agent-session`. Review and select proposals before applying them. Imports preserve original documents and link back to them. If source contents change after staging, regenerate the proposal. Imported decisions and rules start as proposals.
@@ -268,7 +275,9 @@ Use **Require human acceptance** on a ticket for a mandatory human gate. The pro
 
 Acceptance records the reviewer, worker, ticket revision, code identity, checked criteria, evidence and integration state in Markdown. It does **not** merge, push or deploy. In the authorized chat-orchestrator workflow, the orchestrator integrates accepted branches into the configured base, preserves local edits, verifies the combined source and records the merge before reporting completion. Dependent managed work checks commit ancestry and waits until that integration occurs. The service itself does not run Git integration: its acceptance receipt and current UI integration label describe the review-time state and do not detect later merges. Record actual integration in the ticket conversation; a review acceptance alone is not evidence that code reached the base branch.
 
-The concurrency limit bounds all worker/planner/reviewer processes; a named profile runs at most one process at once. The time limit applies separately to the model and verification step, output is bounded, Claude also has a configurable turn limit, and corrective retries have a configured attempt cap. Codex uses noninteractive workspace-write sandbox permissions; Claude uses `acceptEdits` for workers and `plan` mode for readers. Permission denials or unavailable credentials/tools require human attention; no unsafe permission-bypass flags are used. Profile names provide attribution, not a security boundary against other processes sharing your local account.
+The concurrency limit bounds all worker/planner/reviewer processes; a named profile runs at most one process at once. The global model limit accepts up to 720 minutes and 1,000 Claude turns. Each named profile may override both limits, so a long-running worker can use, for example, 400 turns and six hours without changing the rest of the roster. Verification has its own optional timeout; leaving it blank uses the model-step limit. Output is bounded and corrective retries have a configured attempt cap. Codex uses noninteractive sandbox permissions; Claude uses `acceptEdits` for workers and `plan` mode for readers. Permission denials or unavailable credentials/tools require human attention; no unsafe permission-bypass flags are used. Profile names provide attribution, not a security boundary against other processes sharing your local account.
+
+When a provider reaches a configured turn or time limit, the run is labeled with that reason and keeps its checkout and provider session. A human or the configured orchestrator can resume that same session without consuming another attempt. Resume refuses a changed configuration, ticket/context, assignment, missing session, or a still-running original process; it never silently starts a fresh provider session. Other interrupted runs still require human recovery. Codex resume uses only the flags supported by `codex exec resume`; Claude resumes with its recorded session ID.
 
 The human-only worker settings can pass explicit `--allowedTools` patterns to Claude work runs and repeatable `--add-dir` paths to either provider. Codex does not expose an equivalent per-run command allow-list: its command rules are loaded from trusted ambient configuration and govern commands outside its sandbox. Control Room neither writes nor broadens those provider rule files. Additional directories are tool-access roots and writable in Codex workspace-write runs; they are not a read-only policy. Review the effective redacted launch in each run before relying on it.
 
@@ -281,7 +290,6 @@ CLI examples (readable by default; add `--json`):
 ```sh
 controlroom agents status
 controlroom agents configure --file agent-config.json --etag CONFIG_REVISION
-controlroom agents propose --file agent-config.json --agent --actor "Project orchestrator"
 # assignment.json: {"ticket":"65","revision":"CURRENT_TICKET_ETAG","kind":"work","worker":"Worker 1"}
 controlroom agents queue --file assignment.json
 controlroom agents log RUN_ID
@@ -290,13 +298,11 @@ controlroom agents resume RUN_ID
 controlroom agents takeover RUN_ID --etag CURRENT_TICKET_ETAG
 ```
 
-Agents can stage a complete configuration with `agents propose --file CONFIG_JSON` or MCP `propose_agent_config`. Proposals appear in **Needs you** and **Agents**, with a current-versus-proposed diff and human-only **Apply proposal** / **Discard proposal** actions. Staging never changes live configuration or enables execution. A changed configuration makes old proposals stale; create a fresh proposal before applying. Proposal files in `.controlroom/records/agent-proposals/` retain proposer, decision and approver history. Applying commits configuration, proposal status and audit together.
-
 Configuration and recovery require a human actor. The designated orchestrator can delegate, stop runs, and explicitly take over a stopped worker ticket through CLI or MCP `agent_runs`, `delegate_ticket`, `stop_agent_run`, and `take_over_stopped_agent_run`. Takeover requires the current ticket etag and matching run assignment, and is refused while an owned process is active or its exit is uncertain. It retains the original run, checkout, logs, attempts, and assignment history; releases only the matching obsolete execution claim; and puts the new actor into the ordinary claim, progress, and human-review workflow under their own identity. It does not approve scope, reset attempts, accept work, merge, push, or deploy. Managed acceptance is admitted only from the service's verified review pipeline, not from a tool caller's claimed reviewer name. The same host-only authentication and write serialization apply to the HTTP surface.
 
 Failed verification automatically returns the retained worktree and diagnostic evidence to the same worker within the configured attempt limit; it does not require renewed scope approval. A reviewer requesting changes also triggers correction. Successful orchestrator review moves the ticket to Done unless mandatory human review or reviewer uncertainty requires human judgment.
 
-Adapter references: [Codex developer commands](https://learn.chatgpt.com/docs/developer-commands), [Codex command rules](https://learn.chatgpt.com/docs/agent-configuration/rules), and [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference). The regression trial uses executable fixture harnesses for both structured output formats; it does not spend provider usage. Validate your installed CLI/model with a small approved ticket before assigning substantial work.
+Adapter references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive) and [Claude Code programmatic use](https://code.claude.com/docs/en/headless). The regression trial uses executable fixture harnesses for both structured output formats; it does not spend provider usage. Validate your installed CLI/model with a small approved ticket before assigning substantial work.
 
 ### Orchestrating from an existing chat
 

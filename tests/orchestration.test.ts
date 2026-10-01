@@ -1497,6 +1497,10 @@ test("agent runners pass retained sessions to both providers and classify turn l
     "resume",
     "prior-session",
   ]);
+  assert.equal(seen[0].args.includes("--sandbox"), false);
+  assert.equal(seen[0].args.includes("--color"), false);
+  assert.ok(seen[0].args.includes("--output-schema"));
+  assert.ok(seen[0].args.includes("--output-last-message"));
   assert.deepEqual(seen[1].args.slice(0, 3), [
     "-p",
     "--resume",

@@ -242,21 +242,36 @@ export async function runAgent(
             "exec",
             ...(options.sessionId ? ["resume", options.sessionId] : []),
             "--json",
-            "--color",
-            "never",
-            "--sandbox",
-            kind === "work" ? "workspace-write" : "read-only",
+            ...(options.sessionId
+              ? []
+              : [
+                  "--color",
+                  "never",
+                  "--sandbox",
+                  kind === "work" ? "workspace-write" : "read-only",
+                ]),
             "-c",
             'approval_policy="never"',
+            ...(options.sessionId && extraDirectories.length
+              ? [
+                  "-c",
+                  `sandbox_workspace_write.writable_roots=${JSON.stringify([
+                    options.cwd,
+                    ...extraDirectories,
+                  ])}`,
+                ]
+              : []),
             "--output-schema",
             schemaFile,
             "--output-last-message",
             resultFile,
             ...(profile.model ? ["--model", profile.model] : []),
-            ...extraDirectories.flatMap((directory) => [
-              "--add-dir",
-              directory,
-            ]),
+            ...(!options.sessionId
+              ? extraDirectories.flatMap((directory) => [
+                  "--add-dir",
+                  directory,
+                ])
+              : []),
             "-",
           ]
         : [

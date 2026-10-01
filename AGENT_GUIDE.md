@@ -29,11 +29,11 @@ Install the bundled skills explicitly into the code checkout where your agent ru
 
 With no destination, installation targets the current execution directory (or `--worktree`), not the canonical board selected by `--project`. It does not initialize a board. The command copies portable skills to `.agents/skills/` for Codex and `.claude/skills/` for Claude Code; these can be committed with the project. Run it in another checkout if that checkout does not contain the skills. Application upgrades package the latest skills but do not overwrite installed project skills. Repeating the skill installation is safe when files match; differing existing files are refused so you can review and reconcile customizations first. Agent instruction files are not changed.
 
-| Action | Codex skill | Claude Code command |
-| --- | --- | --- |
-| Refresh tickets and conversations | `$crrefresh` | `/crrefresh` |
-| Inspect the next eligible approved ticket | `$crnext` | `/crnext` |
-| Refresh compatibility alias | `$ccrefresh` | `/ccrefresh` |
+| Action                                    | Codex skill  | Claude Code command |
+| ----------------------------------------- | ------------ | ------------------- |
+| Refresh tickets and conversations         | `$crrefresh` | `/crrefresh`        |
+| Inspect the next eligible approved ticket | `$crnext`    | `/crnext`           |
+| Refresh compatibility alias               | `$ccrefresh` | `/ccrefresh`        |
 
 Select the skill in Codex's skill picker or type its `$name`; these are not custom Codex slash commands. If the host has not discovered new skills, reopen the project session. In Claude Code, use `/name`. The same instructions run through the project's existing CLI or matching MCP connection, with your agent identity. Both commands are read-only: they do not claim, move, assign, accept or implement tickets.
 
@@ -95,7 +95,16 @@ Small steps stay inside a ticket's `## Microtasks` section as ordinary `- [ ]` /
 For structured human input, write a JSON array to a file and call `questionnaire ID --file questions.json --json` (MCP `ask_questionnaire`). Each item has a stable `id`, `prompt`, `type` (`text` or `choice`), optional `required` (defaults true), and for choices a `choices` array plus optional `recommended` choice and `multiple: true` for checkboxes (the default is a single choice). Humans can select options and supply separate custom notes; changing a selection never replaces their notes. Submitted answers preserve readable `values` and structured `choiceAnswers` with `selected` options and `custom` notes. Example:
 
 ```json
-[{"id":"layout","prompt":"Which layout?","type":"choice","choices":["Compact","Spacious"],"recommended":"Compact"},{"id":"reason","prompt":"What should guide the choice?","type":"text"}]
+[
+  {
+    "id": "layout",
+    "prompt": "Which layout?",
+    "type": "choice",
+    "choices": ["Compact", "Spacious"],
+    "recommended": "Compact"
+  },
+  { "id": "reason", "prompt": "What should guide the choice?", "type": "text" }
+]
 ```
 
 Questions appear in Needs you without moving the ticket. They never expire. No answer exists until the human explicitly submits. The returned comment ID and revision identify this questionnaire; to replace it, pass CLI `--patch '{"id":"comment-id","revision":"HASH"}'` or MCP `replacing`. Replacements reopen that questionnaire and retain earlier wording and answers. A stale answer or replacement receives 409. `context` includes the structured data and readable conversation; `wait ID --for comment` also wakes when an existing questionnaire is answered or edited.
@@ -107,6 +116,8 @@ Use `progress ID --etag HASH --body "What changed and what remains" --percent 40
 When a human enables **Agents**, a named orchestrator may delegate only approved tickets/goals. Use `agent_runs` / `controlroom agents status` to inspect the roster and lifecycle, `delegate_ticket` / `agents queue --file assignment.json` to queue a current ticket revision, and `stop_agent_run` / `agents stop RUN` to cancel. Ordinary workers cannot accept Done, forge review receipts, change mandatory human gates, configure authority, or overwrite another worker's durable assignment.
 
 The managed controller supplies a role-specific context packet, launches isolated worktrees, verifies a structured worker submission, and launches an independent reviewer. It admits acceptance only against the current ticket, current project guidance, and the exact reviewed code. Such acceptance remains attributed to the reviewer **as an agent**; never impersonate a human. Existing unmanaged work still goes through human review.
+
+Configured model limits may be set globally or per profile (up to 1,000 turns and 720 minutes); verification may use a separate timeout. A turn/time-limit stop retains the provider session and checkout. Only the configured orchestrator or a human may resume that specific limit stop, and only while its configuration, ticket context, assignment, and original process remain safe to resume. It must never be resumed as a fresh session; ordinary recovery remains human-only.
 
 Follow the managed prompt when running inside an assigned checkout: implement only the assigned scope; do not issue competing board writes, merge, push, deploy, or launch further workers. Return the requested structured handoff/question. The controller records progress and evidence. Parents remain open for deliberate outcome review. Human-required tickets and uncertainty route to Needs you, with no expiring questions. Human answers can resume a run; retry exhaustion and service restart need explicit recovery. Assignment, claim, last activity and a verified running process are separate facts.
 
