@@ -1,7 +1,14 @@
 import { randomUUID } from "./browserUtils";
 import { WindowMenu } from "./WindowMenu";
 import { isRemoteBrowser } from "./api";
-import React, { useEffect, useRef, useState } from "react";
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   Annotation,
   Attachment,
@@ -12,6 +19,8 @@ import { api, actor, ApiError, ConnectionError } from "./api";
 import { imageMarkdown } from "./RecordMarkdown";
 import { useImageViewport } from "./useImageViewport";
 import { ParentInput } from "./ParentInput";
+
+const TicketDestination = memo(ParentInput);
 
 const color = "#e55b40";
 const clamp = (v: number) => Math.max(0, Math.min(1, v));
@@ -55,7 +64,9 @@ export function AnnotationEditor({
     [newTitle, setNewTitle] = useState("Screenshot feedback"),
     [projects, setProjects] = useState<any[]>([]),
     [confirmClose, setConfirmClose] = useState(false);
-  const dirty = !!asset && canonical(notes) !== canonical(asset.annotations);
+  // Deep comparison is needed only at a discard boundary, never per input.
+  const isDirty = () =>
+    !!asset && canonical(current.current) !== canonical(asset.annotations);
   const titleDialog = useRef<HTMLDialogElement>(null),
     titleInput = useRef<HTMLInputElement>(null);
   const saveToTicket = useRef<HTMLButtonElement>(null),
@@ -79,7 +90,8 @@ export function AnnotationEditor({
   const viewport = useImageViewport(asset?.width ?? 1000, asset?.height ?? 700);
   function requestClose() {
     if (saving) return;
-    if (dirty) setConfirmClose(true);
+    finishGesture();
+    if (isDirty()) setConfirmClose(true);
     else onClose();
   }
   const current = useRef<Annotation[]>([]),
@@ -89,13 +101,16 @@ export function AnnotationEditor({
       id: string;
       before: Annotation[];
       moving: boolean;
+      pointerId: number;
     } | null>(null);
   const change = (next: Annotation[]) => {
     current.current = next;
     setNotes(next);
+    setConfirmClose(false);
   };
+  // All edits replace arrays/annotations, so history can share unchanged data.
   const stash = () => {
-    const snapshot = structuredClone(current.current);
+    const snapshot = current.current;
     setUndo((u) => [...u, snapshot]);
     setRedo([]);
   };
@@ -123,6 +138,8 @@ export function AnnotationEditor({
   function down(e: React.PointerEvent) {
     if (
       e.button !== 0 ||
+      saving ||
+      !!gesture.current ||
       !asset ||
       asset.trashedAt ||
       tool === "hand" ||
@@ -143,7 +160,8 @@ export function AnnotationEditor({
         gesture.current = {
           ...p,
           id: target,
-          before: structuredClone(current.current),
+          before: current.current,
+          pointerId: e.pointerId,
           moving: true,
         };
       } else setSelected(null);
@@ -164,12 +182,31 @@ export function AnnotationEditor({
     };
     change([...current.current, note]);
     setSelected(note.id);
-    gesture.current = { ...p, id: note.id, before: [], moving: false };
+    gesture.current = {
+      ...p,
+      id: note.id,
+      before: [],
+      moving: false,
+      pointerId: e.pointerId,
+    };
   }
-  function move(e: React.PointerEvent) {
+  // Preserve all input samples, but reconcile React/SVG at most once per frame.
+  const pendingPoints = useRef<{ x: number; y: number }[]>([]);
+  const frame = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (frame.current !== null) cancelAnimationFrame(frame.current);
+    },
+    [],
+  );
+  function flushGesture() {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+    const samples = pendingPoints.current;
+    pendingPoints.current = [];
     const g = gesture.current;
-    if (!g) return;
-    const p = point(e);
+    if (!g || !samples.length) return;
+    const p = samples[samples.length - 1];
     if (g.moving) {
       const original = g.before.find((a) => a.id === g.id)!;
       const dx = p.x - g.x,
@@ -197,7 +234,7 @@ export function AnnotationEditor({
             : a,
         ),
       );
-    } else
+    } else {
       change(
         current.current.map((a) =>
           a.id === g.id
@@ -207,24 +244,47 @@ export function AnnotationEditor({
                 y2: p.y,
                 points:
                   a.type === "draw"
-                    ? [...(a.points ?? []), [p.x, p.y]]
+                    ? [
+                        ...(a.points ?? []),
+                        ...samples.map(({ x, y }): [number, number] => [x, y]),
+                      ]
                     : a.points,
               }
             : a,
         ),
       );
+    }
   }
-  function up() {
+  function move(e: React.PointerEvent) {
+    if (!gesture.current || gesture.current.pointerId !== e.pointerId) return;
+    const samples = e.nativeEvent.getCoalescedEvents?.();
+    const b = svg.current!.getBoundingClientRect();
+    for (const sample of samples?.length ? samples : [e]) {
+      pendingPoints.current.push({
+        x: clamp((sample.clientX - b.left) / b.width),
+        y: clamp((sample.clientY - b.top) / b.height),
+      });
+    }
+    if (frame.current === null)
+      frame.current = requestAnimationFrame(flushGesture);
+  }
+  function finishGesture() {
+    flushGesture();
     gesture.current = null;
+  }
+  function up(e: React.PointerEvent) {
+    if (gesture.current?.pointerId !== e.pointerId) return;
+    finishGesture();
   }
   function update(id: string, patch: Partial<Annotation>) {
     change(current.current.map((a) => (a.id === id ? { ...a, ...patch } : a)));
   }
   function history(back: boolean) {
+    finishGesture();
     const source = back ? undo : redo;
     if (!source.length) return;
     const next = source[source.length - 1];
-    const snapshot = structuredClone(current.current);
+    const snapshot = current.current;
     if (back) {
       setRedo((v) => [...v, snapshot]);
       setUndo(source.slice(0, -1));
@@ -232,7 +292,7 @@ export function AnnotationEditor({
       setUndo((v) => [...v, snapshot]);
       setRedo(source.slice(0, -1));
     }
-    change(structuredClone(next));
+    change(next);
   }
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -251,6 +311,7 @@ export function AnnotationEditor({
       if (typing || saving || asset?.trashedAt) return;
       if (["Delete", "Backspace"].includes(e.key) && selected) {
         e.preventDefault();
+        finishGesture();
         stash();
         change(current.current.filter((n) => n.id !== selected));
         setSelected(null);
@@ -343,12 +404,13 @@ export function AnnotationEditor({
   }
   async function save() {
     if (!asset || asset.trashedAt) return;
+    finishGesture();
     setSaving(true);
     setError("");
     try {
       const a = await api<Attachment>(`/images/${id}/annotations`, "PUT", {
         revision: asset.revision,
-        annotations: notes,
+        annotations: current.current,
         preview: rendered(),
         actor,
       });
@@ -480,7 +542,7 @@ export function AnnotationEditor({
       !asset ||
       saving ||
       !window.confirm(
-        `Move “${asset.name}” to Trash? You can restore it later.${dirty ? " Unsaved annotation changes will be discarded." : ""}`,
+        `Move “${asset.name}” to Trash? You can restore it later.${isDirty() ? " Unsaved annotation changes will be discarded." : ""}`,
       )
     )
       return;
@@ -500,11 +562,13 @@ export function AnnotationEditor({
       setSaving(false);
     }
   }
+  const chooseDestination = useCallback(
+    (id: string | null) => setDestination(id ?? ""),
+    [],
+  );
   const a = notes.find((n) => n.id === selected);
   const W = asset?.width ?? 1000,
-    H = asset?.height ?? 700,
-    r = Math.max(12, W / 65),
-    font = Math.max(12, W / 80);
+    H = asset?.height ?? 700;
   return (
     <dialog
       className="annotation-dialog"
@@ -555,7 +619,7 @@ export function AnnotationEditor({
           { label: "Pin", run: () => setTool("pin") },
         ]}
       />
-      {confirmClose && dirty && (
+      {confirmClose && (
         <div className="banner" role="alert">
           You have unsaved annotation changes.
           <span className="inline-actions">
@@ -732,6 +796,7 @@ export function AnnotationEditor({
                   onPointerMove={move}
                   onPointerUp={up}
                   onPointerCancel={up}
+                  onLostPointerCapture={up}
                   style={{
                     cursor:
                       tool === "hand" || viewport.space
@@ -753,88 +818,17 @@ export function AnnotationEditor({
                       <path d="M0,0 L8,4 L0,8 Z" fill={color} />
                     </marker>
                   </defs>
-                  {notes.map((n, i) => {
-                    const x = n.x * W,
-                      y = n.y * H,
-                      x2 = (n.x2 ?? n.x) * W,
-                      y2 = (n.y2 ?? n.y) * H;
-                    return (
-                      <g
-                        key={n.id}
-                        data-note={n.id}
-                        opacity={n.resolved ? 0.45 : 1}
-                        stroke={n.color ?? color}
-                        strokeWidth={Math.max(2, W / 350)}
-                        fill="none"
-                        className={
-                          selected === n.id ? "selected-annotation" : ""
-                        }
-                      >
-                        {n.type === "draw" && (
-                          <path
-                            d={n.points
-                              ?.map(
-                                ([px, py], j) =>
-                                  `${j ? "L" : "M"}${px * W},${py * H}`,
-                              )
-                              .join(" ")}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        )}
-                        {n.type === "box" && (
-                          <rect
-                            x={Math.min(x, x2)}
-                            y={Math.min(y, y2)}
-                            width={Math.abs(x2 - x)}
-                            height={Math.abs(y2 - y)}
-                            fill="transparent"
-                          />
-                        )}
-                        {n.type === "arrow" && (
-                          <line
-                            x1={x}
-                            y1={y}
-                            x2={x2}
-                            y2={y2}
-                            markerEnd={`url(#arrow-${id})`}
-                          />
-                        )}
-                        <circle
-                          cx={x}
-                          cy={y}
-                          r={r}
-                          fill={n.color ?? color}
-                          stroke={selected === n.id ? "#fff" : color}
-                        />
-                        <text
-                          x={x}
-                          y={y}
-                          fill="white"
-                          stroke="none"
-                          textAnchor="middle"
-                          dominantBaseline="central"
-                          fontSize={font}
-                          fontWeight="600"
-                        >
-                          {i + 1}
-                        </text>
-                        {n.type === "text" &&
-                          n.text.split("\n").map((line, j) => (
-                            <text
-                              key={j}
-                              x={x + r * 1.5}
-                              y={y + (j + 1) * font * 1.5}
-                              fill={n.color ?? color}
-                              stroke="none"
-                              fontSize={font * 1.4}
-                            >
-                              {line}
-                            </text>
-                          ))}
-                      </g>
-                    );
-                  })}
+                  {notes.map((n, i) => (
+                    <AnnotationShape
+                      key={n.id}
+                      n={n}
+                      index={i}
+                      selected={selected === n.id}
+                      W={W}
+                      H={H}
+                      imageId={id}
+                    />
+                  ))}
                 </svg>
               </div>
             )
@@ -909,7 +903,7 @@ export function AnnotationEditor({
       <details className="annotation-save">
         <summary>Attach to a ticket (optional)</summary>
         <div className="fields two">
-          <ParentInput
+          <TicketDestination
             above
             records={state.records}
             columns={state.config.columns}
@@ -917,7 +911,7 @@ export function AnnotationEditor({
             emptyLabel={split ? "No parent" : "Create a new ticket"}
             clearLabel={split ? "Clear parent" : "Create a new ticket instead"}
             value={destination || null}
-            onChange={(id) => setDestination(id ?? "")}
+            onChange={chooseDestination}
           />
         </div>
         <label className="check-row">
@@ -1070,3 +1064,98 @@ export function AnnotationEditor({
     </dialog>
   );
 }
+
+const AnnotationShape = memo(function AnnotationShape({
+  n,
+  index,
+  selected,
+  W,
+  H,
+  imageId,
+}: {
+  n: Annotation;
+  index: number;
+  selected: boolean;
+  W: number;
+  H: number;
+  imageId: string;
+}) {
+  const r = Math.max(12, W / 65),
+    font = Math.max(12, W / 80);
+  const path = useMemo(
+    () =>
+      n.points
+        ?.map(([px, py], j) => `${j ? "L" : "M"}${px * W},${py * H}`)
+        .join(" "),
+    [n.points, W, H],
+  );
+  const x = n.x * W,
+    y = n.y * H,
+    x2 = (n.x2 ?? n.x) * W,
+    y2 = (n.y2 ?? n.y) * H;
+  return (
+    <g
+      key={n.id}
+      data-note={n.id}
+      opacity={n.resolved ? 0.45 : 1}
+      stroke={n.color ?? color}
+      strokeWidth={Math.max(2, W / 350)}
+      fill="none"
+      className={selected ? "selected-annotation" : ""}
+    >
+      {n.type === "draw" && (
+        <path d={path} strokeLinecap="round" strokeLinejoin="round" />
+      )}
+      {n.type === "box" && (
+        <rect
+          x={Math.min(x, x2)}
+          y={Math.min(y, y2)}
+          width={Math.abs(x2 - x)}
+          height={Math.abs(y2 - y)}
+          fill="transparent"
+        />
+      )}
+      {n.type === "arrow" && (
+        <line
+          x1={x}
+          y1={y}
+          x2={x2}
+          y2={y2}
+          markerEnd={`url(#arrow-${imageId})`}
+        />
+      )}
+      <circle
+        cx={x}
+        cy={y}
+        r={r}
+        fill={n.color ?? color}
+        stroke={selected ? "#fff" : color}
+      />
+      <text
+        x={x}
+        y={y}
+        fill="white"
+        stroke="none"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize={font}
+        fontWeight="600"
+      >
+        {index + 1}
+      </text>
+      {n.type === "text" &&
+        n.text.split("\n").map((line, j) => (
+          <text
+            key={j}
+            x={x + r * 1.5}
+            y={y + (j + 1) * font * 1.5}
+            fill={n.color ?? color}
+            stroke="none"
+            fontSize={font * 1.4}
+          >
+            {line}
+          </text>
+        ))}
+    </g>
+  );
+});
