@@ -100,6 +100,24 @@ export async function buildServer(
     return orchestration.activity();
   });
   app.get("/api/orchestration", async () => orchestration.status());
+  app.get("/api/orchestration/delegation", async () =>
+    store.delegationStatus(),
+  );
+  app.put("/api/orchestration/delegation", async (req: any) => {
+    const { actor: _actor, revision, ...input } = req.body;
+    return orchestration.configureDelegation(input, revision, actor(req.body));
+  });
+  app.post("/api/orchestration/delegation/actions", async (req: any) => {
+    const { actor: _actor, ...input } = req.body;
+    return orchestration.delegatedAction(input, actor(req.body));
+  });
+  app.post("/api/orchestration/delegation/:id/undo", async (req: any) =>
+    orchestration.undoDelegatedAction(
+      req.params.id,
+      req.body.revision,
+      actor(req.body),
+    ),
+  );
   app.get("/api/orchestration/:id/log", async (req: any) => ({
     log: orchestration.log(req.params.id),
   }));

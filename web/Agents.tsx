@@ -13,6 +13,7 @@ import { actor, api, isRemoteBrowser, recordId } from "./api";
 import { WorkerPermissionsEditor } from "./WorkerPermissions";
 import "./agents.css";
 import { CompanionRepositories } from "./CompanionRepositories";
+import { DelegationSettings, type DelegationStatus } from "./Delegation";
 type Snapshot = {
   profileTest?: ProfileTest;
   proposals?: {
@@ -34,6 +35,7 @@ export function Agents({
   reload: () => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<Snapshot>(),
+    [delegation, setDelegation] = useState<DelegationStatus>(),
     [draft, setDraft] = useState<OrchestrationConfig>(),
     [workerBrief, setWorkerBrief] = useState(""),
     [revision, setRevision] = useState("");
@@ -48,8 +50,12 @@ export function Agents({
   const initialized = useRef(false),
     remote = isRemoteBrowser();
   async function load() {
-    const next = await api<Snapshot>("/orchestration");
+    const [next, delegationStatus] = await Promise.all([
+      api<Snapshot>("/orchestration"),
+      api<DelegationStatus>("/orchestration/delegation"),
+    ]);
     setSnapshot(next);
+    setDelegation(delegationStatus);
     if (!initialized.current) {
       initialized.current = true;
       setDraft(next.config);
@@ -454,6 +460,27 @@ export function Agents({
           </p>
         </form>
       </details>
+      <DelegationSettings
+        status={delegation}
+        reviewerMode={snapshot.config.reviewerMode}
+        reviewer={snapshot.config.reviewer.name}
+        busy={busy}
+        onSave={(input) =>
+          action(
+            async () => {
+              const next = await api<DelegationStatus>(
+                "/orchestration/delegation",
+                "PUT",
+                { ...input, actor },
+              );
+              setDelegation(next);
+            },
+            input.enabled
+              ? "Chat delegation saved. Future actions still require a quoted chat basis."
+              : "Chat delegation is off.",
+          )
+        }
+      />
       <form
         className="agent-delegate"
         onSubmit={(e) => {

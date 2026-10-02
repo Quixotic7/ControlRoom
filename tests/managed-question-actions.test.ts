@@ -297,14 +297,14 @@ test("a failed reopen remains explicitly retry-blocked and cannot auto-resume", 
     f.manager.status().revision,
     human,
   );
-  const resolveComment = f.store.resolveComment.bind(f.store);
-  f.store.resolveComment = (async (
-    ...args: Parameters<Store["resolveComment"]>
+  const resolveManagedQuestion = f.store.resolveManagedQuestion.bind(f.store);
+  f.store.resolveManagedQuestion = (async (
+    ...args: Parameters<Store["resolveManagedQuestion"]>
   ) => {
-    if (args[2] === false)
+    if (args[3] === false)
       throw new Error("simulated concurrent question edit");
-    return resolveComment(...args);
-  }) as Store["resolveComment"];
+    return resolveManagedQuestion(...args);
+  }) as Store["resolveManagedQuestion"];
   const response = await f.manager.questionAction(
     f.run.id,
     {

@@ -36,19 +36,23 @@ export function ScopeState({
 }) {
   const scope = approvedScope(record, ctx.byId);
   if (!scope) return null;
-  if (scope.meta.id === record.meta.id)
+  if (scope.meta.id === record.meta.id) {
+    const delegation = record.meta.scopeApprovedDelegation;
     return (
       <span
         className="tag green"
         title={
-          record.meta.scopeApprovedBy
-            ? `Approved by ${record.meta.scopeApprovedBy.name}`
+          delegation
+            ? `Approved by ${delegation.grantingHuman.name} through ${delegation.actor.name} (chat)`
+            : record.meta.scopeApprovedBy
+              ? `Approved by ${record.meta.scopeApprovedBy.name}`
             : "This ticket's scope is explicitly approved"
         }
       >
-        Approved scope
+        {delegation ? "Approved scope · chat" : "Approved scope"}
       </span>
     );
+  }
   return (
     <span
       className="tag inherited-scope"

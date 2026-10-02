@@ -46,7 +46,140 @@ export async function startMcp(
   const cwd = path.resolve(worktree);
   const text = (v: unknown) =>
     typeof v === "string" ? v : JSON.stringify(v, null, 2);
+  const basisFields = {
+    on_behalf: str(
+      "Exact words of a decision actually given by the human in this chat; never infer or invent approval",
+    ),
+    said_at: str("ISO timestamp when that human decision was given"),
+  };
+  function basis(a: any) {
+    if (a.on_behalf === undefined && a.said_at === undefined) return undefined;
+    if (
+      !a.on_behalf?.trim() ||
+      !a.said_at?.trim() ||
+      !Number.isFinite(Date.parse(a.said_at))
+    )
+      throw new Error(
+        "Provide both on_behalf (the human's words) and said_at (their timestamp).",
+      );
+    return {
+      quote: a.on_behalf.trim(),
+      saidAt: new Date(a.said_at).toISOString(),
+    };
+  }
+  function delegated(a: any, input: Record<string, unknown>) {
+    const decision = basis(a);
+    if (!decision)
+      throw new Error("A delegated action requires on_behalf and said_at.");
+    return api(store, "/api/orchestration/delegation/actions", "POST", {
+      ...input,
+      basis: decision,
+      actor: who,
+    });
+  }
   const tools: Tool[] = [
+    {
+      name: "get_delegation",
+      description:
+        "Read the current human-granted chat delegation and durable action receipts. This never enables or expands authority.",
+      inputSchema: { type: "object", properties: {} },
+      run: () => api(store, "/api/orchestration/delegation"),
+    },
+    ...(
+      ["approve", "accept", "request_changes", "archive", "unarchive"] as const
+    ).map(
+      (action): Tool => ({
+        name: `${action}_ticket`,
+        description: `Record the human's chat decision to ${action.replaceAll("_", " ")} a ticket. Requires a current matching delegation for this exact agent, a current etag, and the human's exact words/timestamp. Actor stays agent; every action is audited for human review and guarded Undo. No grant is activated by this tool.`,
+        inputSchema: {
+          type: "object",
+          properties: {
+            id,
+            etag,
+            ...basisFields,
+            feedback: str(
+              "Review feedback for acceptance or requested changes",
+            ),
+            target: str("Optional destination column for a review outcome"),
+            request_id: str(
+              "Optional stable UUID for retrying a review outcome after a lost response",
+            ),
+          },
+          required: ["id", "etag", "on_behalf", "said_at"],
+        },
+        run: (a) =>
+          delegated(a, {
+            action: action === "unarchive" ? "archive" : action,
+            ticket: a.id,
+            revision: a.etag,
+            ...(action === "archive" || action === "unarchive"
+              ? { archived: action === "archive" }
+              : {}),
+            ...(["accept", "request_changes"].includes(action)
+              ? {
+                  feedback: a.feedback ?? "",
+                  target: a.target,
+                  requestId: a.request_id,
+                }
+              : {}),
+          }),
+      }),
+    ),
+    {
+      name: "resolve_managed_question",
+      description:
+        "Record the human's actual chat answer and retry instruction for the current managed question. Requires manageRuns delegation, ticket and question revisions; existing process/scope/recovery guards remain. Never invent an answer.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          etag,
+          run: str("Current managed run ID"),
+          question: str("Current question comment ID"),
+          question_etag: str("Current question revision"),
+          answer: str(
+            "Optional answer text; defaults to the human's quoted chat words",
+          ),
+          ...basisFields,
+        },
+        required: [
+          "id",
+          "etag",
+          "run",
+          "question",
+          "question_etag",
+          "on_behalf",
+          "said_at",
+        ],
+      },
+      run: (a) =>
+        delegated(a, {
+          action: "resolve",
+          ticket: a.id,
+          revision: a.etag,
+          runId: a.run,
+          questionId: a.question,
+          questionRevision: a.question_etag,
+          answer: a.answer ?? a.on_behalf,
+        }),
+    },
+    {
+      name: "resume_managed_run",
+      description:
+        "Resume a stopped/recoverable managed run only on a human's actual chat instruction under manageRuns delegation. Requires current ticket etag; process, ownership and scope checks remain.",
+      inputSchema: {
+        type: "object",
+        properties: { id, etag, run: str("Run ID to resume"), ...basisFields },
+        required: ["id", "etag", "run", "on_behalf", "said_at"],
+      },
+      run: (a) =>
+        delegated(a, {
+          action: "resume",
+          ticket: a.id,
+          revision: a.etag,
+          runId: a.run,
+        }),
+    },
     {
       name: "agent_review_context",
       description:
@@ -363,16 +496,25 @@ export async function startMcp(
             additionalProperties: true,
           },
           body: str("New Markdown body (replaces the whole body)"),
+          ...basisFields,
         },
         required: ["id", "etag"],
       },
       run: (a) =>
-        api(store, `/api/records/${encodeURIComponent(a.id)}`, "PATCH", {
-          revision: a.etag,
-          patch: a.fields ?? {},
-          body: a.body,
-          actor: who,
-        }),
+        basis(a)
+          ? delegated(a, {
+              action: "update",
+              ticket: a.id,
+              revision: a.etag,
+              patch: a.fields ?? {},
+              body: a.body,
+            })
+          : api(store, `/api/records/${encodeURIComponent(a.id)}`, "PATCH", {
+              revision: a.etag,
+              patch: a.fields ?? {},
+              body: a.body,
+              actor: who,
+            }),
     },
     {
       name: "move_ticket",
@@ -380,7 +522,12 @@ export async function startMcp(
         "Move a ticket to a status (column id or role: backlog, selected, progress, review). Agents cannot move to done; use submit_review to reach review with evidence.",
       inputSchema: {
         type: "object",
-        properties: { id, etag, status: str("Column id, e.g. progress") },
+        properties: {
+          id,
+          etag,
+          status: str("Column id, e.g. progress"),
+          ...basisFields,
+        },
         required: ["id", "etag", "status"],
       },
       run: async (a) => {
@@ -388,6 +535,13 @@ export async function startMcp(
         const col = state.config.columns.find(
           (c: any) => c.id === a.status || c.role === a.status,
         );
+        if (basis(a))
+          return delegated(a, {
+            action: "update",
+            ticket: a.id,
+            revision: a.etag,
+            patch: { status: col?.id ?? a.status },
+          });
         return api(store, `/api/records/${encodeURIComponent(a.id)}`, "PATCH", {
           revision: a.etag,
           patch: { status: col?.id ?? a.status },
@@ -471,6 +625,7 @@ export async function startMcp(
             description:
               "Explicit choices for parent, status, owner, priority, and acceptanceCriteria conflicts; both is valid only for acceptanceCriteria",
           },
+          ...basisFields,
         },
         required: [
           "survivor",
@@ -481,18 +636,29 @@ export async function startMcp(
         ],
       },
       run: (a) =>
-        api(
-          store,
-          `/api/records/${encodeURIComponent(a.survivor)}/merge`,
-          "POST",
-          {
-            source: a.source,
-            requestId: a.request_id,
-            revisions: a.revisions,
-            resolutions: a.resolutions,
-            actor: who,
-          },
-        ),
+        basis(a)
+          ? delegated(a, {
+              action: "merge",
+              ticket: a.survivor,
+              merge: {
+                source: a.source,
+                requestId: a.request_id,
+                revisions: a.revisions,
+                resolutions: a.resolutions,
+              },
+            })
+          : api(
+              store,
+              `/api/records/${encodeURIComponent(a.survivor)}/merge`,
+              "POST",
+              {
+                source: a.source,
+                requestId: a.request_id,
+                revisions: a.revisions,
+                resolutions: a.resolutions,
+                actor: who,
+              },
+            ),
     },
     {
       name: "comment",

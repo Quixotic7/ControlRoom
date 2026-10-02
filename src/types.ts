@@ -1,4 +1,5 @@
 import type { Assignment, AgentReviewReceipt } from "./orchestration-types.js";
+import type { DelegatedAttribution, DelegationStatus } from "./delegation.js";
 export type Kind = "ticket" | "decision" | "rule";
 export type Actor = { name: string; kind: "human" | "agent" };
 export type RuleException = {
@@ -53,6 +54,7 @@ export type Meta = {
   scopeApproved?: boolean;
   scopeApprovedAt?: string;
   scopeApprovedBy?: Actor;
+  scopeApprovedDelegation?: DelegatedAttribution;
   blocked?: string;
   dependencies?: string[];
   related?: string[];
@@ -70,6 +72,7 @@ export type Meta = {
   assignment?: Assignment;
   agentReview?: AgentReviewReceipt;
   reviewVerificationAt?: string;
+  acceptedDelegation?: DelegatedAttribution;
   question?: string;
   progress?: { note: string; percent?: number; at: string; actor: Actor };
   progressStartedAt?: string;
@@ -266,6 +269,7 @@ export type ProjectState = {
       canAct: boolean;
     }
   >;
+  delegation?: DelegationStatus;
   branch: string;
   canonical: string;
   branchChanged: boolean;

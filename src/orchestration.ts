@@ -22,6 +22,11 @@ import {
 } from "./agent-runner.js";
 import type { Actor, ProjectState, RecordFile } from "./types.js";
 import type {
+  ConfigureDelegationInput,
+  DelegationAuthority,
+} from "./delegation.js";
+import { delegatedBoardActionSchema } from "./delegation.js";
+import type {
   AgentProfile,
   ManagedRun,
   OrchestrationConfig,
@@ -67,6 +72,35 @@ const managedQuestionAction = z
     answer: z.string().max(10000).optional(),
   })
   .strict();
+const delegatedRunAction = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("resolve"),
+      ticket: z.string().min(1),
+      revision: z.string().min(1),
+      runId: z.string().min(1),
+      questionId: z.string().min(1),
+      questionRevision: z.string().min(1),
+      answer: z.string().trim().min(1).max(10_000),
+      basis: z.object({
+        quote: z.string().trim().min(1).max(10_000),
+        saidAt: z.string().datetime(),
+      }),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("resume"),
+      ticket: z.string().min(1),
+      revision: z.string().min(1),
+      runId: z.string().min(1),
+      basis: z.object({
+        quote: z.string().trim().min(1).max(10_000),
+        saidAt: z.string().datetime(),
+      }),
+    })
+    .strict(),
+]);
 export const orchestrationSchema = z
   .object({
     enabled: z.boolean(),
@@ -875,6 +909,360 @@ export class Orchestrator {
     return this.serial(() =>
       this.configureLocked(input, revision, actor, undefined, workerBrief),
     );
+  }
+  async configureDelegation(
+    input: ConfigureDelegationInput,
+    revision: string,
+    actor: Actor,
+  ) {
+    return this.serial(() =>
+      this.store.configureDelegation(input, revision, actor),
+    );
+  }
+  async delegatedAction(input: unknown, actor: Actor) {
+    return this.serial(async () => {
+      const action = z
+        .object({ action: z.string() })
+        .passthrough()
+        .parse(input);
+      if (!["resolve", "resume"].includes(action.action)) {
+        const raw = input as Record<string, any>;
+        const normalized =
+          action.action === "merge" && raw.merge
+            ? { ...raw, ...raw.merge, merge: undefined }
+            : ["accept", "request_changes"].includes(action.action)
+              ? {
+                  ...raw,
+                  requestId: raw.requestId ?? globalThis.crypto.randomUUID(),
+                  target:
+                    raw.target ??
+                    this.column(
+                      action.action === "accept" ? "done" : "progress",
+                    ),
+                }
+              : raw;
+        if (normalized.merge === undefined) delete normalized.merge;
+        const board = delegatedBoardActionSchema.parse(normalized);
+        if (["update", "archive", "merge"].includes(board.action)) {
+          const affected =
+            board.action === "merge"
+              ? Object.keys(
+                  this.store.mergePreview(board.ticket, String(board.source))
+                    .affected,
+                )
+              : [this.store.get(board.ticket).meta.id];
+          this.store.authorizeDelegation(
+            "manageBoard",
+            actor,
+            board.basis,
+            affected,
+          );
+          return this.store.delegatedBoardAction(board, actor, () => {
+            // Store invokes this only after all record revisions, patches and
+            // merge inputs have passed validation inside its write lock.
+            for (const run of this.runs)
+              if (
+                affected.includes(run.ticket) &&
+                (activeStates.has(run.state) || this.active.has(run.id))
+              )
+                this.stopNow(run, actor);
+            if (
+              this.runs.some(
+                (run) =>
+                  affected.includes(run.ticket) && activeStates.has(run.state),
+              )
+            )
+              throw new Problem(
+                409,
+                "Managed run did not reach a safe paused state",
+              );
+          });
+        }
+        return this.store.delegatedBoardAction(board, actor);
+      }
+      const data = delegatedRunAction.parse(input),
+        ticket = this.store.get(data.ticket),
+        run = this.run(data.runId);
+      if (ticket.revision !== data.revision)
+        throw new Problem(409, "Ticket changed; reload before acting");
+      if (run.ticket !== ticket.meta.id)
+        throw new Problem(409, "Managed run does not belong to this ticket");
+      const authority = this.store.authorizeDelegation(
+          "manageRuns",
+          actor,
+          data.basis,
+          [ticket.meta.id],
+        ),
+        before = structuredClone(run) as ManagedRun,
+        beforeRevision = hash(JSON.stringify(before));
+      let result: unknown, successor: ManagedRun;
+      if (data.action === "resolve") {
+        result = await this.questionActionNow(
+          run.id,
+          {
+            questionId: data.questionId,
+            revision: data.questionRevision,
+            action: "answer_retry",
+            answer: data.answer,
+          },
+          actor,
+          authority,
+        );
+        successor = (result as { run: ManagedRun }).run;
+      } else {
+        successor = await this.resumeNow(run, actor, authority);
+        result = successor;
+      }
+      const receiptInput = {
+        action: data.action === "resolve" ? "question_retry" : "resume_run",
+        ticket: ticket.meta.id,
+        beforeRevision: ticket.revision,
+        afterRevision: this.store.get(ticket.meta.id).revision,
+        undo: {
+          kind: "managed-run",
+          action: data.action === "resolve" ? "question_retry" : "resume",
+          runId: run.id,
+          ...(data.action === "resolve"
+            ? {
+                questionId: data.questionId,
+                beforeQuestionRevision: data.questionRevision,
+                afterQuestionRevision: (
+                  result as { question: { revision: string } }
+                ).question.revision,
+              }
+            : {}),
+          beforeRunSnapshot: before as unknown as Record<string, unknown>,
+          beforeTicketState: {
+            revision: ticket.revision,
+            status: ticket.meta.status,
+            ...(ticket.meta.owner ? { owner: ticket.meta.owner } : {}),
+            ...(ticket.meta.assignment
+              ? { assignment: ticket.meta.assignment }
+              : {}),
+          },
+          ...(successor.id !== run.id ? { successorId: successor.id } : {}),
+          afterRunRevision: hash(JSON.stringify(run)),
+          afterRunState: run.state,
+        },
+      } as const;
+      let receipt;
+      try {
+        receipt = await this.store.recordDelegatedExternalAction(
+          authority,
+          receiptInput,
+        );
+      } catch (error) {
+        if (successor.id !== run.id) this.stopNow(successor, actor);
+        else if (this.active.has(run.id)) this.stopNow(run, actor);
+        let compensationError = "";
+        if (data.action === "resolve") {
+          const question = this.store
+            .comments()
+            .find((comment) => comment.id === data.questionId);
+          if (question?.resolved)
+            try {
+              await this.store.resolveManagedQuestion(
+                question.id,
+                question.revision,
+                run.ticket,
+                false,
+                actor,
+                authority,
+              );
+            } catch (reopenError) {
+              compensationError = ` The answer remains recorded and the question could not be reopened: ${redactStartupDiagnostic(String(reopenError))}`;
+            }
+        }
+        try {
+          await this.store.managedUpdate(
+            ticket.meta.id,
+            receiptInput.afterRevision,
+            {
+              status: ticket.meta.status,
+              owner: ticket.meta.owner,
+              assignment: ticket.meta.assignment,
+            },
+            actor,
+            () => {},
+          );
+        } catch (restoreError) {
+          compensationError += ` Ticket assignment could not be restored: ${redactStartupDiagnostic(String(restoreError))}`;
+        }
+        for (const key of Object.keys(run)) delete (run as any)[key];
+        Object.assign(run, before);
+        if (compensationError)
+          Object.assign(run, {
+            state: "waiting_input",
+            questionRetryBlocked: true,
+            error: `Delegated ${data.action} was not receipted. Basis (${data.basis.saidAt}): ${data.basis.quote}.${compensationError}`,
+          });
+        this.persist();
+        try {
+          await this.store.comment(
+            ticket.meta.id,
+            `## Delegated managed action not completed\n\nThe controller could not write the required delegation receipt, so it stopped the successor and restored the prior paused state where possible. The attempted action remains in process and reply history.\n\nAction: ${data.action}\nBasis (${data.basis.saidAt}): ${data.basis.quote}${compensationError}`,
+            actor,
+          );
+        } catch (auditError) {
+          Object.assign(run, {
+            state: "waiting_input",
+            questionRetryBlocked: true,
+            error: `${run.error ?? `Delegated ${data.action} was not receipted. Basis (${data.basis.saidAt}): ${data.basis.quote}.`} Durable ticket audit also failed: ${redactStartupDiagnostic(String(auditError))}`,
+          });
+          this.persist();
+        }
+        throw error;
+      }
+      return { result, receipt, beforeRunRevision: beforeRevision };
+    });
+  }
+  async undoDelegatedAction(id: string, revision: string, actor: Actor) {
+    return this.serial(async () => {
+      if (actor.kind !== "human")
+        throw new Problem(403, "Only a human can undo a delegated action");
+      const receipt = this.store.delegatedAction(id);
+      if (receipt.revision !== revision)
+        throw new Problem(
+          409,
+          "Delegated action changed; reload before undoing",
+        );
+      if (this.store.delegatedActions().some((action) => action.undoOf === id))
+        throw new Problem(409, "This delegated action was already undone");
+      const undo = receipt.externalUndo;
+      if (!undo)
+        return this.store.undoDelegatedAction(
+          id,
+          revision,
+          actor,
+          "Human undid the delegated board action.",
+          () => {
+            const affected = new Set(
+              receipt.targets
+                .filter((target) => target.kind === "record")
+                .map((target) => target.id),
+            );
+            for (const run of this.runs)
+              if (
+                affected.has(run.ticket) &&
+                (activeStates.has(run.state) || this.active.has(run.id))
+              )
+                this.stopNow(run, actor);
+          },
+        );
+      const target = receipt.targets[0];
+      if (!target)
+        throw new Problem(409, "Delegated run receipt has no state snapshot");
+      const run = this.run(undo.runId),
+        ticket = this.store.get(run.ticket);
+      if (ticket.revision !== target.after.revision)
+        throw new Problem(
+          409,
+          "Ticket changed after this action; reconcile it before undoing",
+        );
+      if (
+        undo.afterRunRevision &&
+        hash(JSON.stringify(run)) !== undo.afterRunRevision
+      )
+        throw new Problem(
+          409,
+          "Managed run changed after this action; reload before undoing",
+        );
+      const successor = undo.successorId
+        ? this.run(undo.successorId)
+        : undefined;
+      const snapshot = structuredClone(
+        undo.beforeRunSnapshot,
+      ) as unknown as ManagedRun;
+      if (snapshot.id !== run.id || snapshot.ticket !== run.ticket)
+        throw new Problem(409, "Managed run undo snapshot is incompatible");
+      const question = undo.questionId
+        ? this.store
+            .comments()
+            .find((comment) => comment.id === undo.questionId)
+        : undefined;
+      if (undo.questionId && (!question || question.ticket !== run.ticket))
+        throw new Problem(409, "Managed question is no longer available");
+      if (
+        question &&
+        undo.afterQuestionRevision &&
+        question.revision !== undo.afterQuestionRevision
+      )
+        throw new Problem(
+          409,
+          "Managed question changed after this action; reload before undoing",
+        );
+      try {
+        if (successor) {
+          if (successor.previous !== run.id)
+            throw new Problem(409, "Managed successor identity changed");
+          if (["completed", "taken_over"].includes(successor.state))
+            throw new Problem(
+              409,
+              "The successor already completed or was taken over; undo cannot erase executed work",
+            );
+          this.stopNow(successor, actor);
+        } else if (this.active.has(run.id)) this.stopNow(run, actor);
+        let restoredTicket = ticket;
+        if (undo.beforeTicketState) {
+          const beforeTicket = undo.beforeTicketState;
+          restoredTicket = await this.store.managedUpdate(
+            ticket.meta.id,
+            ticket.revision,
+            {
+              status: beforeTicket.status,
+              owner: beforeTicket.owner,
+              assignment: beforeTicket.assignment,
+            },
+            actor,
+            () => {
+              if (
+                successor &&
+                (activeStates.has(successor.state) ||
+                  (this.active.has(successor.id) &&
+                    successor.state !== "interrupted"))
+              )
+                throw new Problem(
+                  409,
+                  "Managed successor did not stop safely before assignment restoration",
+                );
+            },
+          );
+        }
+        if (question?.resolved)
+          await this.store.resolveManagedQuestion(
+            question.id,
+            question.revision,
+            run.ticket,
+            false,
+            actor,
+          );
+        for (const key of Object.keys(run)) delete (run as any)[key];
+        Object.assign(run, snapshot);
+        this.persist();
+        return await this.store.recordDelegatedExternalUndo(
+          id,
+          revision,
+          actor,
+          "Restored the compatible paused managed-run state. Executed process and reply history remain recorded.",
+          restoredTicket.revision,
+        );
+      } catch (error) {
+        Object.assign(run, {
+          state: "waiting_input",
+          questionRetryBlocked: true,
+          error: `Delegated action Undo was only partially applied and requires human reconciliation: ${redactStartupDiagnostic(String(error))}`,
+        });
+        this.persist();
+        await this.store
+          .comment(
+            run.ticket,
+            `## Delegated action Undo needs reconciliation\n\nUndo ${id} could not complete atomically after lifecycle coordination began. No later ticket edits were overwritten. Executed process and reply history remain recorded.\n\nError: ${redactStartupDiagnostic(String(error))}`,
+            actor,
+          )
+          .catch(() => {});
+        throw error;
+      }
+    });
   }
   private async configureLocked(
     input: unknown,
@@ -2009,145 +2397,159 @@ export class Orchestrator {
     return this.serial(() => this.stopNow(this.run(id), actor));
   }
   async questionAction(id: string, input: unknown, actor: Actor) {
-    return this.serial(async () => {
-      this.human(actor);
-      const action = managedQuestionAction.parse(input),
-        run = this.run(id),
-        originalState = run.state;
-      if (!run.questionId || run.questionId !== action.questionId)
-        throw new Problem(
-          409,
-          "This question is not the current question for the selected run",
+    return this.serial(() => this.questionActionNow(id, input, actor));
+  }
+  private async questionActionNow(
+    id: string,
+    input: unknown,
+    actor: Actor,
+    authority?: DelegationAuthority,
+  ) {
+    const action = managedQuestionAction.parse(input),
+      run = this.run(id),
+      originalState = run.state;
+    if (!authority) this.human(actor);
+    if (!run.questionId || run.questionId !== action.questionId)
+      throw new Problem(
+        409,
+        "This question is not the current question for the selected run",
+      );
+    if (this.runs.some((candidate) => candidate.previous === run.id))
+      throw new Problem(
+        409,
+        "This question already has a retry run; use its current status",
+      );
+    if (!["waiting_input", "recovery"].includes(run.state))
+      throw new Problem(409, "This managed run is not waiting for an answer");
+    const comments = this.store.comments(),
+      question = comments.find((comment) => comment.id === action.questionId);
+    if (
+      !question ||
+      question.ticket !== run.ticket ||
+      question.kind !== "question"
+    )
+      throw new Problem(409, "The managed run question is unavailable");
+    if (question.revision !== action.revision)
+      throw new Problem(
+        409,
+        "Managed question changed; reload before choosing an action",
+      );
+    if (action.action === "stop")
+      return {
+        run: this.stopNow(run, actor),
+        question,
+        retried: false,
+      };
+    const answer = action.answer?.trim() ?? "",
+      hasHumanReply =
+        question.replies?.some((reply) => reply.actor.kind === "human") ||
+        comments.some(
+          (comment) =>
+            comment.ticket === run.ticket &&
+            comment.actor.kind === "human" &&
+            comment.body.startsWith(`Reply to question ${question.id} from `),
         );
-      if (this.runs.some((candidate) => candidate.previous === run.id))
-        throw new Problem(
-          409,
-          "This question already has a retry run; use its current status",
-        );
-      if (!["waiting_input", "recovery"].includes(run.state))
-        throw new Problem(409, "This managed run is not waiting for an answer");
-      const comments = this.store.comments(),
-        question = comments.find((comment) => comment.id === action.questionId);
-      if (
-        !question ||
-        question.ticket !== run.ticket ||
-        question.kind !== "question"
-      )
-        throw new Problem(409, "The managed run question is unavailable");
-      if (question.revision !== action.revision)
-        throw new Problem(
-          409,
-          "Managed question changed; reload before choosing an action",
-        );
-      if (action.action === "stop")
-        return {
-          run: this.stopNow(run, actor),
-          question,
-          retried: false,
-        };
-      const answer = action.answer?.trim() ?? "",
-        hasHumanReply =
-          question.replies?.some((reply) => reply.actor.kind === "human") ||
-          comments.some(
-            (comment) =>
-              comment.ticket === run.ticket &&
-              comment.actor.kind === "human" &&
-              comment.body.startsWith(`Reply to question ${question.id} from `),
-          );
-      if (
-        question.resolved &&
-        !(action.action === "answer_retry" && run.questionRetryBlocked)
-      )
-        throw new Problem(409, "This managed question is no longer open");
-      if (!answer && !(action.action === "answer_retry" && hasHumanReply))
-        throw new Problem(422, "Write an answer before submitting");
-      if (action.action === "answer_retry")
-        this.save(run, { questionRetryBlocked: true });
-      let saved = question;
-      if (question.resolved && answer) {
-        const reopened = await this.store.resolveComment(
-          question.id,
-          question.revision,
-          false,
-          actor,
-        );
-        saved = await this.store.replyManagedQuestion(
-          reopened.id,
-          reopened.revision,
-          run.ticket,
-          run.id,
-          answer,
-          true,
-          actor,
-        );
-      } else if (answer)
-        saved = await this.store.replyManagedQuestion(
-          question.id,
-          question.revision,
-          run.ticket,
-          run.id,
-          answer,
-          action.action === "answer_retry",
-          actor,
-        );
-      else if (action.action === "answer_retry")
-        saved = await this.store.resolveComment(
-          question.id,
-          question.revision,
-          true,
-          actor,
-        );
-      if (action.action === "answer_only")
-        return { run, question: saved, retried: false };
-      try {
-        const retried = await this.resumeNow(run, actor);
-        this.save(run, { questionRetryBlocked: undefined });
-        return { run: retried, question: saved, retried: true };
-      } catch (error) {
-        let current = this.store
-          .comments()
-          .find((comment) => comment.id === question.id);
-        let retryError = redactStartupDiagnostic(
-          error instanceof Error ? error.message : String(error),
-        );
-        if (current?.resolved)
-          if (current.revision !== saved.revision) {
-            saved = current;
-            retryError +=
-              " Question changed concurrently and remains retry-blocked; reload before acting.";
-          } else
-            try {
-              saved = await this.store.resolveComment(
-                current.id,
-                current.revision,
-                false,
-                actor,
-              );
-            } catch (reopenError) {
-              current = this.store
-                .comments()
-                .find((comment) => comment.id === question.id);
-              if (current) saved = current;
-              retryError += ` Question remains retry-blocked because it could not be reopened: ${redactStartupDiagnostic(
-                reopenError instanceof Error
-                  ? reopenError.message
-                  : String(reopenError),
-              )}`;
-            }
-        if (!this.runs.some((candidate) => candidate.previous === run.id))
-          this.save(run, {
-            state: originalState,
-            questionRetryBlocked: true,
-            error: retryError,
-          });
-        return {
-          run,
-          question: saved,
-          retried: false,
-          retryError,
-        };
-      }
-    });
+    if (
+      question.resolved &&
+      !(action.action === "answer_retry" && run.questionRetryBlocked)
+    )
+      throw new Problem(409, "This managed question is no longer open");
+    if (!answer && !(action.action === "answer_retry" && hasHumanReply))
+      throw new Problem(422, "Write an answer before submitting");
+    if (action.action === "answer_retry")
+      this.save(run, { questionRetryBlocked: true });
+    let saved = question;
+    if (question.resolved && answer) {
+      const reopened = await this.store.resolveManagedQuestion(
+        question.id,
+        question.revision,
+        run.ticket,
+        false,
+        actor,
+        authority,
+      );
+      saved = await this.store.replyManagedQuestion(
+        reopened.id,
+        reopened.revision,
+        run.ticket,
+        run.id,
+        answer,
+        true,
+        actor,
+        authority,
+      );
+    } else if (answer)
+      saved = await this.store.replyManagedQuestion(
+        question.id,
+        question.revision,
+        run.ticket,
+        run.id,
+        answer,
+        action.action === "answer_retry",
+        actor,
+        authority,
+      );
+    else if (action.action === "answer_retry")
+      saved = await this.store.resolveManagedQuestion(
+        question.id,
+        question.revision,
+        run.ticket,
+        true,
+        actor,
+        authority,
+      );
+    if (action.action === "answer_only")
+      return { run, question: saved, retried: false };
+    try {
+      const retried = await this.resumeNow(run, actor, authority);
+      this.save(run, { questionRetryBlocked: undefined });
+      return { run: retried, question: saved, retried: true };
+    } catch (error) {
+      let current = this.store
+        .comments()
+        .find((comment) => comment.id === question.id);
+      let retryError = redactStartupDiagnostic(
+        error instanceof Error ? error.message : String(error),
+      );
+      if (current?.resolved)
+        if (current.revision !== saved.revision) {
+          saved = current;
+          retryError +=
+            " Question changed concurrently and remains retry-blocked; reload before acting.";
+        } else
+          try {
+            saved = await this.store.resolveManagedQuestion(
+              current.id,
+              current.revision,
+              run.ticket,
+              false,
+              actor,
+              authority,
+            );
+          } catch (reopenError) {
+            current = this.store
+              .comments()
+              .find((comment) => comment.id === question.id);
+            if (current) saved = current;
+            retryError += ` Question remains retry-blocked because it could not be reopened: ${redactStartupDiagnostic(
+              reopenError instanceof Error
+                ? reopenError.message
+                : String(reopenError),
+            )}`;
+          }
+      if (!this.runs.some((candidate) => candidate.previous === run.id))
+        this.save(run, {
+          state: originalState,
+          questionRetryBlocked: true,
+          error: retryError,
+        });
+      return {
+        run,
+        question: saved,
+        retried: false,
+        retryError,
+      };
+    }
   }
   async takeover(id: string, revision: string, actor: Actor) {
     return this.serial(async () => {
@@ -2211,13 +2613,18 @@ export class Orchestrator {
   async resume(id: string, actor: Actor) {
     return this.serial(() => this.resumeNow(this.run(id), actor));
   }
-  private async resumeNow(run: ManagedRun, actor: Actor) {
+  private async resumeNow(
+    run: ManagedRun,
+    actor: Actor,
+    authority?: DelegationAuthority,
+  ) {
     this.enabled();
     const limitResume = run.failureKind === "limit";
-    if (!limitResume && actor.kind !== "human") this.human(actor);
+    if (!limitResume && actor.kind !== "human" && !authority) this.human(actor);
     if (
       limitResume &&
       actor.kind !== "human" &&
+      !authority &&
       actor.name !== this.config().reviewer.name
     )
       throw new Problem(

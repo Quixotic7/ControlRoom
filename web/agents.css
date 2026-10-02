@@ -52,6 +52,79 @@
 .agent-settings form {
   margin-top: 18px;
 }
+.delegation-settings {
+  display: grid;
+  gap: 10px;
+}
+.delegation-settings form {
+  display: grid;
+  gap: 10px;
+  margin-top: 0;
+}
+.delegation-settings .help,
+.delegation-settings small {
+  margin: 0;
+}
+.delegation-scopes {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.delegation-scopes .check-row,
+.delegation-limits .check-row {
+  flex-direction: row;
+  align-items: start;
+}
+.delegation-scopes .check-row span,
+.delegation-limits .check-row span {
+  display: grid;
+  gap: 3px;
+}
+.delegation-scopes small,
+.delegation-limits small {
+  color: var(--muted);
+}
+.delegation-digest {
+  margin: 20px 0;
+}
+.delegation-digest > p {
+  color: var(--muted);
+}
+.delegation-receipts {
+  display: grid;
+  gap: 12px;
+}
+.delegation-receipt {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.delegation-receipt header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.delegation-receipt p,
+.delegation-receipt blockquote {
+  margin: 0;
+}
+.delegation-receipt blockquote {
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--subtle);
+  overflow-wrap: anywhere;
+}
+.delegation-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .agent-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

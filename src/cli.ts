@@ -94,6 +94,16 @@ function inputJson() {
     ? JSON.parse(read(path.resolve(p)))
     : JSON.parse(option("patch", "{}")!);
 }
+function chatBasis(required = false) {
+  if (!has("on-behalf") && !has("said-at") && !required) return undefined;
+  const quote = option("on-behalf")?.trim(),
+    saidAt = option("said-at")?.trim();
+  if (!quote || !saidAt || !Number.isFinite(Date.parse(saidAt)))
+    throw new Error(
+      "Delegated actions require --on-behalf with the human's exact words and --said-at with their timestamp.",
+    );
+  return { quote, saidAt: new Date(saidAt).toISOString() };
+}
 async function serve(store: Store) {
   if (has("lan") && has("local"))
     throw new Error("Choose --lan or --local, not both");
@@ -313,6 +323,15 @@ Writing (need --etag from show or context, or --latest to use the current one)
   claim ID [--worktree PATH] | release ID
   review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
 
+Recording chat decisions (requires a matching human-granted delegation; actor stays agent)
+  approve ID | accept ID | request-changes ID | archive ID | unarchive ID
+    --etag HASH --on-behalf "Exact human decision" --said-at ISO_TIMESTAMP
+  update, move and merge also accept --on-behalf and --said-at.
+  resolve COMMENT --run RUN --ticket ID --etag TICKET_HASH --question-etag COMMENT_HASH
+    --on-behalf "Exact human answer and retry instruction" --said-at ISO_TIMESTAMP
+  agents resume RUN --ticket ID --etag TICKET_HASH --on-behalf TEXT --said-at ISO_TIMESTAMP
+  agents delegation             inspect current grant and action receipts (read-only)
+
 Service and data
   agents status | agents log RUN
   agents propose --file CONFIG_JSON [--brief-file MARKDOWN] [--etag CONFIG_REVISION]   stage a proposal for human approval
@@ -337,6 +356,40 @@ async function main() {
     return;
   }
   validatePositionals(positional);
+  const basis = chatBasis();
+  if (
+    basis &&
+    ![
+      "approve",
+      "accept",
+      "request-changes",
+      "archive",
+      "unarchive",
+      "resolve",
+      "update",
+      "move",
+      "merge",
+    ].includes(command) &&
+    !(command === "agents" && id === "resume")
+  )
+    throw new Error(
+      "--on-behalf is only supported for delegated board decisions and agents resume.",
+    );
+  if (
+    [
+      "approve",
+      "accept",
+      "request-changes",
+      "archive",
+      "unarchive",
+      "resolve",
+    ].includes(command)
+  )
+    chatBasis(true);
+  if (basis && has("latest"))
+    throw new Error(
+      "Delegated actions require an explicit current --etag; --latest is not supported.",
+    );
   if (
     command === "agents" &&
     id === "propose" &&
@@ -405,6 +458,8 @@ async function main() {
   }
   if (command === "agents") {
     if (!id || id === "status") output(await api(store, "/api/orchestration"));
+    else if (id === "delegation")
+      output(await api(store, "/api/orchestration/delegation"));
     else if (id === "propose") {
       output(
         await api(store, "/api/orchestration/proposals", "POST", {
@@ -450,6 +505,23 @@ async function main() {
     } else if (["stop", "resume", "takeover", "log"].includes(id)) {
       const run = positional[2];
       if (!run) throw new Error("Provide a run ID");
+      if (id === "resume" && basis) {
+        if (!option("ticket") || !option("etag"))
+          throw new Error(
+            "Delegated resume requires --ticket and its current --etag.",
+          );
+        output(
+          await api(store, "/api/orchestration/delegation/actions", "POST", {
+            action: "resume",
+            runId: run,
+            ticket: option("ticket"),
+            revision: option("etag"),
+            basis,
+            actor: who,
+          }),
+        );
+        return;
+      }
       if (id === "takeover" && !option("etag"))
         throw new Error(
           "Provide --etag from the current ticket so a stale assignment cannot be taken over",
@@ -519,6 +591,58 @@ async function main() {
       "--etag is required: take it from `show ID` or `context ID`, or pass --latest to write over the current version.",
     );
   };
+  if (
+    [
+      "approve",
+      "accept",
+      "request-changes",
+      "archive",
+      "unarchive",
+      "resolve",
+    ].includes(command)
+  ) {
+    if (!id) throw new Error("Provide a ticket or comment ID.");
+    if (
+      command === "resolve" &&
+      (!option("run") || !option("ticket") || !option("question-etag"))
+    )
+      throw new Error(
+        "Delegated resolve requires --run, --ticket, --etag and --question-etag.",
+      );
+    output(
+      await api(store, "/api/orchestration/delegation/actions", "POST", {
+        action:
+          command === "request-changes"
+            ? "request_changes"
+            : command === "unarchive"
+              ? "archive"
+              : command,
+        ticket: command === "resolve" ? option("ticket") : id,
+        revision: await etag(),
+        basis: chatBasis(true),
+        actor: who,
+        ...(command === "archive" || command === "unarchive"
+          ? { archived: command === "archive" }
+          : {}),
+        ...(command === "resolve"
+          ? {
+              runId: option("run"),
+              questionId: id,
+              questionRevision: option("question-etag"),
+              answer: bodyFile() || chatBasis(true)!.quote,
+            }
+          : {}),
+        ...(["accept", "request-changes"].includes(command)
+          ? {
+              feedback: bodyFile(),
+              target: option("status"),
+              requestId: option("request-id"),
+            }
+          : {}),
+      }),
+    );
+    return;
+  }
   if (command === "list") {
     const state = await api(store, "/api/state");
     output(
@@ -642,6 +766,23 @@ async function main() {
           : { ...inputJson(), ...parseSet(all("set")) };
     if (command === "move" && !extra)
       throw new Error("move needs a status, e.g. move 3 progress");
+    if (basis) {
+      output(
+        await api(store, "/api/orchestration/delegation/actions", "POST", {
+          action: "update",
+          ticket: id,
+          revision: await etag(),
+          patch,
+          body:
+            command === "update" && option("body-file")
+              ? bodyFile()
+              : undefined,
+          basis,
+          actor: who,
+        }),
+      );
+      return;
+    }
     output(
       await api(store, `/api/records/${encodeURIComponent(id)}`, "PATCH", {
         revision: await etag(),
@@ -676,6 +817,18 @@ async function main() {
   }
   if (command === "merge") {
     if (!extra) throw new Error("merge needs a source ticket");
+    if (basis) {
+      output(
+        await api(store, "/api/orchestration/delegation/actions", "POST", {
+          action: "merge",
+          ticket: id,
+          merge: { ...inputJson(), source: extra },
+          basis,
+          actor: who,
+        }),
+      );
+      return;
+    }
     output(
       await api(store, `/api/records/${encodeURIComponent(id)}/merge`, "POST", {
         ...inputJson(),

@@ -1378,6 +1378,14 @@ export function RecordDetail({
                   </span>
                 </label>
               )}
+              {kind === "ticket" && m.scopeApprovedDelegation && (
+                <p className="muted delegation-attribution">
+                  Approved by {m.scopeApprovedDelegation.grantingHuman.name} through{" "}
+                  {m.scopeApprovedDelegation.actor.name} (chat) ·{" "}
+                  said {new Date(m.scopeApprovedDelegation.basis.saidAt).toLocaleString()}: {"\u201c"}
+                  {m.scopeApprovedDelegation.basis.quote}{"\u201d"}
+                </p>
+              )}
               {kind === "ticket" && (
                 <label className="check-row">
                   <input
@@ -1408,6 +1416,14 @@ export function RecordDetail({
                   {record.meta.agentReview.reviewer}:{" "}
                   {record.meta.agentReview.outcome}. See the current handoff and
                   conversation for integration and verification.
+                </p>
+              )}
+              {record?.meta.acceptedDelegation && (
+                <p className="muted delegation-attribution">
+                  Accepted by {record.meta.acceptedDelegation.grantingHuman.name} through{" "}
+                  {record.meta.acceptedDelegation.actor.name} (chat) ·{" "}
+                  said {new Date(record.meta.acceptedDelegation.basis.saidAt).toLocaleString()}: {"\u201c"}
+                  {record.meta.acceptedDelegation.basis.quote}{"\u201d"}
                 </p>
               )}
             </aside>

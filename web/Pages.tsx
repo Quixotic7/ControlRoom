@@ -13,6 +13,7 @@ import {
   SearchIcon,
 } from "./Icons";
 import type { AttentionReason } from "./model";
+import { DelegationDigest, type DelegationStatus } from "./Delegation";
 
 export function PageHeader({
   title,
@@ -50,6 +51,9 @@ export function AttentionPage({
   onOpenAgents,
   comments = [],
   managedQuestions,
+  delegation,
+  onUndoDelegation,
+  records,
 }: {
   items: [RecordFile, AttentionReason][];
   changedDocs: RecordFile[];
@@ -59,6 +63,9 @@ export function AttentionPage({
   onOpenAgents?: () => void;
   comments?: ProjectState["comments"];
   managedQuestions?: ProjectState["managedQuestions"];
+  delegation?: DelegationStatus;
+  onUndoDelegation?: (id: string, revision: string) => Promise<void>;
+  records?: ProjectState["records"];
 }) {
   return (
     <>
@@ -114,6 +121,19 @@ export function AttentionPage({
           <p className="list-empty">✓ No tickets need you right now.</p>
         )}
       </div>
+      {onUndoDelegation && (
+        <DelegationDigest
+          status={delegation}
+          onOpen={onOpen}
+          onUndo={onUndoDelegation}
+          isTicketTarget={(id) =>
+            !!records?.some(
+              (record) =>
+                record.meta.id === id && record.meta.kind === "ticket",
+            )
+          }
+        />
+      )}
       {changedDocs.length > 0 && (
         <>
           <div className="section-heading">

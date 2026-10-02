@@ -47,6 +47,11 @@ export const valueOptions = new Set([
   "--output",
   "--port",
   "--worktree",
+  "--on-behalf",
+  "--said-at",
+  "--ticket",
+  "--question-etag",
+  "--request-id",
 ]);
 export const booleanOptions = new Set([
   "--agent",
@@ -141,6 +146,12 @@ export function validatePositionals(positional: string[]) {
     claim: 2,
     release: 2,
     review: 2,
+    approve: 2,
+    accept: 2,
+    "request-changes": 2,
+    archive: 2,
+    unarchive: 2,
+    resolve: 2,
     move: 3,
     relate: 3,
     unrelate: 3,
@@ -150,7 +161,11 @@ export function validatePositionals(positional: string[]) {
   let limit = limits[command];
   if (command === "agents") {
     if (!subcommand) limit = 1;
-    else if (["status", "propose", "configure", "queue"].includes(subcommand))
+    else if (
+      ["status", "propose", "configure", "queue", "delegation"].includes(
+        subcommand,
+      )
+    )
       limit = 2;
     else if (
       [

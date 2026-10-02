@@ -3,7 +3,7 @@ import { Agents } from "./Agents";
 import { ticketFromUrl, ticketUrl } from "./ticketNavigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Kind, RecordFile } from "../src/types";
-import { api, uploadImage } from "./api";
+import { actor, api, uploadImage } from "./api";
 import { AnnotationEditor } from "./AnnotationEditor";
 import { CaptureControl } from "./CaptureControl";
 import { Imports } from "./Imports";
@@ -621,11 +621,19 @@ export function App() {
                 comments={state.comments}
                 managedQuestions={state.managedQuestions}
                 proposals={state.agentConfigProposals}
+                delegation={state.delegation}
+                records={state.records}
                 onOpenAgents={() => go("agents")}
                 items={attention}
                 changedDocs={changedDocs}
                 onOpen={setSelected}
                 onMarkSeen={() => setKnowledgeRead(Date.now())}
+                onUndoDelegation={(id, revision) =>
+                  api(`/orchestration/delegation/${id}/undo`, "POST", {
+                    revision,
+                    actor,
+                  }).then(reload)
+                }
               />
             )}
             {page === "feed" && (

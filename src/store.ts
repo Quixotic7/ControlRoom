@@ -18,6 +18,27 @@ import YAML from "yaml";
 import { z } from "zod";
 import { decisionProtocol } from "./decision-protocol.js";
 import {
+  configureDelegationSchema,
+  delegatedActionFileSchema,
+  delegatedBoardActionSchema,
+  delegationBasisSchema,
+  delegationGrantSchema,
+  delegationScopesSchema,
+  type ConfigureDelegationInput,
+  type DelegatedActionName,
+  type DelegatedActionReceipt,
+  type DelegatedActionSummary,
+  type DelegatedActionTarget,
+  type DelegatedAttribution,
+  type DelegatedBoardActionInput,
+  type DelegationAuthority,
+  type DelegationBasis,
+  type DelegationGrant,
+  type DelegationScope,
+  type DelegationStatus,
+  type ManagedRunDelegationUndo,
+} from "./delegation.js";
+import {
   atomic,
   branch,
   canonicalProject,
@@ -60,6 +81,15 @@ const actorSchema = z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(["human", "agent"]),
 });
+const delegatedAttributionSchema = z
+  .object({
+    receiptId: z.string().regex(/^delegated-action-[a-f0-9]+$/),
+    actor: actorSchema.extend({ kind: z.literal("agent") }),
+    grantingHuman: actorSchema.extend({ kind: z.literal("human") }),
+    basis: delegationBasisSchema,
+    at: z.string().datetime(),
+  })
+  .strict();
 const strings = z.array(z.string().max(1000));
 const viewSchema = z.object({
   id: z.string().regex(/^[a-z0-9_-]+$/),
@@ -112,6 +142,7 @@ const metaSchema = z
     scopeApproved: z.boolean().optional(),
     scopeApprovedAt: z.string().datetime().optional(),
     scopeApprovedBy: actorSchema.optional(),
+    scopeApprovedDelegation: delegatedAttributionSchema.optional(),
     blocked: z.string().optional(),
     dependencies: strings.optional(),
     related: strings.optional(),
@@ -147,6 +178,7 @@ const metaSchema = z
     manualReviewRequired: z.boolean().optional(),
     humanReviewRequired: z.boolean().optional(),
     reviewVerificationAt: z.string().optional(),
+    acceptedDelegation: delegatedAttributionSchema.optional(),
     question: z.string().optional(),
     progressStartedAt: z.string().datetime().optional(),
     progress: z
@@ -198,6 +230,29 @@ export const defaultColumns: Column[] = [
   { id: "done", name: "Done", role: "done" },
 ];
 const folder = { ticket: "tickets", decision: "decisions", rule: "rules" };
+type DelegatedMutation = {
+  authority: DelegationAuthority;
+  action: DelegatedActionName;
+  receiptId: string;
+  guard?: () => void;
+  guardRequired?: boolean;
+};
+type DelegatedRecordActionInput = Exclude<
+  DelegatedBoardActionInput,
+  { action: "merge" }
+>;
+type DelegatedRecordActionResult = {
+  action: DelegatedRecordActionInput["action"];
+  record: RecordFile;
+  receipt: DelegatedActionReceipt;
+};
+type DelegatedMergeActionResult = {
+  survivor: RecordFile | undefined;
+  source: RecordFile | undefined;
+  changed: boolean;
+  recovered: boolean;
+  receipt: DelegatedActionReceipt;
+};
 export class Store {
   root: string;
   dir: string;
@@ -233,6 +288,7 @@ export class Store {
       "records/comments",
       "records/history",
       "records/attachments",
+      "records/delegation/actions",
       "staging",
       "assets",
       ".local",
@@ -291,6 +347,384 @@ export class Store {
         "Configuration requires unique columns and each workflow role",
       );
     return c as Config;
+  }
+  configRevision() {
+    return hash(read(this.file("config.yml")));
+  }
+  private delegationGrantPath() {
+    return "records/delegation/grant.json";
+  }
+  private delegationActionPath(id: string) {
+    if (!/^delegated-action-[a-f0-9]+$/.test(id))
+      throw new Problem(400, "Invalid delegated action ID");
+    return `records/delegation/actions/${id}.json`;
+  }
+  private delegationGrant(): {
+    grant: DelegationGrant | null;
+    revision: string;
+  } {
+    const file = this.file(this.delegationGrantPath());
+    if (!fs.existsSync(file)) return { grant: null, revision: hash("") };
+    const text = read(file);
+    return {
+      grant: delegationGrantSchema.parse(JSON.parse(text)) as DelegationGrant,
+      revision: hash(text),
+    };
+  }
+  delegatedAction(id: string): DelegatedActionReceipt {
+    const file = this.file(this.delegationActionPath(id));
+    if (!fs.existsSync(file))
+      throw new Problem(404, `Delegated action ${id} not found`);
+    const text = read(file);
+    return {
+      ...(delegatedActionFileSchema.parse(JSON.parse(text)) as Omit<
+        DelegatedActionReceipt,
+        "revision"
+      >),
+      revision: hash(text),
+    };
+  }
+  delegatedActions(): DelegatedActionReceipt[] {
+    return walk(this.file("records/delegation/actions"), ".json")
+      .map((file) => this.delegatedAction(path.basename(file, ".json")))
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id));
+  }
+  delegationStatus(): DelegationStatus {
+    const { grant, revision } = this.delegationGrant(),
+      actions = this.delegatedActions(),
+      undos = new Map(
+        actions
+          .filter((action) => action.undoOf)
+          .map((action) => [action.undoOf!, action]),
+      );
+    const receipts: DelegatedActionSummary[] = actions.map((action) => {
+      const undo = undos.get(action.id);
+      return {
+        ...action,
+        targets: action.targets.map((target) => ({
+          kind: target.kind,
+          id: target.id,
+          ...(target.title ? { title: target.title } : {}),
+          beforeRevision: target.before.revision,
+          afterRevision: target.after.revision,
+        })),
+        externalUndo: undefined,
+        ...(undo
+          ? {
+              undoneAt: undo.at,
+              undoneBy: undo.actor,
+              undoReceiptId: undo.id,
+            }
+          : {}),
+      } as DelegatedActionSummary;
+    });
+    return { grant, revision, receipts };
+  }
+  configureDelegation(
+    input: ConfigureDelegationInput,
+    revision: string,
+    actor: Actor,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Only a human can change chat delegation");
+      const data = configureDelegationSchema.parse(input),
+        current = this.delegationGrant();
+      if (current.revision !== revision)
+        throw new Problem(409, "Delegation changed; reload before saving");
+      const orchestration = this.config().orchestration as
+        | {
+            enabled?: boolean;
+            reviewerMode?: string;
+            reviewer?: { name?: string };
+          }
+        | undefined;
+      if (
+        data.enabled &&
+        (!orchestration?.enabled ||
+          orchestration.reviewerMode !== "chat" ||
+          !orchestration.reviewer?.name)
+      )
+        throw new Problem(
+          422,
+          "Enable Existing chat orchestrator mode with a named reviewer before granting delegation",
+        );
+      if (
+        data.enabled &&
+        data.expiresAt &&
+        Date.parse(data.expiresAt) <= Date.now()
+      )
+        throw new Problem(422, "Delegation expiry must be in the future");
+      const grant: DelegationGrant = {
+        schema: 1,
+        enabled: data.enabled,
+        reviewer:
+          orchestration?.reviewer?.name ?? current.grant?.reviewer ?? "",
+        scopes: data.scopes,
+        grantedBy: { name: actor.name, kind: "human" },
+        grantedAt: now(),
+        ...(data.expiresAt
+          ? { expiresAt: new Date(Date.parse(data.expiresAt)).toISOString() }
+          : {}),
+        createdBeforeGrant: data.createdBeforeGrant,
+        approvedGoalsOnly: data.approvedGoalsOnly,
+      };
+      const grantPath = this.delegationGrantPath(),
+        existed = fs.existsSync(this.file(grantPath)),
+        before = existed ? read(this.file(grantPath)) : "",
+        after = JSON.stringify(grant, null, 2),
+        historyPath = "records/history.jsonl",
+        historyExisted = fs.existsSync(this.file(historyPath)),
+        historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+        event = {
+          id: uid("event"),
+          record: "project",
+          actor,
+          action: data.enabled
+            ? "chat delegation configured"
+            : "chat delegation revoked",
+          at: now(),
+          before: current.grant,
+          after: grant,
+        };
+      this.commitFiles([
+        { path: grantPath, before, after, existed },
+        {
+          path: historyPath,
+          before: historyBefore,
+          after: historyBefore + JSON.stringify(event) + "\n",
+          existed: historyExisted,
+        },
+      ]);
+      return this.delegationStatus();
+    });
+  }
+  private delegationGoalApproved(record: RecordFile) {
+    const seen = new Set<string>();
+    let current: RecordFile | undefined = record.meta.parent
+      ? this.get(record.meta.parent)
+      : undefined;
+    while (current && !seen.has(current.meta.id)) {
+      seen.add(current.meta.id);
+      if (
+        current.meta.scopeApproved &&
+        current.meta.scopeApprovedBy?.kind === "human"
+      )
+        return true;
+      current = current.meta.parent ? this.get(current.meta.parent) : undefined;
+    }
+    return false;
+  }
+  authorizeDelegation(
+    scope: DelegationScope,
+    actor: Actor,
+    inputBasis: DelegationBasis,
+    affectedRecordIds: string[] = [],
+    expectedGrantRevision?: string,
+  ): DelegationAuthority {
+    actorSchema.parse(actor);
+    if (actor.kind !== "agent")
+      throw new Problem(403, "Delegated actions must retain agent attribution");
+    const parsedBasis = delegationBasisSchema.parse(inputBasis),
+      basis = {
+        ...parsedBasis,
+        saidAt: new Date(Date.parse(parsedBasis.saidAt)).toISOString(),
+      };
+    if (Date.parse(basis.saidAt) > Date.now())
+      throw new Problem(422, "Delegation basis cannot be dated in the future");
+    const { grant, revision } = this.delegationGrant();
+    if (expectedGrantRevision && revision !== expectedGrantRevision)
+      throw new Problem(409, "Delegation changed before the action completed");
+    if (!grant?.enabled)
+      throw new Problem(403, "Chat delegation is not enabled");
+    if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.now())
+      throw new Problem(403, "Chat delegation has expired");
+    if (!grant.scopes[scope])
+      throw new Problem(403, `Chat delegation does not grant ${scope}`);
+    const orchestration = this.config().orchestration as
+      | {
+          enabled?: boolean;
+          reviewerMode?: string;
+          reviewer?: { name?: string };
+        }
+      | undefined;
+    if (
+      !orchestration?.enabled ||
+      orchestration.reviewerMode !== "chat" ||
+      orchestration.reviewer?.name !== grant.reviewer ||
+      actor.name !== grant.reviewer
+    )
+      throw new Problem(
+        403,
+        "Delegation applies only to the current configured chat reviewer",
+      );
+    const affected = [
+      ...new Map(
+        affectedRecordIds.map((id) => {
+          const record = this.get(id);
+          return [record.meta.id, record] as const;
+        }),
+      ).values(),
+    ];
+    if (
+      grant.createdBeforeGrant &&
+      affected.some(
+        (record) =>
+          Date.parse(record.meta.createdAt) > Date.parse(grant.grantedAt),
+      )
+    )
+      throw new Problem(
+        403,
+        "Delegation is limited to records created before the grant",
+      );
+    if (
+      grant.approvedGoalsOnly &&
+      affected.some((record) => !this.delegationGoalApproved(record))
+    )
+      throw new Problem(
+        403,
+        "Delegation is limited to tickets under a human-approved goal",
+      );
+    return {
+      scope,
+      actor: { name: actor.name, kind: "agent" },
+      grantingHuman: grant.grantedBy,
+      basis,
+      grantRevision: revision,
+      authorizedAt: now(),
+    };
+  }
+  private delegatedAttribution(
+    authority: DelegationAuthority,
+    receiptId: string,
+    at: string,
+  ): DelegatedAttribution {
+    return {
+      receiptId,
+      actor: authority.actor,
+      grantingHuman: authority.grantingHuman,
+      basis: authority.basis,
+      at,
+    };
+  }
+  private validateDelegatedProposedMeta(
+    authority: DelegationAuthority,
+    meta: Meta,
+  ) {
+    const { grant, revision } = this.delegationGrant();
+    if (!grant?.enabled || revision !== authority.grantRevision)
+      throw new Problem(409, "Delegation changed before the action completed");
+    if (
+      grant.createdBeforeGrant &&
+      Date.parse(meta.createdAt) > Date.parse(grant.grantedAt)
+    )
+      throw new Problem(
+        403,
+        "Delegation is limited to records created before the grant",
+      );
+    if (
+      grant.approvedGoalsOnly &&
+      !this.delegationGoalApproved({
+        meta,
+        body: "",
+        revision: "",
+        path: "",
+      })
+    )
+      throw new Problem(
+        403,
+        "Delegation cannot move this ticket outside a human-approved goal",
+      );
+  }
+  private delegatedReceiptData(
+    mutation: DelegatedMutation,
+    targets: DelegatedActionTarget[],
+    at: string,
+    extra: Partial<
+      Pick<DelegatedActionReceipt, "externalUndo" | "undoOf" | "note">
+    > = {},
+  ): Omit<DelegatedActionReceipt, "revision"> {
+    return delegatedActionFileSchema.parse({
+      schema: 1,
+      id: mutation.receiptId,
+      action: mutation.action,
+      scope: mutation.authority.scope,
+      targets,
+      actor: mutation.authority.actor,
+      grantingHuman: mutation.authority.grantingHuman,
+      basis: mutation.authority.basis,
+      grantRevision: mutation.authority.grantRevision,
+      at,
+      ...extra,
+    }) as Omit<DelegatedActionReceipt, "revision">;
+  }
+  private commitDelegatedRecord(
+    old: RecordFile,
+    afterText: string,
+    meta: Meta,
+    body: string,
+    actor: Actor,
+    mutation: DelegatedMutation,
+  ) {
+    const beforeText = read(this.file(old.path)),
+      stamp = now(),
+      target: DelegatedActionTarget = {
+        kind: "record",
+        id: old.meta.id,
+        title: old.meta.title,
+        path: old.path,
+        before: {
+          revision: hash(beforeText),
+          existed: true,
+          content: beforeText,
+        },
+        after: {
+          revision: hash(afterText),
+          existed: true,
+          content: afterText,
+        },
+      },
+      receipt = this.delegatedReceiptData(mutation, [target], stamp),
+      receiptPath = this.delegationActionPath(receipt.id),
+      historyPath = "records/history.jsonl",
+      historyExisted = fs.existsSync(this.file(historyPath)),
+      historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+      event = {
+        id: uid("event"),
+        record: old.meta.id,
+        actor,
+        grantingHuman: mutation.authority.grantingHuman,
+        basis: mutation.authority.basis,
+        delegatedAction: receipt.id,
+        action: `delegated ${mutation.action}`,
+        at: stamp,
+        before: { meta: old.meta, body: old.body },
+        after: { meta, body },
+      };
+    if (mutation.guardRequired) {
+      if (!mutation.guard)
+        throw new Problem(
+          409,
+          "Managed assignment coordination is required before this action",
+        );
+      mutation.guard();
+    }
+    this.commitFiles([
+      { path: old.path, before: beforeText, after: afterText },
+      {
+        path: historyPath,
+        before: historyBefore,
+        after: historyBefore + JSON.stringify(event) + "\n",
+        existed: historyExisted,
+      },
+      {
+        path: receiptPath,
+        before: "",
+        after: JSON.stringify(receipt, null, 2),
+        existed: false,
+      },
+    ]);
   }
   token() {
     return read(this.file(".local/token")).trim();
@@ -444,6 +878,15 @@ export class Store {
     }
     const proposals = readAgentConfigProposals(this);
     errors.push(...proposals.errors);
+    let delegation: DelegationStatus | undefined;
+    try {
+      delegation = this.delegationStatus();
+    } catch (error) {
+      errors.push({
+        path: "records/delegation",
+        message: String(error),
+      });
+    }
     const state = {
       agentConfigProposals: proposals.proposals
         .filter((p) => p.status === "pending")
@@ -455,6 +898,7 @@ export class Store {
         })),
       config: this.config(),
       configRevision: hash(read(this.file("config.yml"))),
+      delegation,
       records,
       comments,
       attachments,
@@ -481,6 +925,10 @@ export class Store {
         ...attachments.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
         JSON.stringify(state.claims),
         ...proposals.proposals.map((p) => p.id + p.revision),
+        delegation?.revision ?? "delegation-error",
+        ...(delegation?.receipts.map(
+          (receipt) => receipt.id + receipt.revision,
+        ) ?? []),
         JSON.stringify(errors),
         state.branch,
         state.acknowledgedBranch,
@@ -625,7 +1073,7 @@ export class Store {
               path: z
                 .string()
                 .regex(
-                  /^(?:config\.yml|agents\/worker-brief\.md|records\/(?:tickets\/[A-Za-z0-9_-]+\.md|agent-proposals\/agent-proposal-[a-f0-9]+\.json|history\.jsonl))$/,
+                  /^(?:config\.yml|agents\/worker-brief\.md|records\/(?:tickets\/[A-Za-z0-9_-]+\.md|agent-proposals\/agent-proposal-[a-f0-9]+\.json|delegation\/(?:grant\.json|actions\/delegated-action-[a-f0-9]+\.json)|history\.jsonl))$/,
                 ),
               before: z.string(),
               after: z.string(),
@@ -673,6 +1121,7 @@ export class Store {
   private commitRecordTransaction(
     changes: { old: RecordFile; meta: Meta; body?: string; action: string }[],
     actor: Actor,
+    delegation?: DelegatedMutation,
   ) {
     const current = this.list();
     const replacements = new Map(
@@ -696,7 +1145,8 @@ export class Store {
         actor.kind === "agent" &&
         assignment &&
         assignment.state !== "released" &&
-        assignment.worker !== actor.name
+        assignment.worker !== actor.name &&
+        !delegation
       )
         throw new Problem(
           409,
@@ -716,6 +1166,8 @@ export class Store {
           "An affected ticket has another agent's live claim",
         );
       this.validate(change.meta, planned);
+      if (delegation)
+        this.validateDelegatedProposedMeta(delegation.authority, change.meta);
       // A redirected dependency must not introduce an indirect cycle.
       const visit = (id: string, seen: Set<string>) => {
         if (id === change.meta.id)
@@ -730,7 +1182,13 @@ export class Store {
           visit(dependency, seen);
       };
       for (const id of change.meta.dependencies ?? []) visit(id, new Set());
-      this.authority(actor, change.meta, change.old);
+      this.authority(
+        actor,
+        change.meta,
+        change.old,
+        false,
+        delegation?.authority,
+      );
       if (
         actor.kind === "agent" &&
         ["selected", "progress", "review"].includes(
@@ -758,7 +1216,12 @@ export class Store {
           );
       }
     }
-    const files = changes.map((change) => {
+    const files: {
+      path: string;
+      before: string;
+      after: string;
+      existed?: boolean;
+    }[] = changes.map((change) => {
       const before = read(this.file(change.old.path));
       return {
         path: change.old.path,
@@ -772,25 +1235,71 @@ export class Store {
     const historyBefore = fs.existsSync(this.file(historyPath))
       ? read(this.file(historyPath))
       : "";
-    const events =
-      changes
-        .map((change) =>
-          JSON.stringify({
-            id: uid("event"),
-            record: change.old.meta.id,
-            actor,
-            action: change.action,
-            at: now(),
-            before: { meta: change.old.meta, body: change.old.body },
-            after: { meta: change.meta, body: change.body ?? change.old.body },
-          }),
-        )
-        .join("\n") + "\n";
+    const stamp = now(),
+      events =
+        changes
+          .map((change) =>
+            JSON.stringify({
+              id: uid("event"),
+              record: change.old.meta.id,
+              actor,
+              ...(delegation
+                ? {
+                    grantingHuman: delegation.authority.grantingHuman,
+                    basis: delegation.authority.basis,
+                    delegatedAction: delegation.receiptId,
+                  }
+                : {}),
+              action: change.action,
+              at: stamp,
+              before: { meta: change.old.meta, body: change.old.body },
+              after: {
+                meta: change.meta,
+                body: change.body ?? change.old.body,
+              },
+            }),
+          )
+          .join("\n") + "\n";
     files.push({
       path: historyPath,
       before: historyBefore,
       after: historyBefore + events,
     });
+    if (delegation) {
+      const targets: DelegatedActionTarget[] = files
+        .slice(0, changes.length)
+        .map((file, index) => ({
+          kind: "record",
+          id: changes[index].old.meta.id,
+          title: changes[index].old.meta.title,
+          path: file.path,
+          before: {
+            revision: hash(file.before),
+            existed: true,
+            content: file.before,
+          },
+          after: {
+            revision: hash(file.after),
+            existed: true,
+            content: file.after,
+          },
+        }));
+      const receipt = this.delegatedReceiptData(delegation, targets, stamp);
+      files.push({
+        path: this.delegationActionPath(receipt.id),
+        before: "",
+        after: JSON.stringify(receipt, null, 2),
+        existed: false,
+      });
+    }
+    if (delegation?.guardRequired) {
+      if (!delegation.guard)
+        throw new Problem(
+          409,
+          "Managed assignment coordination is required before this action",
+        );
+      delegation.guard();
+    }
     this.commitFiles(files);
     return changes.map((change) => this.get(change.old.meta.id));
   }
@@ -842,6 +1351,7 @@ export class Store {
     next: Meta,
     old?: RecordFile,
     managed = false,
+    delegation?: DelegationAuthority,
   ) {
     actorSchema.parse(actor);
     if (actor.kind !== "agent" || next.kind !== "ticket") return;
@@ -850,10 +1360,18 @@ export class Store {
       ["scopeApprovedAt", "scopeApprovedBy"].some(
         (key) => JSON.stringify(next[key]) !== JSON.stringify(old?.meta[key]),
       )
-    )
-      throw new Problem(403, "Only a human can approve task scope");
+    ) {
+      if (delegation?.scope === "approveScope") {
+        // Continue through the ordinary status and scope checks below.
+      } else throw new Problem(403, "Only a human can approve task scope");
+    }
     const role = this.config().columns.find((c) => c.id === next.status)?.role;
-    if (!managed && role === "done" && old?.meta.status !== next.status)
+    if (
+      !managed &&
+      role === "done" &&
+      old?.meta.status !== next.status &&
+      delegation?.scope !== "reviewWork"
+    )
       throw new Problem(
         403,
         "Agents submit work to Review; a human accepts Done",
@@ -928,7 +1446,14 @@ export class Store {
     body: string,
     actor: Actor,
   ): RecordFile {
-    if (input.assignment || input.agentReview)
+    if (
+      [
+        "assignment",
+        "agentReview",
+        "scopeApprovedDelegation",
+        "acceptedDelegation",
+      ].some((key) => key in input)
+    )
       throw new Problem(
         403,
         "Managed assignments and review receipts are service-owned",
@@ -1015,6 +1540,7 @@ export class Store {
     body: string | undefined,
     actor: Actor,
     managed = false,
+    delegation?: DelegatedMutation,
   ): RecordFile {
     const old = this.get(id);
     if (old.meta.duplicateOf && patch.archived === false)
@@ -1042,6 +1568,20 @@ export class Store {
           403,
           "Managed assignments and review receipts are service-owned",
         );
+    for (const key of [
+      "scopeApprovedDelegation",
+      "acceptedDelegation",
+      "acceptedBy",
+    ])
+      if (
+        !delegation &&
+        key in patch &&
+        JSON.stringify(patch[key]) !== JSON.stringify(old.meta[key])
+      )
+        throw new Problem(
+          403,
+          "Delegated attribution is service-owned and cannot be supplied",
+        );
     if (
       "exceptionHistory" in patch &&
       JSON.stringify(patch.exceptionHistory) !==
@@ -1063,7 +1603,8 @@ export class Store {
       actor.kind === "agent" &&
       assignment &&
       assignment.state !== "released" &&
-      assignment.worker !== actor.name
+      assignment.worker !== actor.name &&
+      !delegation
     )
       throw new Problem(
         409,
@@ -1143,8 +1684,10 @@ export class Store {
         };
     }
     const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
+    if (delegation)
+      this.validateDelegatedProposedMeta(delegation.authority, meta);
     this.validate(meta);
-    this.authority(actor, meta, old, managed);
+    this.authority(actor, meta, old, managed, delegation?.authority);
     if (
       meta.kind === "ticket" &&
       actor.kind === "agent" &&
@@ -1160,17 +1703,31 @@ export class Store {
     const oldText = read(this.file(old.path));
     if (hash(oldText) !== revision)
       throw new Problem(409, "File changed during save");
-    atomic(
-      this.file(old.path),
-      patchMd(oldText, { ...patch, updatedAt: meta.updatedAt }, body),
-    );
-    this.history(
-      id,
-      actor,
-      "updated",
-      { meta: old.meta, body: old.body },
-      { meta, body: body ?? old.body },
-    );
+    const nextBody = body ?? old.body,
+      afterText = patchMd(
+        oldText,
+        { ...patch, updatedAt: meta.updatedAt },
+        body,
+      );
+    if (delegation)
+      this.commitDelegatedRecord(
+        old,
+        afterText,
+        meta,
+        nextBody,
+        actor,
+        delegation,
+      );
+    else {
+      atomic(this.file(old.path), afterText);
+      this.history(
+        id,
+        actor,
+        "updated",
+        { meta: old.meta, body: old.body },
+        { meta, body: nextBody },
+      );
+    }
     if (
       meta.kind === "ticket" &&
       actor.kind === "agent" &&
@@ -1190,6 +1747,554 @@ export class Store {
     actor: Actor,
   ) {
     return this.write(() => this.updateNow(id, revision, patch, body, actor));
+  }
+
+  delegatedBoardAction(
+    input: Extract<DelegatedBoardActionInput, { action: "merge" }>,
+    actor: Actor,
+    guard?: () => void,
+  ): Promise<DelegatedMergeActionResult>;
+  delegatedBoardAction(
+    input: DelegatedRecordActionInput,
+    actor: Actor,
+    guard?: () => void,
+  ): Promise<DelegatedRecordActionResult>;
+  delegatedBoardAction(
+    input: DelegatedBoardActionInput,
+    actor: Actor,
+    guard?: () => void,
+  ): Promise<DelegatedRecordActionResult | DelegatedMergeActionResult>;
+  delegatedBoardAction(
+    input: DelegatedBoardActionInput,
+    actor: Actor,
+    guard?: () => void,
+  ) {
+    return this.write(() => {
+      const action = delegatedBoardActionSchema.parse(input);
+      if (action.action === "merge")
+        return this.delegatedMergeNow(action.ticket, action, actor, guard);
+      const current = this.get(action.ticket);
+      if (current.meta.kind !== "ticket")
+        throw new Problem(422, "Delegated board actions apply to tickets only");
+      const recoveredReview =
+        (action.action === "accept" || action.action === "request_changes") &&
+        (current.meta.reviewOutcome as { requestId?: string } | undefined)
+          ?.requestId === action.requestId;
+      if (current.revision !== action.revision && !recoveredReview)
+        throw new Problem(
+          409,
+          "This ticket changed. Reload before recording the delegated action.",
+          { current },
+        );
+      const assignment = current.meta.assignment as Assignment | undefined;
+      const scope: DelegationScope =
+          action.action === "approve"
+            ? "approveScope"
+            : action.action === "accept" || action.action === "request_changes"
+              ? "reviewWork"
+              : "manageBoard",
+        authority = this.authorizeDelegation(scope, actor, action.basis, [
+          current.meta.id,
+        ]),
+        recoveredReceipt = recoveredReview
+          ? this.delegatedActions().find(
+              (receipt) =>
+                receipt.action ===
+                  (action.action === "accept"
+                    ? "accept_review"
+                    : "request_changes") &&
+                receipt.targets.some(
+                  (target) =>
+                    target.kind === "record" &&
+                    target.id === current.meta.id &&
+                    target.after.revision === current.revision,
+                ),
+            )
+          : undefined,
+        receiptId = recoveredReceipt?.id ?? uid("delegated-action"),
+        stamp = now(),
+        mutation = {
+          authority,
+          receiptId,
+          guard,
+          guardRequired: Boolean(
+            assignment &&
+              ["assigned", "acknowledged"].includes(assignment.state) &&
+              assignment.worker !== actor.name,
+          ),
+          action:
+            action.action === "approve"
+              ? ("approve_scope" as const)
+              : action.action === "archive"
+                ? action.archived
+                  ? ("archive" as const)
+                  : ("unarchive" as const)
+                : action.action === "accept"
+                  ? ("accept_review" as const)
+                  : action.action === "request_changes"
+                    ? ("request_changes" as const)
+                    : ("update" as const),
+        } satisfies DelegatedMutation;
+      if (recoveredReview && !recoveredReceipt)
+        throw new Problem(
+          409,
+          "This review request was already recorded without a matching delegated receipt",
+        );
+      let record: RecordFile;
+      if (action.action === "approve") {
+        if (current.meta.scopeApproved)
+          throw new Problem(422, "Scope is already explicitly approved");
+        const inherited = this.scope(current);
+        if (inherited)
+          throw new Problem(
+            422,
+            `Scope is inherited from #${inherited.meta.number ?? inherited.meta.id}`,
+          );
+        record = this.updateNow(
+          current.meta.id,
+          current.revision,
+          {
+            scopeApproved: true,
+            scopeApprovedAt: stamp,
+            scopeApprovedBy: actor,
+            scopeApprovedDelegation: this.delegatedAttribution(
+              authority,
+              receiptId,
+              stamp,
+            ),
+          },
+          undefined,
+          actor,
+          false,
+          mutation,
+        );
+      } else if (action.action === "update") {
+        const reserved = [
+          "assignment",
+          "agentReview",
+          "scopeApproved",
+          "scopeApprovedAt",
+          "scopeApprovedBy",
+          "scopeApprovedDelegation",
+          "acceptedBy",
+          "acceptedDelegation",
+          "reviewOutcome",
+          "humanReviewRequired",
+          "manualReviewRequired",
+          "verification",
+          "reviewVerificationAt",
+          "related",
+          "duplicateOf",
+          "mergedFrom",
+          "duplicateMerge",
+          "archived",
+        ];
+        const forged = reserved.find((key) => key in action.patch);
+        if (forged)
+          throw new Problem(
+            403,
+            `Delegated update cannot change service-owned ${forged}`,
+          );
+        record = this.updateNow(
+          current.meta.id,
+          current.revision,
+          action.patch,
+          action.body,
+          actor,
+          false,
+          mutation,
+        );
+      } else if (action.action === "archive") {
+        record = this.updateNow(
+          current.meta.id,
+          current.revision,
+          { archived: action.archived },
+          undefined,
+          actor,
+          false,
+          mutation,
+        );
+      } else {
+        const outcome = action.action === "accept" ? "accept" : "changes",
+          role = outcome === "accept" ? "done" : "progress",
+          target =
+            action.target ??
+            this.config().columns.find((column) => column.role === role)?.id;
+        if (!target) throw new Problem(422, `No ${role} destination exists`);
+        const reviewPatch = { ...action.patch };
+        for (const key of [
+          "scopeApproved",
+          "scopeApprovedAt",
+          "scopeApprovedBy",
+          "scopeApprovedDelegation",
+          "acceptedBy",
+          "acceptedDelegation",
+          "assignment",
+          "agentReview",
+        ])
+          if (key in reviewPatch)
+            throw new Problem(
+              403,
+              `Delegated review cannot change service-owned ${key}`,
+            );
+        if (outcome === "accept") {
+          if (recoveredReview) {
+            if (!current.meta.acceptedDelegation)
+              throw new Problem(
+                409,
+                "The accepted review is missing its delegated attribution",
+              );
+            reviewPatch.acceptedDelegation = current.meta.acceptedDelegation;
+          } else
+            reviewPatch.acceptedDelegation = this.delegatedAttribution(
+              authority,
+              receiptId,
+              stamp,
+            );
+        }
+        record = this.reviewOutcomeNow(
+          current.meta.id,
+          {
+            requestId: action.requestId,
+            revision: action.revision,
+            outcome,
+            target,
+            feedback: action.feedback,
+            patch: reviewPatch,
+            body: action.body,
+          },
+          actor,
+          mutation,
+        );
+      }
+      return {
+        action: action.action,
+        record,
+        receipt: this.delegatedAction(receiptId),
+      };
+    });
+  }
+  recordDelegatedExternalAction(
+    authority: DelegationAuthority,
+    input: {
+      action: "question_retry" | "resume_run" | "stop_run";
+      ticket: string;
+      beforeRevision: string;
+      afterRevision: string;
+      undo: ManagedRunDelegationUndo;
+    },
+  ) {
+    return this.write(() => {
+      const ticket = this.get(input.ticket);
+      this.authorizeDelegation(
+        "manageRuns",
+        authority.actor,
+        authority.basis,
+        [ticket.meta.id],
+        authority.grantRevision,
+      );
+      if (authority.scope !== "manageRuns")
+        throw new Problem(
+          403,
+          "External run actions require manageRuns delegation",
+        );
+      if (input.undo.kind !== "managed-run")
+        throw new Problem(422, "Managed run undo details are required");
+      const receiptId = uid("delegated-action"),
+        stamp = now(),
+        target: DelegatedActionTarget = {
+          kind: "record",
+          id: ticket.meta.id,
+          title: ticket.meta.title,
+          before: {
+            revision: input.beforeRevision,
+            existed: true,
+          },
+          after: {
+            revision: input.afterRevision,
+            existed: true,
+          },
+        },
+        receipt = this.delegatedReceiptData(
+          {
+            authority,
+            receiptId,
+            action: input.action,
+          },
+          [target],
+          stamp,
+          { externalUndo: input.undo },
+        ),
+        receiptPath = this.delegationActionPath(receiptId),
+        historyPath = "records/history.jsonl",
+        historyExisted = fs.existsSync(this.file(historyPath)),
+        historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+        event = {
+          id: uid("event"),
+          record: ticket.meta.id,
+          actor: authority.actor,
+          grantingHuman: authority.grantingHuman,
+          basis: authority.basis,
+          delegatedAction: receiptId,
+          action: `delegated ${input.action}`,
+          at: stamp,
+          before: input.beforeRevision,
+          after: input.afterRevision,
+        };
+      this.commitFiles([
+        {
+          path: receiptPath,
+          before: "",
+          after: JSON.stringify(receipt, null, 2),
+          existed: false,
+        },
+        {
+          path: historyPath,
+          before: historyBefore,
+          after: historyBefore + JSON.stringify(event) + "\n",
+          existed: historyExisted,
+        },
+      ]);
+      return this.delegatedAction(receiptId);
+    });
+  }
+  recordDelegatedExternalUndo(
+    id: string,
+    revision: string,
+    actor: Actor,
+    note: string,
+    afterRevision: string,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Only a human can undo a delegated action");
+      const original = this.delegatedAction(id);
+      if (original.revision !== revision)
+        throw new Problem(409, "Delegated action changed; reload before undo");
+      if (!original.externalUndo)
+        throw new Problem(422, "This is not an external managed-run action");
+      if (this.delegatedActions().some((action) => action.undoOf === id))
+        throw new Problem(409, "This delegated action was already undone");
+      const receiptId = uid("delegated-action"),
+        stamp = now(),
+        target = original.targets[0],
+        receipt = delegatedActionFileSchema.parse({
+          schema: 1,
+          id: receiptId,
+          action: "undo",
+          scope: original.scope,
+          targets: [
+            {
+              ...target,
+              before: target.after,
+              after: {
+                revision: afterRevision,
+                existed: true,
+              },
+            },
+          ],
+          actor,
+          grantingHuman: original.grantingHuman,
+          basis: {
+            quote: note.trim() || "Undo delegated action in Control Room",
+            saidAt: stamp,
+          },
+          grantRevision: original.grantRevision,
+          at: stamp,
+          undoOf: original.id,
+          ...(note.trim() ? { note: note.trim() } : {}),
+        }) as Omit<DelegatedActionReceipt, "revision">,
+        historyPath = "records/history.jsonl",
+        historyExisted = fs.existsSync(this.file(historyPath)),
+        historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+        event = {
+          id: uid("event"),
+          record: target.id,
+          actor,
+          action: "delegated managed-run action undone",
+          delegatedAction: receiptId,
+          undoOf: original.id,
+          at: stamp,
+          before: target.after.revision,
+          after: afterRevision,
+        };
+      this.commitFiles([
+        {
+          path: this.delegationActionPath(receiptId),
+          before: "",
+          after: JSON.stringify(receipt, null, 2),
+          existed: false,
+        },
+        {
+          path: historyPath,
+          before: historyBefore,
+          after: historyBefore + JSON.stringify(event) + "\n",
+          existed: historyExisted,
+        },
+      ]);
+      return this.delegatedAction(receiptId);
+    });
+  }
+  undoDelegatedAction(
+    id: string,
+    revision: string,
+    actor: Actor,
+    note = "",
+    guard?: () => void,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human")
+        throw new Problem(403, "Only a human can undo a delegated action");
+      const original = this.delegatedAction(id);
+      if (original.revision !== revision)
+        throw new Problem(409, "Delegated action changed; reload before undo");
+      if (original.externalUndo)
+        throw new Problem(
+          409,
+          "Managed-run undo must be coordinated by the run controller",
+        );
+      if (original.action === "undo")
+        throw new Problem(422, "Undo receipts cannot themselves be undone");
+      if (this.delegatedActions().some((action) => action.undoOf === id))
+        throw new Problem(409, "This delegated action was already undone");
+      if (original.targets.some((target) => target.kind !== "record"))
+        throw new Problem(422, "This delegated action has no board snapshot");
+      const recordsById = new Map(
+          this.list().map((record) => [record.meta.id, record] as const),
+        ),
+        activeAssignment = original.targets.some((target) => {
+          const assignment = recordsById.get(target.id)?.meta.assignment as
+            | Assignment
+            | undefined;
+          return (
+            assignment &&
+            ["assigned", "acknowledged"].includes(assignment.state)
+          );
+        });
+      const stamp = now(),
+        restored = original.targets.map((target) => {
+          if (!target.path || !target.before.content || !target.after.content)
+            throw new Problem(
+              422,
+              "Delegated receipt has no restorable snapshot",
+            );
+          const current = read(this.file(target.path));
+          if (hash(current) !== target.after.revision)
+            throw new Problem(
+              409,
+              `Cannot undo because ${target.id} changed after the delegated action`,
+            );
+          const content = patchMd(target.before.content, { updatedAt: stamp });
+          return { target, current, content };
+        }),
+        replacements = new Map(
+          restored.map(({ target, content }) => {
+            const parsed = parseMd(content);
+            return [target.id, parsed.meta as Meta] as const;
+          }),
+        ),
+        planned = this.list().map((record) => ({
+          ...record,
+          meta: replacements.get(record.meta.id) ?? record.meta,
+        }));
+      for (const meta of replacements.values()) this.validate(meta, planned);
+      const receiptId = uid("delegated-action"),
+        targets: DelegatedActionTarget[] = restored.map(
+          ({ target, current, content }) => ({
+            kind: "record",
+            id: target.id,
+            ...(target.title ? { title: target.title } : {}),
+            path: target.path,
+            before: {
+              revision: hash(current),
+              existed: true,
+              content: current,
+            },
+            after: {
+              revision: hash(content),
+              existed: true,
+              content,
+            },
+          }),
+        ),
+        receipt = delegatedActionFileSchema.parse({
+          schema: 1,
+          id: receiptId,
+          action: "undo",
+          scope: original.scope,
+          targets,
+          actor,
+          grantingHuman: original.grantingHuman,
+          basis: {
+            quote: note.trim() || "Undo delegated action in Control Room",
+            saidAt: stamp,
+          },
+          grantRevision: original.grantRevision,
+          at: stamp,
+          undoOf: original.id,
+          ...(note.trim() ? { note: note.trim() } : {}),
+        }) as Omit<DelegatedActionReceipt, "revision">,
+        historyPath = "records/history.jsonl",
+        historyExisted = fs.existsSync(this.file(historyPath)),
+        historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+        events = restored
+          .map(({ target, current, content }) =>
+            JSON.stringify({
+              id: uid("event"),
+              record: target.id,
+              actor,
+              action: "delegated action undone",
+              delegatedAction: receiptId,
+              undoOf: original.id,
+              at: stamp,
+              before: parseMd(current),
+              after: parseMd(content),
+            }),
+          )
+          .join("\n");
+      if (activeAssignment) {
+        if (!guard)
+          throw new Problem(
+            409,
+            "Managed assignment coordination is required before undo",
+          );
+        guard();
+      }
+      this.commitFiles([
+        ...restored.map(({ target, current, content }) => ({
+          path: target.path!,
+          before: current,
+          after: content,
+        })),
+        {
+          path: historyPath,
+          before: historyBefore,
+          after: historyBefore + events + "\n",
+          existed: historyExisted,
+        },
+        {
+          path: this.delegationActionPath(receiptId),
+          before: "",
+          after: JSON.stringify(receipt, null, 2),
+          existed: false,
+        },
+      ]);
+      return {
+        receipt: this.delegatedAction(receiptId),
+        records: targets.map((target) => this.get(target.id)),
+      };
+    });
+  }
+  undoDelegatedBoardAction(
+    id: string,
+    revision: string,
+    actor: Actor,
+    note = "",
+    guard?: () => void,
+  ) {
+    return this.undoDelegatedAction(id, revision, actor, note, guard);
   }
 
   relate(id: string, input: unknown, actor: Actor) {
@@ -1371,209 +2476,282 @@ export class Store {
     };
   }
 
-  merge(survivorId: string, input: unknown, actor: Actor) {
-    return this.write(() => {
-      actorSchema.parse(actor);
-      const data = z
-        .object({
-          source: z.union([z.string(), z.number().int().nonnegative()]),
-          requestId: z.string().min(8).max(200),
-          revisions: z.record(z.string(), z.string()),
-          resolutions: z
-            .partialRecord(
-              z.enum([
-                "parent",
-                "status",
-                "owner",
-                "priority",
-                "acceptanceCriteria",
-              ]),
-              z.enum(["survivor", "source", "both"]),
-            )
-            .default({}),
-        })
-        .parse(input);
-      const preview = this.mergePreview(survivorId, String(data.source));
-      const survivor = preview.survivor,
-        source = preview.source;
-      const fingerprint = hash(
-        JSON.stringify({
-          survivor: survivor.meta.id,
-          source: source.meta.id,
-          resolutions: data.resolutions,
-        }),
+  private delegatedMergeNow(
+    survivorId: string,
+    input: Extract<
+      ReturnType<typeof delegatedBoardActionSchema.parse>,
+      { action: "merge" }
+    >,
+    actor: Actor,
+    guard?: () => void,
+  ) {
+    const preview = this.mergePreview(survivorId, String(input.source)),
+      affected = Object.keys(preview.affected),
+      assigned = affected.some((id) => {
+        const assignment = this.get(id).meta.assignment as
+          | Assignment
+          | undefined;
+        return (
+          assignment &&
+          ["assigned", "acknowledged"].includes(assignment.state) &&
+          assignment.worker !== actor.name
+        );
+      });
+    const authority = this.authorizeDelegation(
+        "manageBoard",
+        actor,
+        input.basis,
+        affected,
+      ),
+      recoveredMerge =
+        preview.source.meta.duplicateMerge?.requestId === input.requestId,
+      recoveredReceipt = recoveredMerge
+        ? this.delegatedActions().find(
+            (receipt) =>
+              receipt.action === "merge_duplicate" &&
+              receipt.targets.some(
+                (target) =>
+                  target.kind === "record" &&
+                  target.id === preview.source.meta.id &&
+                  target.after.revision === preview.source.revision,
+              ),
+          )
+        : undefined,
+      receiptId = recoveredReceipt?.id ?? uid("delegated-action");
+    if (recoveredMerge && !recoveredReceipt)
+      throw new Problem(
+        409,
+        "This merge request was already recorded without a matching delegated receipt",
       );
-      if (source.meta.duplicateMerge?.requestId === data.requestId) {
-        if (source.meta.duplicateMerge.fingerprint !== fingerprint)
-          throw new Problem(
-            409,
-            "This merge request ID was already used with different choices",
-          );
-        return { survivor, source, changed: false, recovered: true };
-      }
-      if (preview.alreadyMerged)
-        return { survivor, source, changed: false, recovered: true };
-      const conflictKeys = Object.keys(
-        preview.conflicts,
-      ) as MergeConflictField[];
-      const missing = conflictKeys.filter((field) => !data.resolutions[field]);
-      if (missing.length)
-        throw new Problem(
-          422,
-          `Resolve merge conflicts before applying: ${missing.join(", ")}`,
-          preview,
-        );
-      if (
-        Object.entries(data.resolutions).some(
-          ([field, resolution]) =>
-            resolution === "both" && field !== "acceptanceCriteria",
-        )
-      )
-        throw new Problem(
-          422,
-          '"both" is only valid for acceptance criteria conflicts',
-        );
-      for (const [id, revision] of Object.entries(preview.affected))
-        if (data.revisions[id] !== revision)
-          throw new Problem(
-            409,
-            `Missing or stale revision for affected ticket ${id}`,
-            preview,
-          );
-      if (Object.keys(data.revisions).some((id) => !(id in preview.affected)))
-        throw new Problem(
-          409,
-          "The affected ticket set changed. Reload the preview.",
-          preview,
-        );
-
-      const stamp = now();
-      const survivorMeta: Meta = {
-        ...survivor.meta,
-        mergedFrom: [
-          ...new Set([...(survivor.meta.mergedFrom ?? []), source.meta.id]),
-        ],
-        updatedAt: stamp,
-      };
-      for (const field of ["parent", "status", "owner", "priority"] as const)
-        if (data.resolutions[field] === "source") {
-          const value = source.meta[field];
-          if (value === undefined) delete survivorMeta[field];
-          else (survivorMeta as any)[field] = value;
-        }
-      const role = (status: string) =>
-        this.config().columns.find((column) => column.id === status)?.role;
-      if (
-        role(survivorMeta.status) === "done" &&
-        role(survivor.meta.status) !== "done"
-      )
-        throw new Problem(
-          422,
-          "Merging cannot accept work into Done; keep the survivor status and review it separately",
-        );
-      if (
-        role(survivorMeta.status) === "review" &&
-        role(survivor.meta.status) !== "review"
-      )
-        survivorMeta.reviewVerificationAt = "";
-      if (
-        role(survivorMeta.status) === "progress" &&
-        role(survivor.meta.status) !== "progress"
-      )
-        survivorMeta.progressStartedAt = stamp;
-      let survivorBody = survivor.body;
-      const sourceCriteria = this.acceptanceCriteria(source.body);
-      if (
-        sourceCriteria &&
-        ["source", "both"].includes(data.resolutions.acceptanceCriteria ?? "")
-      ) {
-        if (data.resolutions.acceptanceCriteria === "source")
-          survivorBody = this.acceptanceCriteria(survivor.body)
-            ? survivor.body.replace(
-                /((?:^|\n)#{1,6}\s+Acceptance criteria\s*\n)[\s\S]*?(?=\n#{1,6}\s|$)/i,
-                `$1${sourceCriteria}\n`,
-              )
-            : `${survivor.body.trimEnd()}\n\n## Acceptance criteria\n\n${sourceCriteria}\n`;
-        else
-          survivorBody = `${survivor.body.trimEnd()}\n\n## Preserved acceptance criteria from #${source.meta.number ?? source.meta.id}\n\n${sourceCriteria}\n`;
-      }
-      const receipt = {
-        requestId: data.requestId,
-        fingerprint,
+    const merged = this.mergeNow(
+      survivorId,
+      {
+        source: input.source,
+        requestId: input.requestId,
+        revisions: input.revisions,
+        resolutions: input.resolutions,
+      },
+      actor,
+      {
+        authority,
+        receiptId,
+        action: "merge_duplicate",
+        guard,
+        guardRequired: assigned,
+      },
+    );
+    return { ...merged, receipt: this.delegatedAction(receiptId) };
+  }
+  merge(survivorId: string, input: unknown, actor: Actor) {
+    return this.write(() => this.mergeNow(survivorId, input, actor));
+  }
+  private mergeNow(
+    survivorId: string,
+    input: unknown,
+    actor: Actor,
+    delegation?: DelegatedMutation,
+  ) {
+    actorSchema.parse(actor);
+    const data = z
+      .object({
+        source: z.union([z.string(), z.number().int().nonnegative()]),
+        requestId: z.string().min(8).max(200),
+        revisions: z.record(z.string(), z.string()),
+        resolutions: z
+          .partialRecord(
+            z.enum([
+              "parent",
+              "status",
+              "owner",
+              "priority",
+              "acceptanceCriteria",
+            ]),
+            z.enum(["survivor", "source", "both"]),
+          )
+          .default({}),
+      })
+      .parse(input);
+    const preview = this.mergePreview(survivorId, String(data.source));
+    const survivor = preview.survivor,
+      source = preview.source;
+    const fingerprint = hash(
+      JSON.stringify({
         survivor: survivor.meta.id,
         source: source.meta.id,
-        at: stamp,
-        actor,
-        resolutions: data.resolutions as Partial<
-          Record<MergeConflictField, MergeResolution>
-        >,
-        affected: Object.keys(preview.affected),
-      };
-      const sourceMeta: Meta = {
-        ...source.meta,
-        archived: true,
-        duplicateOf: survivor.meta.id,
-        duplicateMerge: receipt,
-        updatedAt: stamp,
-      };
-      survivorMeta.duplicateMerge = receipt;
-
-      const changes: {
-        old: RecordFile;
-        meta: Meta;
-        body?: string;
-        action: string;
-      }[] = [
-        {
-          old: survivor,
-          meta: survivorMeta,
-          body: survivorBody,
-          action: "duplicate merged into survivor",
-        },
-        {
-          old: source,
-          meta: sourceMeta,
-          action: "marked as archived duplicate",
-        },
-      ];
-      for (const item of preview.incoming) {
-        const old = this.get(item.id);
-        if (old.meta.id === survivor.meta.id || old.meta.id === source.meta.id)
-          continue;
-        const meta: Meta = { ...old.meta, updatedAt: stamp };
-        if (item.parent) meta.parent = survivor.meta.id;
-        if (item.dependency)
-          meta.dependencies = [
-            ...new Set(
-              (meta.dependencies ?? []).map((dependency) =>
-                dependency === source.meta.id ? survivor.meta.id : dependency,
-              ),
-            ),
-          ].filter((dependency) => dependency !== meta.id);
-        changes.push({
-          old,
-          meta,
-          action: "incoming duplicate link redirected",
-        });
-      }
-      if (survivorMeta.parent === source.meta.id)
+        resolutions: data.resolutions,
+      }),
+    );
+    if (source.meta.duplicateMerge?.requestId === data.requestId) {
+      if (source.meta.duplicateMerge.fingerprint !== fingerprint)
         throw new Problem(
-          422,
-          "The survivor is a child of the source. Choose the source parent in the merge conflicts or reparent it first.",
+          409,
+          "This merge request ID was already used with different choices",
+        );
+      return { survivor, source, changed: false, recovered: true };
+    }
+    if (preview.alreadyMerged)
+      return { survivor, source, changed: false, recovered: true };
+    const conflictKeys = Object.keys(preview.conflicts) as MergeConflictField[];
+    const missing = conflictKeys.filter((field) => !data.resolutions[field]);
+    if (missing.length)
+      throw new Problem(
+        422,
+        `Resolve merge conflicts before applying: ${missing.join(", ")}`,
+        preview,
+      );
+    if (
+      Object.entries(data.resolutions).some(
+        ([field, resolution]) =>
+          resolution === "both" && field !== "acceptanceCriteria",
+      )
+    )
+      throw new Problem(
+        422,
+        '"both" is only valid for acceptance criteria conflicts',
+      );
+    for (const [id, revision] of Object.entries(preview.affected))
+      if (data.revisions[id] !== revision)
+        throw new Problem(
+          409,
+          `Missing or stale revision for affected ticket ${id}`,
           preview,
         );
-      if ((survivorMeta.dependencies ?? []).includes(source.meta.id))
-        survivorMeta.dependencies = survivorMeta.dependencies!.filter(
-          (dependency) => dependency !== source.meta.id,
-        );
-      const saved = this.commitRecordTransaction(changes, actor);
-      return {
-        survivor: saved.find((record) => record.meta.id === survivor.meta.id),
-        source: saved.find((record) => record.meta.id === source.meta.id),
-        changed: true,
-        recovered: false,
-      };
-    });
+    if (Object.keys(data.revisions).some((id) => !(id in preview.affected)))
+      throw new Problem(
+        409,
+        "The affected ticket set changed. Reload the preview.",
+        preview,
+      );
+
+    const stamp = now();
+    const survivorMeta: Meta = {
+      ...survivor.meta,
+      mergedFrom: [
+        ...new Set([...(survivor.meta.mergedFrom ?? []), source.meta.id]),
+      ],
+      updatedAt: stamp,
+    };
+    for (const field of ["parent", "status", "owner", "priority"] as const)
+      if (data.resolutions[field] === "source") {
+        const value = source.meta[field];
+        if (value === undefined) delete survivorMeta[field];
+        else (survivorMeta as any)[field] = value;
+      }
+    const role = (status: string) =>
+      this.config().columns.find((column) => column.id === status)?.role;
+    if (
+      role(survivorMeta.status) === "done" &&
+      role(survivor.meta.status) !== "done"
+    )
+      throw new Problem(
+        422,
+        "Merging cannot accept work into Done; keep the survivor status and review it separately",
+      );
+    if (
+      role(survivorMeta.status) === "review" &&
+      role(survivor.meta.status) !== "review"
+    )
+      survivorMeta.reviewVerificationAt = "";
+    if (
+      role(survivorMeta.status) === "progress" &&
+      role(survivor.meta.status) !== "progress"
+    )
+      survivorMeta.progressStartedAt = stamp;
+    let survivorBody = survivor.body;
+    const sourceCriteria = this.acceptanceCriteria(source.body);
+    if (
+      sourceCriteria &&
+      ["source", "both"].includes(data.resolutions.acceptanceCriteria ?? "")
+    ) {
+      if (data.resolutions.acceptanceCriteria === "source")
+        survivorBody = this.acceptanceCriteria(survivor.body)
+          ? survivor.body.replace(
+              /((?:^|\n)#{1,6}\s+Acceptance criteria\s*\n)[\s\S]*?(?=\n#{1,6}\s|$)/i,
+              `$1${sourceCriteria}\n`,
+            )
+          : `${survivor.body.trimEnd()}\n\n## Acceptance criteria\n\n${sourceCriteria}\n`;
+      else
+        survivorBody = `${survivor.body.trimEnd()}\n\n## Preserved acceptance criteria from #${source.meta.number ?? source.meta.id}\n\n${sourceCriteria}\n`;
+    }
+    const receipt = {
+      requestId: data.requestId,
+      fingerprint,
+      survivor: survivor.meta.id,
+      source: source.meta.id,
+      at: stamp,
+      actor,
+      resolutions: data.resolutions as Partial<
+        Record<MergeConflictField, MergeResolution>
+      >,
+      affected: Object.keys(preview.affected),
+    };
+    const sourceMeta: Meta = {
+      ...source.meta,
+      archived: true,
+      duplicateOf: survivor.meta.id,
+      duplicateMerge: receipt,
+      updatedAt: stamp,
+    };
+    survivorMeta.duplicateMerge = receipt;
+
+    const changes: {
+      old: RecordFile;
+      meta: Meta;
+      body?: string;
+      action: string;
+    }[] = [
+      {
+        old: survivor,
+        meta: survivorMeta,
+        body: survivorBody,
+        action: "duplicate merged into survivor",
+      },
+      {
+        old: source,
+        meta: sourceMeta,
+        action: "marked as archived duplicate",
+      },
+    ];
+    for (const item of preview.incoming) {
+      const old = this.get(item.id);
+      if (old.meta.id === survivor.meta.id || old.meta.id === source.meta.id)
+        continue;
+      const meta: Meta = { ...old.meta, updatedAt: stamp };
+      if (item.parent) meta.parent = survivor.meta.id;
+      if (item.dependency)
+        meta.dependencies = [
+          ...new Set(
+            (meta.dependencies ?? []).map((dependency) =>
+              dependency === source.meta.id ? survivor.meta.id : dependency,
+            ),
+          ),
+        ].filter((dependency) => dependency !== meta.id);
+      changes.push({
+        old,
+        meta,
+        action: "incoming duplicate link redirected",
+      });
+    }
+    if (survivorMeta.parent === source.meta.id)
+      throw new Problem(
+        422,
+        "The survivor is a child of the source. Choose the source parent in the merge conflicts or reparent it first.",
+        preview,
+      );
+    if ((survivorMeta.dependencies ?? []).includes(source.meta.id))
+      survivorMeta.dependencies = survivorMeta.dependencies!.filter(
+        (dependency) => dependency !== source.meta.id,
+      );
+    const saved = this.commitRecordTransaction(changes, actor, delegation);
+    return {
+      survivor: saved.find((record) => record.meta.id === survivor.meta.id),
+      source: saved.find((record) => record.meta.id === source.meta.id),
+      changed: true,
+      recovered: false,
+      ...(delegation
+        ? { receipt: this.delegatedAction(delegation.receiptId) }
+        : {}),
+    };
   }
   // Internal controller entry point; never exposed as a generic HTTP/CLI patch.
   // All admission checks run again inside the board's serialized writer.
@@ -1770,9 +2948,14 @@ export class Store {
   }
   // Keep the receipt in the Markdown record so a lost response can be retried
   // after a restart. Feedback uses a deterministic ID and is written only once.
-  private reviewOutcomeNow(id: string, input: unknown, actor: Actor) {
+  private reviewOutcomeNow(
+    id: string,
+    input: unknown,
+    actor: Actor,
+    delegation?: DelegatedMutation,
+  ) {
     actorSchema.parse(actor);
-    if (actor.kind !== "human")
+    if (actor.kind !== "human" && delegation?.authority.scope !== "reviewWork")
       throw new Problem(403, "Only a human can accept or request changes");
     const action = z
       .object({
@@ -1825,6 +3008,8 @@ export class Store {
         },
         action.body,
         actor,
+        false,
+        delegation,
       );
     }
     const commentId = `comment-review-${hash(current.meta.id + action.requestId)}`;
@@ -2183,11 +3368,28 @@ export class Store {
     body: string,
     resolve: boolean,
     actor: Actor,
+    authority?: DelegationAuthority,
   ) {
     return this.write(() => {
       actorSchema.parse(actor);
-      if (actor.kind !== "human")
-        throw new Problem(403, "Managed run questions require a human reply");
+      if (actor.kind !== "human") {
+        if (
+          !authority ||
+          authority.scope !== "manageRuns" ||
+          authority.actor.name !== actor.name
+        )
+          throw new Problem(
+            403,
+            "Managed run questions require a human reply or manageRuns delegation",
+          );
+        this.authorizeDelegation(
+          "manageRuns",
+          actor,
+          authority.basis,
+          [ticket],
+          authority.grantRevision,
+        );
+      }
       if (!/^[A-Za-z0-9_-]+$/.test(id) || !/^[A-Za-z0-9_-]+$/.test(runId))
         throw new Problem(400, "Invalid managed question identity");
       const answer = z.string().trim().min(1).max(10000).parse(body),
@@ -2225,6 +3427,63 @@ export class Store {
         original.ticket,
         actor,
         resolve ? "answered managed question" : "replied to managed question",
+        original,
+        updated,
+      );
+      return updated;
+    });
+  }
+  resolveManagedQuestion(
+    id: string,
+    revision: string,
+    ticket: string,
+    resolved: boolean,
+    actor: Actor,
+    authority?: DelegationAuthority,
+  ) {
+    return this.write(() => {
+      actorSchema.parse(actor);
+      if (actor.kind !== "human") {
+        if (
+          !authority ||
+          authority.scope !== "manageRuns" ||
+          authority.actor.name !== actor.name
+        )
+          throw new Problem(
+            403,
+            "Managed run questions require a human or manageRuns delegation",
+          );
+        this.authorizeDelegation(
+          "manageRuns",
+          actor,
+          authority.basis,
+          [ticket],
+          authority.grantRevision,
+        );
+      }
+      const p = this.file(`records/comments/${id}.md`),
+        text = read(p);
+      if (hash(text) !== revision)
+        throw new Problem(409, "Managed question changed");
+      const original = this.loadComment(p);
+      if (
+        original.kind !== "question" ||
+        original.ticket !== this.get(ticket).meta.id
+      )
+        throw new Problem(409, "This is not the selected managed-run question");
+      atomic(
+        p,
+        patchMd(text, {
+          resolved,
+          resolvedBy: actor,
+          resolvedAt: now(),
+        }),
+      );
+      const updated = this.loadComment(p);
+      this.history(
+        original.ticket,
+        actor,
+        resolved ? "resolved managed question" : "reopened managed question",
         original,
         updated,
       );
@@ -2414,8 +3673,15 @@ export class Store {
         .filter((a) => conversationImages.has(a.id))
         .map((a) => a.id),
     ]);
+    const delegation = this.delegationStatus();
     return {
       ticket,
+      delegation: {
+        ...delegation,
+        receipts: delegation.receipts.filter((receipt) =>
+          receipt.targets.some((target) => target.id === ticket.meta.id),
+        ),
+      },
       workflow: this.config().columns,
       parent: ticket.meta.parent ? this.get(ticket.meta.parent) : null,
       duplicateSurvivor: ticket.meta.duplicateOf
