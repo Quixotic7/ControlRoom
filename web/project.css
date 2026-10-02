@@ -1586,6 +1586,8 @@ body,
   font-size: 14px;
 }
 .list-panel {
+  /* Keep every row in the page scroller; shrinking clips hidden-overflow lists. */
+  flex-shrink: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
