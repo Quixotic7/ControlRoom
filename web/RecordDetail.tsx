@@ -1241,7 +1241,11 @@ export function RecordDetail({
             ?.role === "review" && (
             <>
               {(tab === "details" || tab === "conversation") && (
-                <ReviewBrief record={baseline} openImage={openImage} />
+                <ReviewBrief
+                  record={baseline}
+                  revision={record?.revision ?? baseline.revision}
+                  openImage={openImage}
+                />
               )}
               <ReviewActions
                 hidden={tab !== "details" && tab !== "conversation"}

@@ -15,6 +15,7 @@ import {
   runVerification,
   waitForChange,
 } from "./client.js";
+import { readReviewMedia } from "./review-media-input.js";
 import type { Actor } from "./types.js";
 import { decisionProtocol } from "./decision-protocol.js";
 
@@ -802,6 +803,48 @@ export async function startMcp(
         }),
     },
     {
+      name: "attach_media",
+      description:
+        "Attach one PNG screenshot or WAV/M4A/AAC clip to a ticket's review media (10 MB per file, 8 per ticket). File paths resolve from the execution checkout. Attribution is recorded by the service.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          etag,
+          file: str("Local media file path"),
+          caption: str("Description of what to inspect or listen for"),
+        },
+        required: ["id", "etag", "file"],
+      },
+      run: async (a) =>
+        api(store, `/api/records/${encodeURIComponent(a.id)}/media`, "POST", {
+          revision: a.etag,
+          files: readReviewMedia([{ path: a.file, caption: a.caption }], cwd),
+          actor: who,
+        }),
+    },
+    {
+      name: "detach_media",
+      description:
+        "Remove review media from a ticket's current list without deleting its durable attachment or history. Needs the current ticket revision.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          id,
+          etag,
+          media_id: str("Media attachment ID from the ticket's media list"),
+        },
+        required: ["id", "etag", "media_id"],
+      },
+      run: async (a) =>
+        api(
+          store,
+          `/api/records/${encodeURIComponent(a.id)}/media/${encodeURIComponent(a.media_id)}`,
+          "DELETE",
+          { revision: a.etag, actor: who },
+        ),
+    },
+    {
       name: "submit_review",
       description:
         "Submit finished work for human review with a handoff and evidence. Optionally run the verification command here so the result is recorded as it happened; a failing run is refused unless allow_failure is set. Records branch, pull request, commits, and an optional local build artifact on the ticket. This records a path; agents cannot launch it.",
@@ -835,6 +878,21 @@ export async function startMcp(
           build: str(
             "Local build artifact path to record for human review; relative paths resolve from the canonical project checkout",
           ),
+          media: {
+            type: "array",
+            maxItems: 8,
+            description:
+              "PNG screenshots or WAV/M4A/AAC audio clips to append with this review, at most 10 MB each and 8 total. Paths resolve from the execution checkout. Omit to retain existing review media.",
+            items: {
+              type: "object",
+              properties: {
+                path: str("Local media file path"),
+                caption: str("What to inspect or listen for"),
+              },
+              required: ["path"],
+              additionalProperties: false,
+            },
+          },
           build_label: str("Optional display label for the build"),
           build_sha: str("Optional source or artifact revision for the build"),
           exceptions: str("Rule deviations and why"),
@@ -842,6 +900,8 @@ export async function startMcp(
         required: ["id", "etag", "handoff"],
       },
       run: async (a, signal) => {
+        const media =
+          a.media === undefined ? undefined : readReviewMedia(a.media, cwd);
         const build = reviewBuild(a),
           verification = a.run
             ? await runVerification(a.run, cwd, { signal })
@@ -874,6 +934,7 @@ export async function startMcp(
                 ? commitsSince(cwd, a.commits_since)
                 : undefined),
             build,
+            media,
             verification,
             actor: who,
           },

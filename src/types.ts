@@ -13,6 +13,34 @@ export type ReviewBuildInput =
   | string
   | null
   | { path: string; label?: string; sha?: string };
+export type ReviewMedia = {
+  id: string;
+  kind: "image" | "audio";
+  name: string;
+  caption?: string;
+  at: string;
+  actor: Actor;
+};
+export type ReviewMediaInput = {
+  name: string;
+  data: string;
+  caption?: string;
+};
+export type ReviewMediaAsset = {
+  id: string;
+  kind: "audio";
+  name: string;
+  hash: string;
+  size: number;
+  mime: "audio/wav" | "audio/mp4" | "audio/aac";
+  createdAt: string;
+  revision: string;
+  missing?: boolean;
+};
+export type ReviewMediaContext = ReviewMedia & {
+  source: { id: string; number?: number; title: string };
+  missing: boolean;
+};
 export type RuleException = {
   rationale: string;
   actor: Actor;
@@ -101,6 +129,7 @@ export type Meta = {
   pr?: string;
   commits?: string[];
   build?: ReviewBuild;
+  media?: ReviewMedia[];
   // Structured evidence captured by `review --run`: what ran and how it ended.
   verification?: Verification;
   reviewedRules?: Record<string, string>;

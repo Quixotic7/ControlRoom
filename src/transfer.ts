@@ -24,7 +24,9 @@ export function backup(store: Store) {
       ...walk(store.file("records")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("assets")).map((f) => path.relative(store.dir, f)),
       ...walk(store.file("staging")).map((f) => path.relative(store.dir, f)),
-      ...(fs.existsSync(store.file("agents/worker-brief.md")) ? ["agents/worker-brief.md"] : []),
+      ...(fs.existsSync(store.file("agents/worker-brief.md"))
+        ? ["agents/worker-brief.md"]
+        : []),
     ];
     let size = 0;
     const files = paths.map((p) => {
@@ -48,6 +50,7 @@ export function restore(store: Store, compressed: Buffer) {
     if (
       store.list().length ||
       store.attachments().length ||
+      store.reviewMediaAssets().length ||
       store.state().errors.length
     )
       throw new Problem(

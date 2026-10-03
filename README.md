@@ -156,6 +156,18 @@ Tools: `next_ticket`, `get_context`, `list_tickets`, `get_ticket`, `claim_ticket
 ./controlroom review 3 --etag HASH --handoff "Implemented the change." --run "npm test" --commits-since main
 ```
 
+Review media can accompany the handoff:
+
+```sh
+./controlroom review 61 --etag HASH --handoff "Ready to review" --evidence "Checks passed" \
+  --media 'shot.png:meters while a key is held' \
+  --media 'clip.wav:8 seconds, real audio'
+./controlroom attach 61 --etag HASH --file demo.m4a --caption "Before and after"
+./controlroom detach 61 --etag HASH --media MEDIA_ID
+```
+
+PNG screenshots and WAV/M4A/AAC clips appear under **What to review** above the Build row. Click a screenshot for its annotation viewer, or use the audio player's controls. Each file is limited to 10 MB, with eight current media items per ticket. Upload paths are relative to the execution checkout (`--worktree`); captions after `:` are optional. For a filename containing a colon, use `attach --file` with a separate `--caption`. Review uploads append together with the handoff; failed validation or stale revisions leave the ticket unchanged. `show --json`, context and snapshots expose media metadata; detaching preserves history and stored bytes. Export/restore includes media, while clones without local assets show placeholders. MCP provides equivalent `attach_media`, `detach_media` and `submit_review.media` inputs.
+
 Identity comes from the environment: set `CONTROLROOM_ACTOR` and `CONTROLROOM_ACTOR_KIND` in the agent's launch configuration. Without them, a known agent harness or a non-interactive terminal counts as an agent, so a forgotten flag can never turn an agent into a human. Every write takes the record's etag (its content hash) from `show` or `context`; a stale etag returns a conflict with the current record instead of overwriting another contributor. `--latest` opts into writing over whatever is current, for fields nobody else edits. `review --run` executes the verification command and records its exit code and output on the ticket, refusing a failing run unless `--allow-failure` is given; the branch is recorded automatically and `--pr` and `--commits-since` link the code. Add `--build PATH` with optional `--build-label` and `--build-sha` to identify the local artifact a human should review. A later `update ID --etag HASH --set build=PATH` replaces it; `--set build=` or `--set build=null` clears it. Recording a build never executes it. Build paths must stay inside the canonical board checkout or a configured repository; relative paths resolve from the canonical board checkout even when the CLI runs in another worktree. Launch and Reveal are human browser actions available only on the Mac hosting a local-only service through loopback; they are disabled in LAN mode. Claims last 30 minutes and are renewed by repeating the claim. A claim or task status is not proof that a process is running.
 
 Unknown flags, missing option values, and extra positional arguments are errors. Use `--option=VALUE` when a value starts with `--` (for example, `--body=--literal-text`); quote file paths containing spaces. `agents propose --file config.json --brief-file "worker brief.md"` stages the complete Markdown brief for human review. Omitting `--brief-file` preserves the current brief; an empty file proposes clearing it.

@@ -30,6 +30,7 @@ import {
 } from "./client.js";
 import { startMcp } from "./mcp.js";
 import { installSkills, packageSkills } from "./skills.js";
+import { readReviewMedia, parseReviewMedia } from "./review-media-input.js";
 import { boardSnapshot } from "./boardSnapshot.js";
 import type { Actor } from "./types.js";
 
@@ -321,7 +322,9 @@ Writing (need --etag from show or context, or --latest to use the current one)
   progress ID --etag HASH --body TEXT [--percent 0..100]
   comment ID --body TEXT | ask ID --body TEXT
   claim ID [--worktree PATH] | release ID
-  review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--build PATH] [--build-label TEXT] [--build-sha SHA] [--exceptions TEXT]
+  review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--build PATH] [--build-label TEXT] [--build-sha SHA] [--media PATH[:caption]]... [--exceptions TEXT]
+  attach ID --etag HASH --file PATH [--caption TEXT]
+  detach ID --etag HASH --media MEDIA_ID
 
 Recording chat decisions (requires a matching human-granted delegation; actor stays agent)
   approve ID | accept ID | request-changes ID | archive ID | unarchive ID
@@ -363,6 +366,23 @@ async function main() {
     throw new Error(
       "--build, --build-label and --build-sha are only supported by review; use update --set build=PATH to replace or clear a recorded build.",
     );
+  if (has("media") && !["review", "detach"].includes(command))
+    throw new Error(
+      "--media is supported by review and detach; use attach --file PATH",
+    );
+  if (has("caption") && command !== "attach")
+    throw new Error(
+      "--caption is supported by attach; use review --media PATH:caption",
+    );
+  if (["attach", "detach"].includes(command) && !id)
+    throw new Error("Provide a ticket ID");
+  if (command === "attach" && !option("file")?.trim())
+    throw new Error("attach needs --file PATH");
+  if (
+    command === "detach" &&
+    (all("media").length !== 1 || !option("media")?.trim())
+  )
+    throw new Error("detach needs exactly one --media MEDIA_ID");
   const basis = chatBasis();
   if (
     basis &&
@@ -903,7 +923,33 @@ async function main() {
     );
     return;
   }
+  if (command === "attach" || command === "detach") {
+    const files =
+      command === "attach"
+        ? readReviewMedia(
+            [{ path: option("file")!, caption: option("caption") }],
+            executionDirectory,
+          )
+        : undefined;
+    output(
+      await api(
+        store,
+        `/api/records/${encodeURIComponent(id)}/media${command === "detach" ? `/${encodeURIComponent(option("media")!)}` : ""}`,
+        command === "attach" ? "POST" : "DELETE",
+        { revision: await etag(), actor: who, ...(files ? { files } : {}) },
+      ),
+    );
+    return;
+  }
   if (command === "review") {
+    const media = has("media")
+      ? readReviewMedia(
+          all("media").map((value) =>
+            parseReviewMedia(value, executionDirectory),
+          ),
+          executionDirectory,
+        )
+      : undefined;
     if (!has("build") && (has("build-label") || has("build-sha")))
       throw new Error("--build-label and --build-sha require --build PATH");
     if (
@@ -960,6 +1006,7 @@ async function main() {
           pr: option("pr"),
           commits,
           build: reviewBuild,
+          media,
           verification,
           actor: who,
         },

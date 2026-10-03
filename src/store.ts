@@ -77,7 +77,19 @@ import type {
   FeedRecordReference,
   ReviewBuild,
   ReviewBuildInput,
+  ReviewMedia,
+  ReviewMediaAsset,
+  ReviewMediaContext,
+  ReviewMediaInput,
 } from "./types.js";
+
+type TransactionFile = {
+  path: string;
+  before: string;
+  after: string;
+  existed?: boolean;
+  encoding?: "base64";
+};
 
 const actorSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -113,6 +125,38 @@ const reviewBuildInputSchema = z.union([
     })
     .strict(),
 ]);
+const reviewMediaSchema = z
+  .object({
+    id: z.string().regex(/^(?:image|audio)-[a-f0-9]+$/),
+    kind: z.enum(["image", "audio"]),
+    name: z.string().trim().min(1).max(300),
+    caption: z.string().trim().min(1).max(2000).optional(),
+    at: z.string().datetime(),
+    actor: actorSchema,
+  })
+  .strict();
+const reviewMediaInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(300),
+    data: z.string().min(1).max(14_100_000),
+    caption: z.string().max(2000).optional(),
+  })
+  .strict();
+const reviewMediaAssetSchema = z
+  .object({
+    id: z.string().regex(/^audio-[a-f0-9]+$/),
+    kind: z.literal("audio"),
+    name: z.string().trim().min(1).max(300),
+    hash: z.string().regex(/^[a-f0-9]{64}$/),
+    size: z
+      .number()
+      .int()
+      .positive()
+      .max(10 * 1024 * 1024),
+    mime: z.enum(["audio/wav", "audio/mp4", "audio/aac"]),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
 const delegatedAttributionSchema = z
   .object({
     receiptId: z.string().regex(/^delegated-action-[a-f0-9]+$/),
@@ -242,6 +286,7 @@ const metaSchema = z
     pr: z.string().max(500).optional(),
     commits: strings.optional(),
     build: reviewBuildSchema.optional(),
+    media: z.array(reviewMediaSchema).max(8).optional(),
     verification: z
       .object({
         command: z.string().max(2000),
@@ -294,7 +339,10 @@ export class Store {
   // read, so the disk stays authoritative while unchanged files cost nothing.
   private cache = new Map<
     string,
-    { key: string; value: RecordFile | Comment | Attachment }
+    {
+      key: string;
+      value: RecordFile | Comment | Attachment | ReviewMediaAsset;
+    }
   >();
   private normalizeReviewBuild(
     input: unknown,
@@ -326,10 +374,213 @@ export class Store {
       actor: actorSchema.parse(actor) as Actor,
     };
   }
-  private cached<T extends RecordFile | Comment | Attachment>(
-    file: string,
-    parse: (text: string) => T,
-  ): T {
+  private prepareReviewMedia(input: unknown, actor: Actor) {
+    const file = reviewMediaInputSchema.parse(input) as ReviewMediaInput;
+    const caption = file.caption?.trim();
+    if (
+      /[\0\r\n/\\]/.test(file.name) ||
+      file.name === "." ||
+      file.name === ".."
+    )
+      throw new Problem(422, "Review media name must be a safe filename");
+    if (file.data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.data))
+      throw new Problem(422, "Review media data must be valid base64");
+    const bytes = Buffer.from(file.data, "base64");
+    if (!bytes.length)
+      throw new Problem(422, "Review media file must not be empty");
+    if (bytes.length > 10 * 1024 * 1024)
+      throw new Problem(413, "Review media is too large (maximum 10 MiB)");
+    const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const extension = path.extname(file.name).toLowerCase();
+    let kind: "image" | "audio",
+      mime: "image/png" | "audio/wav" | "audio/mp4" | "audio/aac";
+    if (bytes.length >= 24 && bytes.subarray(0, 8).equals(pngSignature)) {
+      if (extension !== ".png")
+        throw new Problem(422, "PNG review media must use a .png filename");
+      kind = "image";
+      mime = "image/png";
+      const width = bytes.readUInt32BE(16),
+        height = bytes.readUInt32BE(20);
+      if (
+        !width ||
+        !height ||
+        width > 16000 ||
+        height > 16000 ||
+        width * height > 60_000_000
+      )
+        throw new Problem(422, "Image dimensions exceed the supported size");
+      const id = uid("image"),
+        createdAt = now(),
+        asset = {
+          id,
+          kind,
+          name: file.name,
+          hash: hash(bytes),
+          width,
+          height,
+          mime,
+          annotations: [],
+          createdAt,
+        };
+      return {
+        media: {
+          id,
+          kind,
+          name: file.name,
+          ...(caption ? { caption } : {}),
+          at: createdAt,
+          actor: actorSchema.parse(actor) as Actor,
+        } satisfies ReviewMedia,
+        files: [
+          {
+            path: `assets/${id}/base.png`,
+            before: "",
+            after: bytes.toString("base64"),
+            existed: false,
+            encoding: "base64" as const,
+          },
+          {
+            path: `records/attachments/${id}.json`,
+            before: "",
+            after: JSON.stringify(asset, null, 2),
+            existed: false,
+          },
+        ],
+      };
+    }
+    const validWav = () => {
+      if (
+        bytes.length < 44 ||
+        bytes.subarray(0, 4).toString("ascii") !== "RIFF" ||
+        bytes.subarray(8, 12).toString("ascii") !== "WAVE"
+      )
+        return false;
+      const declaredEnd = bytes.readUInt32LE(4) + 8;
+      if (declaredEnd > bytes.length || declaredEnd < 36) return false;
+      let offset = 12,
+        format = false,
+        data = false;
+      while (offset + 8 <= declaredEnd) {
+        const type = bytes.subarray(offset, offset + 4).toString("ascii"),
+          size = bytes.readUInt32LE(offset + 4),
+          end = offset + 8 + size;
+        if (end > declaredEnd) return false;
+        if (type === "fmt ") {
+          if (size < 16) return false;
+          const channels = bytes.readUInt16LE(offset + 10),
+            sampleRate = bytes.readUInt32LE(offset + 12),
+            blockAlign = bytes.readUInt16LE(offset + 20);
+          if (!channels || channels > 64 || !sampleRate || !blockAlign)
+            return false;
+          format = true;
+        } else if (type === "data") data = size > 0;
+        offset = end + (size & 1);
+      }
+      return format && data;
+    };
+    const validM4a = () => {
+      if (bytes.length < 32) return false;
+      let offset = 0,
+        audioBrand = false,
+        hasFtyp = false,
+        hasMoov = false,
+        hasMdat = false;
+      while (offset + 8 <= bytes.length) {
+        const size = bytes.readUInt32BE(offset),
+          type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+        if (size < 8 || offset + size > bytes.length) return false;
+        if (type === "ftyp") {
+          if (offset !== 0 || size < 16 || (size - 16) % 4) return false;
+          hasFtyp = true;
+          const brands = [
+            bytes.subarray(offset + 8, offset + 12).toString("ascii"),
+          ];
+          for (let at = offset + 16; at + 4 <= offset + size; at += 4)
+            brands.push(bytes.subarray(at, at + 4).toString("ascii"));
+          audioBrand = brands.some((brand) =>
+            ["M4A ", "M4B ", "M4P "].includes(brand),
+          );
+        } else if (type === "moov") hasMoov = true;
+        else if (type === "mdat") hasMdat = size > 8;
+        offset += size;
+      }
+      return (
+        offset === bytes.length && hasFtyp && audioBrand && hasMoov && hasMdat
+      );
+    };
+    const validAac = () => {
+      if (bytes.length < 7 || bytes[0] !== 0xff || (bytes[1] & 0xf6) !== 0xf0)
+        return false;
+      const headerLength = bytes[1] & 1 ? 7 : 9,
+        sampleRateIndex = (bytes[2] >> 2) & 0x0f,
+        channels = ((bytes[2] & 1) << 2) | (bytes[3] >> 6),
+        frameLength =
+          ((bytes[3] & 3) << 11) | (bytes[4] << 3) | (bytes[5] >> 5);
+      return (
+        sampleRateIndex !== 0x0f &&
+        channels > 0 &&
+        frameLength >= headerLength &&
+        frameLength <= bytes.length
+      );
+    };
+    if (bytes.length >= 12 && validWav()) {
+      if (extension !== ".wav")
+        throw new Problem(422, "WAV review media must use a .wav filename");
+      mime = "audio/wav";
+    } else if (validM4a()) {
+      if (extension !== ".m4a")
+        throw new Problem(422, "M4A review media must use a .m4a filename");
+      mime = "audio/mp4";
+    } else if (validAac()) {
+      if (extension !== ".aac")
+        throw new Problem(422, "AAC review media must use a .aac filename");
+      mime = "audio/aac";
+    } else
+      throw new Problem(
+        422,
+        "Review media must be a PNG, WAV, M4A, or AAC file with a valid signature",
+      );
+    kind = "audio";
+    const id = uid("audio"),
+      createdAt = now(),
+      asset = {
+        id,
+        kind,
+        name: file.name,
+        hash: hash(bytes),
+        size: bytes.length,
+        mime,
+        createdAt,
+      };
+    return {
+      media: {
+        id,
+        kind,
+        name: file.name,
+        ...(caption ? { caption } : {}),
+        at: createdAt,
+        actor: actorSchema.parse(actor) as Actor,
+      } satisfies ReviewMedia,
+      files: [
+        {
+          path: `assets/${id}/base`,
+          before: "",
+          after: bytes.toString("base64"),
+          existed: false,
+          encoding: "base64" as const,
+        },
+        {
+          path: `records/attachments/${id}.json`,
+          before: "",
+          after: JSON.stringify(asset, null, 2),
+          existed: false,
+        },
+      ],
+    };
+  }
+  private cached<
+    T extends RecordFile | Comment | Attachment | ReviewMediaAsset,
+  >(file: string, parse: (text: string) => T): T {
     const st = fs.statSync(file);
     const key = `${st.mtimeMs}:${st.size}:${st.ino}`;
     const hit = this.cache.get(file);
@@ -875,11 +1126,13 @@ export class Store {
       .sort((a, b) => a.at.localeCompare(b.at));
   }
   attachments(): Attachment[] {
-    return walk(this.file("records/attachments"), ".json").map((f) =>
-      this.attachment(path.basename(f, ".json")),
-    );
+    return walk(this.file("records/attachments"), ".json")
+      .filter((f) => path.basename(f).startsWith("image-"))
+      .map((f) => this.attachment(path.basename(f, ".json")));
   }
   attachment(id: string): Attachment {
+    if (!/^image-[\w-]+$/.test(id))
+      throw new Problem(404, `Screenshot ${id} not found`);
     const a = this.cached(
       this.file(`records/attachments/${id}.json`),
       (text) => ({ ...JSON.parse(text), revision: hash(text) }) as Attachment,
@@ -888,6 +1141,29 @@ export class Store {
       ...a,
       missing: !fs.existsSync(this.file(`assets/${id}/base.png`)),
     };
+  }
+  reviewMediaAsset(id: string): ReviewMediaAsset {
+    if (!/^audio-[a-f0-9]+$/.test(id))
+      throw new Problem(404, `Audio media ${id} not found`);
+    const asset = this.cached(
+      this.file(`records/attachments/${id}.json`),
+      (text) => ({
+        ...(reviewMediaAssetSchema.parse(JSON.parse(text)) as Omit<
+          ReviewMediaAsset,
+          "revision" | "missing"
+        >),
+        revision: hash(text),
+      }),
+    );
+    return {
+      ...asset,
+      missing: !fs.existsSync(this.file(`assets/${id}/base`)),
+    };
+  }
+  reviewMediaAssets(): ReviewMediaAsset[] {
+    return walk(this.file("records/attachments"), ".json")
+      .filter((f) => path.basename(f).startsWith("audio-"))
+      .map((f) => this.reviewMediaAsset(path.basename(f, ".json")));
   }
   private attachmentReference(id: string): Attachment {
     if (/^image-[\w-]+$/.test(id)) {
@@ -932,9 +1208,14 @@ export class Store {
       }
     }
     const attachments: Attachment[] = [];
+    const mediaAssets: ReviewMediaAsset[] = [];
     for (const f of walk(this.file("records/attachments"), ".json")) {
       try {
-        attachments.push(this.attachment(path.basename(f, ".json")));
+        const id = path.basename(f, ".json");
+        if (id.startsWith("image-")) attachments.push(this.attachment(id));
+        else if (id.startsWith("audio-"))
+          mediaAssets.push(this.reviewMediaAsset(id));
+        else throw new Error("Unknown attachment record type");
       } catch (e) {
         errors.push({ path: path.relative(this.dir, f), message: String(e) });
       }
@@ -986,6 +1267,7 @@ export class Store {
         ...records.map((r) => r.path + r.revision),
         ...comments.map((c) => c.id + c.revision),
         ...attachments.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
+        ...mediaAssets.map((a) => a.id + a.revision + (a.missing ? "!" : "")),
         JSON.stringify(state.claims),
         ...proposals.proposals.map((p) => p.id + p.revision),
         delegation?.revision ?? "delegation-error",
@@ -1136,11 +1418,12 @@ export class Store {
               path: z
                 .string()
                 .regex(
-                  /^(?:config\.yml|agents\/worker-brief\.md|records\/(?:tickets\/[A-Za-z0-9_-]+\.md|agent-proposals\/agent-proposal-[a-f0-9]+\.json|delegation\/(?:grant\.json|actions\/delegated-action-[a-f0-9]+\.json)|history\.jsonl))$/,
+                  /^(?:config\.yml|agents\/worker-brief\.md|assets\/(?:image|audio)-[a-f0-9]+\/(?:base\.png|base)|records\/(?:tickets\/[A-Za-z0-9_-]+\.md|attachments\/(?:image|audio)-[a-f0-9]+\.json|agent-proposals\/agent-proposal-[a-f0-9]+\.json|delegation\/(?:grant\.json|actions\/delegated-action-[a-f0-9]+\.json)|history\.jsonl))$/,
                 ),
               before: z.string(),
               after: z.string(),
               existed: z.boolean().optional(),
+              encoding: z.literal("base64").optional(),
             }),
           )
           .min(1),
@@ -1148,7 +1431,9 @@ export class Store {
       .parse(JSON.parse(read(journal)));
     const states = tx.files.map((entry) => {
       const current = fs.existsSync(this.file(entry.path))
-        ? read(this.file(entry.path))
+        ? entry.encoding === "base64"
+          ? fs.readFileSync(this.file(entry.path)).toString("base64")
+          : read(this.file(entry.path))
         : "";
       return current === entry.after
         ? "after"
@@ -1166,11 +1451,26 @@ export class Store {
         "A record transaction was interrupted and a file changed independently. Inspect .controlroom/.local/record-transaction.json before continuing.",
       );
     for (const entry of tx.files) {
-      if (entry.existed === false)
-        fs.rmSync(this.file(entry.path), { force: true });
-      else atomic(this.file(entry.path), entry.before);
+      if (entry.existed === false) this.removeTransactionFile(entry.path);
+      else
+        atomic(
+          this.file(entry.path),
+          entry.encoding === "base64"
+            ? Buffer.from(entry.before, "base64")
+            : entry.before,
+        );
     }
     fs.unlinkSync(journal);
+  }
+
+  private removeTransactionFile(relativePath: string) {
+    const filename = this.file(relativePath);
+    fs.rmSync(filename, { force: true });
+    if (relativePath.startsWith("assets/")) {
+      const directory = path.dirname(filename);
+      if (fs.existsSync(directory) && !fs.readdirSync(directory).length)
+        fs.rmdirSync(directory);
+    }
   }
 
   private recordText(old: RecordFile, meta: Meta, body = old.body) {
@@ -1366,15 +1666,18 @@ export class Store {
     this.commitFiles(files);
     return changes.map((change) => this.get(change.old.meta.id));
   }
-  private commitFiles(
-    files: { path: string; before: string; after: string; existed?: boolean }[],
-  ) {
+  private commitFiles(files: TransactionFile[]) {
     const journal = this.file(".local/record-transaction.json");
     atomic(journal, JSON.stringify({ schema: 1, at: now(), files }, null, 2));
     const written: typeof files = [];
     try {
       for (const file of files) {
-        atomic(this.file(file.path), file.after);
+        atomic(
+          this.file(file.path),
+          file.encoding === "base64"
+            ? Buffer.from(file.after, "base64")
+            : file.after,
+        );
         written.push(file);
       }
       fs.unlinkSync(journal);
@@ -1382,9 +1685,14 @@ export class Store {
       const recoveryErrors: string[] = [];
       for (const file of written.reverse())
         try {
-          if (file.existed === false)
-            fs.rmSync(this.file(file.path), { force: true });
-          else atomic(this.file(file.path), file.before);
+          if (file.existed === false) this.removeTransactionFile(file.path);
+          else
+            atomic(
+              this.file(file.path),
+              file.encoding === "base64"
+                ? Buffer.from(file.before, "base64")
+                : file.before,
+            );
         } catch (rollback) {
           recoveryErrors.push(`${file.path}: ${String(rollback)}`);
         }
@@ -1509,6 +1817,11 @@ export class Store {
     body: string,
     actor: Actor,
   ): RecordFile {
+    if ("media" in input)
+      throw new Problem(
+        403,
+        "Review media attribution and files are service-owned",
+      );
     if ("build" in input) {
       if (kind !== "ticket")
         throw new Problem(422, "Only tickets can record a review build");
@@ -1612,8 +1925,20 @@ export class Store {
     actor: Actor,
     managed = false,
     delegation?: DelegatedMutation,
+    extraFiles: TransactionFile[] = [],
+    mediaMutation = false,
   ): RecordFile {
     const old = this.get(id);
+    if ("media" in patch && !mediaMutation) {
+      if (isDeepStrictEqual(patch.media, old.meta.media)) {
+        const { media: _unchangedMedia, ...rest } = patch;
+        patch = rest;
+      } else
+        throw new Problem(
+          403,
+          "Review media attribution and files are service-owned",
+        );
+    }
     let clearBuild = false;
     if ("build" in patch) {
       if (old.meta.kind !== "ticket")
@@ -1805,7 +2130,9 @@ export class Store {
         { ...patch, updatedAt: meta.updatedAt },
         body,
       );
-    if (delegation)
+    if (delegation) {
+      if (extraFiles.length)
+        throw new Problem(422, "Delegated record updates cannot attach media");
       this.commitDelegatedRecord(
         old,
         afterText,
@@ -1814,7 +2141,30 @@ export class Store {
         actor,
         delegation,
       );
-    else {
+    } else if (extraFiles.length) {
+      const historyPath = "records/history.jsonl",
+        historyExisted = fs.existsSync(this.file(historyPath)),
+        historyBefore = historyExisted ? read(this.file(historyPath)) : "",
+        event = JSON.stringify({
+          id: uid("event"),
+          record: id,
+          actor,
+          action: "updated",
+          at: now(),
+          before: { meta: old.meta, body: old.body },
+          after: { meta, body: nextBody },
+        });
+      this.commitFiles([
+        { path: old.path, before: oldText, after: afterText },
+        {
+          path: historyPath,
+          before: historyBefore,
+          after: historyBefore + event + "\n",
+          existed: historyExisted,
+        },
+        ...extraFiles,
+      ]);
+    } else {
       atomic(this.file(old.path), afterText);
       this.history(
         id,
@@ -2554,8 +2904,13 @@ export class Store {
       content: {
         description: !!source.body.trim(),
         comments: sourceComments.length,
-        attachments: new Set([...(source.meta.attachments ?? []), ...imageIds])
-          .size,
+        attachments: new Set([
+          ...(source.meta.attachments ?? []),
+          ...(source.meta.media ?? [])
+            .filter((item) => item.kind === "image")
+            .map((item) => item.id),
+          ...imageIds,
+        ]).size,
         decisions: source.meta.decisions ?? [],
         rules: source.meta.rules ?? [],
       },
@@ -3765,10 +4120,44 @@ export class Store {
     );
     const attachmentIds = new Set([
       ...provenance.flatMap((record) => record.meta.attachments ?? []),
+      ...provenance.flatMap((record) =>
+        (record.meta.media ?? [])
+          .filter((item) => item.kind === "image")
+          .map((item) => item.id),
+      ),
       ...this.attachments()
         .filter((a) => conversationImages.has(a.id))
         .map((a) => a.id),
     ]);
+    const media: ReviewMediaContext[] = provenance.flatMap((record) =>
+      (record.meta.media ?? []).map((item) => {
+        const recordPath = this.file(`records/attachments/${item.id}.json`),
+          bytesPath = this.file(
+            item.kind === "image"
+              ? `assets/${item.id}/base.png`
+              : `assets/${item.id}/base`,
+          );
+        let missing = !fs.existsSync(recordPath) || !fs.existsSync(bytesPath);
+        if (!missing)
+          try {
+            if (item.kind === "image") this.attachment(item.id);
+            else this.reviewMediaAsset(item.id);
+          } catch {
+            missing = true;
+          }
+        return {
+          ...item,
+          source: {
+            id: record.meta.id,
+            ...(record.meta.number === undefined
+              ? {}
+              : { number: record.meta.number }),
+            title: record.meta.title,
+          },
+          missing,
+        };
+      }),
+    );
     const delegation = this.delegationStatus();
     return {
       ticket,
@@ -3832,8 +4221,113 @@ export class Store {
       dependencies: (ticket.meta.dependencies ?? []).map((d) => this.get(d)),
       comments,
       attachments: [...attachmentIds].map((a) => this.attachmentReference(a)),
+      media,
       claim: this.claims().find((c) => c.ticket === ticket.meta.id) ?? null,
     };
+  }
+  private assertReviewMediaMutation(
+    current: RecordFile,
+    revision: string,
+    actor: Actor,
+  ) {
+    if (current.meta.kind !== "ticket")
+      throw new Problem(422, "Review media can only be changed on tickets");
+    if (current.revision !== revision)
+      throw new Problem(
+        409,
+        "This record changed. Reload it before changing review media.",
+        { current },
+      );
+    actorSchema.parse(actor);
+    if (actor.kind === "agent") {
+      if (!this.scope(current))
+        throw new Problem(
+          403,
+          "Agent media attachments require approved scope",
+        );
+      const conflict = this.claims().find(
+        (claim) =>
+          claim.ticket === current.meta.id &&
+          claim.expiresAt > now() &&
+          (claim.actor.kind !== actor.kind || claim.actor.name !== actor.name),
+      );
+      if (conflict)
+        throw new Problem(
+          409,
+          `Ticket has a different live claim by ${conflict.actor.name}`,
+        );
+    }
+  }
+  private attachReviewMediaNow(
+    id: string,
+    revision: string,
+    files: unknown,
+    actor: Actor,
+    patch: Record<string, unknown> = {},
+  ) {
+    const current = this.get(id);
+    this.assertReviewMediaMutation(current, revision, actor);
+    const input = z.array(reviewMediaInputSchema).min(1).max(8).parse(files);
+    if ((current.meta.media?.length ?? 0) + input.length > 8)
+      throw new Problem(422, "A ticket can have at most 8 review media files");
+    const prepared = input.map((file) => this.prepareReviewMedia(file, actor));
+    for (const file of prepared.flatMap((item) => item.files))
+      if (fs.existsSync(this.file(file.path)))
+        throw new Problem(409, "A generated review media ID already exists");
+    return this.updateNow(
+      current.meta.id,
+      revision,
+      {
+        ...patch,
+        media: [
+          ...(current.meta.media ?? []),
+          ...prepared.map((item) => item.media),
+        ],
+      },
+      undefined,
+      actor,
+      false,
+      undefined,
+      prepared.flatMap((item) => item.files),
+      true,
+    );
+  }
+  attachReviewMedia(
+    id: string,
+    revision: string,
+    files: ReviewMediaInput[],
+    actor: Actor,
+  ) {
+    return this.write(() =>
+      this.attachReviewMediaNow(id, revision, files, actor),
+    );
+  }
+  detachReviewMedia(
+    id: string,
+    revision: string,
+    mediaId: string,
+    actor: Actor,
+  ) {
+    return this.write(() => {
+      if (!/^(?:image|audio)-[a-f0-9]+$/.test(mediaId))
+        throw new Problem(400, "Invalid review media ID");
+      const current = this.get(id);
+      this.assertReviewMediaMutation(current, revision, actor);
+      const media = current.meta.media ?? [];
+      if (!media.some((item) => item.id === mediaId))
+        throw new Problem(404, "Review media is not attached to this ticket");
+      return this.updateNow(
+        current.meta.id,
+        revision,
+        { media: media.filter((item) => item.id !== mediaId) },
+        undefined,
+        actor,
+        false,
+        undefined,
+        [],
+        true,
+      );
+    });
   }
   review(
     id: string,
@@ -3850,29 +4344,32 @@ export class Store {
       reviewInstructions?: string;
       manualReviewRequired?: boolean;
       build?: ReviewBuildInput;
+      media?: ReviewMediaInput[];
     } = {},
   ) {
-    return this.write(() =>
-      this.updateNow(
-        id,
-        revision,
-        {
-          status: this.config().columns.find((c) => c.role === "review")!.id,
-          handoff,
-          evidence,
-          exceptions,
-          reviewVerificationAt: links.verification?.at ?? "",
-          reviewInstructions: links.reviewInstructions ?? "",
-          manualReviewRequired: links.manualReviewRequired ?? true,
-          ...Object.fromEntries(
-            Object.entries(links).filter(([, v]) => v !== undefined),
+    return this.write(() => {
+      const patch = {
+        status: this.config().columns.find((c) => c.role === "review")!.id,
+        handoff,
+        evidence,
+        exceptions,
+        reviewVerificationAt: links.verification?.at ?? "",
+        reviewInstructions: links.reviewInstructions ?? "",
+        manualReviewRequired: links.manualReviewRequired ?? true,
+        ...Object.fromEntries(
+          Object.entries(links).filter(
+            ([key, value]) => key !== "media" && value !== undefined,
           ),
-          reviewedRules: this.context(id).ruleRevisions,
-        },
-        undefined,
-        actor,
-      ),
-    );
+        ),
+        reviewedRules: this.context(id).ruleRevisions,
+      };
+      if (links.media !== undefined) {
+        const media = z.array(reviewMediaInputSchema).max(8).parse(links.media);
+        if (media.length)
+          return this.attachReviewMediaNow(id, revision, media, actor, patch);
+      }
+      return this.updateNow(id, revision, patch, undefined, actor);
+    });
   }
   // The ticket an agent should pick up next: unclaimed (or its own), not
   // blocked, inside an approved scope, Selected before Backlog, then by
@@ -4015,6 +4512,16 @@ export class Store {
           : []),
         `Recorded by ${t.meta.build.actor.name} (${t.meta.build.actor.kind}) at ${t.meta.build.at}.`,
       );
+    if (c.media.length) {
+      lines.push("", "## Review media", "");
+      for (const media of c.media)
+        lines.push(
+          `- ${media.kind}: ${JSON.stringify(media.name)}` +
+            (media.caption ? ` — ${JSON.stringify(media.caption)}` : "") +
+            ` · source ${media.source.number === undefined ? media.source.id : `#${media.source.number}`} ${JSON.stringify(media.source.title)}` +
+            ` · ${media.missing ? "file missing" : `id ${media.id}`}`,
+        );
+    }
     if (t.meta.verification) {
       const v = t.meta.verification;
       lines.push(
