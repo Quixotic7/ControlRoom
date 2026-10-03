@@ -75,12 +75,44 @@ import type {
   FeedEventType,
   FeedPage,
   FeedRecordReference,
+  ReviewBuild,
+  ReviewBuildInput,
 } from "./types.js";
 
 const actorSchema = z.object({
   name: z.string().trim().min(1).max(100),
   kind: z.enum(["human", "agent"]),
 });
+const localReviewBuildPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(4096)
+  .refine((value) => !value.includes("\0"), "Build path contains a NUL byte")
+  .refine(
+    (value) => !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value),
+    "Build must be a local path, not a URL",
+  );
+const reviewBuildSchema = z
+  .object({
+    path: localReviewBuildPathSchema,
+    label: z.string().trim().min(1).max(300).optional(),
+    sha: z.string().trim().min(1).max(200).optional(),
+    at: z.string().datetime(),
+    actor: actorSchema,
+  })
+  .strict();
+const reviewBuildInputSchema = z.union([
+  z.string().max(4096),
+  z.null(),
+  z
+    .object({
+      path: localReviewBuildPathSchema,
+      label: z.string().max(300).optional(),
+      sha: z.string().max(200).optional(),
+    })
+    .strict(),
+]);
 const delegatedAttributionSchema = z
   .object({
     receiptId: z.string().regex(/^delegated-action-[a-f0-9]+$/),
@@ -209,6 +241,7 @@ const metaSchema = z
     branch: z.string().max(300).optional(),
     pr: z.string().max(500).optional(),
     commits: strings.optional(),
+    build: reviewBuildSchema.optional(),
     verification: z
       .object({
         command: z.string().max(2000),
@@ -263,6 +296,36 @@ export class Store {
     string,
     { key: string; value: RecordFile | Comment | Attachment }
   >();
+  private normalizeReviewBuild(
+    input: unknown,
+    actor: Actor,
+  ): ReviewBuild | undefined {
+    if (
+      input &&
+      typeof input === "object" &&
+      ("at" in input || "actor" in input)
+    )
+      throw new Problem(
+        403,
+        "Build attribution and time are recorded by Control Room",
+      );
+    const parsed = reviewBuildInputSchema.parse(input) as ReviewBuildInput;
+    if (parsed === null || parsed === "") return undefined;
+    const value = typeof parsed === "string" ? { path: parsed } : parsed,
+      buildPath = value.path.trim();
+    if (!buildPath) throw new Problem(422, "Build path must not be empty");
+    if (buildPath.includes("\0"))
+      throw new Problem(422, "Build path must not contain NUL bytes");
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(buildPath))
+      throw new Problem(422, "Build must be a local path, not a URL");
+    return {
+      path: buildPath,
+      ...(value.label?.trim() ? { label: value.label.trim() } : {}),
+      ...(value.sha?.trim() ? { sha: value.sha.trim() } : {}),
+      at: now(),
+      actor: actorSchema.parse(actor) as Actor,
+    };
+  }
   private cached<T extends RecordFile | Comment | Attachment>(
     file: string,
     parse: (text: string) => T,
@@ -1446,6 +1509,14 @@ export class Store {
     body: string,
     actor: Actor,
   ): RecordFile {
+    if ("build" in input) {
+      if (kind !== "ticket")
+        throw new Problem(422, "Only tickets can record a review build");
+      input = {
+        ...input,
+        build: this.normalizeReviewBuild(input.build, actor),
+      };
+    }
     if (
       [
         "assignment",
@@ -1543,6 +1614,19 @@ export class Store {
     delegation?: DelegatedMutation,
   ): RecordFile {
     const old = this.get(id);
+    let clearBuild = false;
+    if ("build" in patch) {
+      if (old.meta.kind !== "ticket")
+        throw new Problem(422, "Only tickets can record a review build");
+      if (isDeepStrictEqual(patch.build, old.meta.build)) {
+        const { build: _unchangedBuild, ...rest } = patch;
+        patch = rest;
+      } else {
+        const build = this.normalizeReviewBuild(patch.build, actor);
+        clearBuild = build === undefined;
+        patch = { ...patch, build };
+      }
+    }
     if (old.meta.duplicateOf && patch.archived === false)
       throw new Problem(
         422,
@@ -1684,6 +1768,7 @@ export class Store {
         };
     }
     const meta = { ...old.meta, ...patch, updatedAt: now() } as Meta;
+    if (clearBuild) delete meta.build;
     if (delegation)
       this.validateDelegatedProposedMeta(delegation.authority, meta);
     this.validate(meta);
@@ -1703,7 +1788,18 @@ export class Store {
     const oldText = read(this.file(old.path));
     if (hash(oldText) !== revision)
       throw new Problem(409, "File changed during save");
-    const nextBody = body ?? old.body,
+    const nextBody = body ?? old.body;
+    let afterText: string;
+    if (clearBuild) {
+      const parsed = parseMd(oldText);
+      parsed.doc.delete("build");
+      for (const [key, value] of Object.entries({
+        ...patch,
+        updatedAt: meta.updatedAt,
+      }))
+        if (key !== "build" && value !== undefined) parsed.doc.set(key, value);
+      afterText = `---\n${parsed.doc.toString()}---\n${nextBody}`;
+    } else
       afterText = patchMd(
         oldText,
         { ...patch, updatedAt: meta.updatedAt },
@@ -3753,6 +3849,7 @@ export class Store {
       verification?: Verification;
       reviewInstructions?: string;
       manualReviewRequired?: boolean;
+      build?: ReviewBuildInput;
     } = {},
   ) {
     return this.write(() =>
@@ -3904,6 +4001,20 @@ export class Store {
     }
     if (t.meta.handoff)
       lines.push("", "## Current handoff", "", t.meta.handoff.trim());
+    if (t.meta.build)
+      lines.push(
+        "",
+        "## Build under review",
+        "",
+        `Path: ${JSON.stringify(t.meta.build.path)}`,
+        ...(t.meta.build.label
+          ? [`Label: ${JSON.stringify(t.meta.build.label)}`]
+          : []),
+        ...(t.meta.build.sha
+          ? [`Revision: ${JSON.stringify(t.meta.build.sha)}`]
+          : []),
+        `Recorded by ${t.meta.build.actor.name} (${t.meta.build.actor.kind}) at ${t.meta.build.at}.`,
+      );
     if (t.meta.verification) {
       const v = t.meta.verification;
       lines.push(

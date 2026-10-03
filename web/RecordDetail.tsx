@@ -13,6 +13,7 @@ import { ReviewActions, type ReviewActionDraft } from "./ReviewActions";
 import { OpenQuestions } from "./OpenQuestions";
 import { ManagedQuestionStatus } from "./ManagedQuestion";
 import { ReviewBrief } from "./ReviewBrief";
+import { BuildRow } from "./BuildArtifact";
 import { QuickTicket } from "./QuickTicket";
 import { ExistingChild } from "./ExistingChild";
 import { ticketNavigation } from "./ticketNavigation";
@@ -1240,7 +1241,7 @@ export function RecordDetail({
             ?.role === "review" && (
             <>
               {(tab === "details" || tab === "conversation") && (
-                <ReviewBrief meta={baseline.meta} openImage={openImage} />
+                <ReviewBrief record={baseline} openImage={openImage} />
               )}
               <ReviewActions
                 hidden={tab !== "details" && tab !== "conversation"}
@@ -1686,6 +1687,10 @@ export function RecordDetail({
                       )}
                     </label>
                   </div>
+                  {baseline &&
+                    state.config.columns.find(
+                      (column) => column.id === baseline.meta.status,
+                    )?.role !== "review" && <BuildRow record={baseline} />}
                   {!!m.commits?.length && (
                     <div className="field">
                       Commits

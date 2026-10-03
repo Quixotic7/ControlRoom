@@ -986,6 +986,28 @@ body,
   gap: 4px;
   min-width: 0;
 }
+.build-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--subtle);
+}
+.build-row-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.build-path {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  color: var(--muted);
+}
+.build-message {
+  color: var(--ink);
+}
 .priority {
   display: inline-flex;
   align-items: center;

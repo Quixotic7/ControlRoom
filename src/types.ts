@@ -2,6 +2,17 @@ import type { Assignment, AgentReviewReceipt } from "./orchestration-types.js";
 import type { DelegatedAttribution, DelegationStatus } from "./delegation.js";
 export type Kind = "ticket" | "decision" | "rule";
 export type Actor = { name: string; kind: "human" | "agent" };
+export type ReviewBuild = {
+  path: string;
+  label?: string;
+  sha?: string;
+  at: string;
+  actor: Actor;
+};
+export type ReviewBuildInput =
+  | string
+  | null
+  | { path: string; label?: string; sha?: string };
 export type RuleException = {
   rationale: string;
   actor: Actor;
@@ -89,6 +100,7 @@ export type Meta = {
   branch?: string;
   pr?: string;
   commits?: string[];
+  build?: ReviewBuild;
   // Structured evidence captured by `review --run`: what ran and how it ended.
   verification?: Verification;
   reviewedRules?: Record<string, string>;

@@ -1,12 +1,14 @@
-import type { Meta } from "../src/types";
+import type { Meta, RecordFile } from "../src/types";
 import { RecordMarkdown } from "./RecordMarkdown";
+import { BuildRow } from "./BuildArtifact";
 export function ReviewBrief({
-  meta,
+  record,
   openImage,
 }: {
-  meta: Meta;
+  record: RecordFile;
   openImage: (id: string) => void;
 }) {
+  const meta: Meta = record.meta;
   const v = meta.verification;
   const current =
     !!v && !!meta.reviewVerificationAt && meta.reviewVerificationAt === v.at;
@@ -98,6 +100,7 @@ export function ReviewBrief({
           </a>
         )}
       </section>
+      <BuildRow record={record} />
       {meta.exceptions && (
         <div className="banner">
           <div>

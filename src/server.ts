@@ -6,7 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
+import {
+  buildAvailability,
+  openReviewBuild,
+  type BuildOpener,
+} from "./review-build.js";
 import { Store } from "./store.js";
 import { atomic, Problem, read } from "./files.js";
 import {
@@ -48,6 +53,7 @@ export async function buildServer(
     native?: boolean;
     lan?: boolean;
     addresses?: () => string[];
+    buildOpener?: BuildOpener;
   } = {},
 ) {
   store.initialize();
@@ -229,6 +235,39 @@ export async function buildServer(
     const b = req.body;
     return store.create(b.kind as Kind, b.meta ?? {}, b.body ?? "", actor(b));
   });
+  app.get("/api/records/:id/build", async (req: any) =>
+    buildAvailability(
+      store,
+      req.params.id,
+      { local: network.isLocal(req), lan: !!options.lan },
+      options.buildOpener,
+    ),
+  );
+  for (const action of ["launch", "reveal"] as const)
+    app.post(`/api/records/:id/build/${action}`, async (req: any) => {
+      if (actor(req.body).kind !== "human")
+        throw new Problem(
+          403,
+          "Only a human can launch or reveal a review build",
+        );
+      if (req.headers.origin !== `http://${req.headers.host}`)
+        throw new Problem(
+          403,
+          "Launch or reveal the build from the local Control Room browser",
+        );
+      const body = z
+        .object({ revision: z.string().min(1), actor: z.unknown() })
+        .strict()
+        .parse(req.body);
+      return openReviewBuild(
+        store,
+        req.params.id,
+        body.revision,
+        action,
+        { local: network.isLocal(req), lan: !!options.lan },
+        options.buildOpener,
+      );
+    });
   app.patch("/api/records/:id", async (req: any) => {
     const b = req.body;
     return store.update(
@@ -317,6 +356,7 @@ export async function buildServer(
         branch: b.branch,
         pr: b.pr,
         commits: b.commits,
+        build: b.build,
         verification: b.verification,
         reviewInstructions: b.reviewInstructions,
         manualReviewRequired: b.manualReviewRequired,

@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Column, RecordFile } from "../src/types";
 import { actor, api, recordId } from "./api";
 import { randomUUID } from "./browserUtils";
+import { BuildRow } from "./BuildArtifact";
 import type { Context } from "./model";
 
 export type ApprovalAction = "approve-scope" | "accept-review";
@@ -106,6 +107,7 @@ export function QuickApprovalActions({
   const [doneId, setDoneId] = useState(done.length === 1 ? done[0].id : "");
   const [busy, setBusy] = useState<ApprovalAction | null>(null);
   const [result, setResult] = useState<ApprovalResult | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   async function run(action: ApprovalAction) {
     if (busy) return;
@@ -156,7 +158,11 @@ export function QuickApprovalActions({
         </button>
       )}
       {role === "review" && (
-        <details className="quick-review">
+        <details
+          className="quick-review"
+          open={reviewOpen}
+          onToggle={(event) => setReviewOpen(event.currentTarget.open)}
+        >
           <summary className="button small">Review &amp; accept…</summary>
           <div className="quick-review-panel">
             <strong>Summary</strong>
@@ -165,6 +171,7 @@ export function QuickApprovalActions({
             </p>
             <strong>Evidence</strong>
             <p>{record.meta.evidence?.trim() || "No evidence submitted."}</p>
+            {reviewOpen && <BuildRow record={record} />}
             {done.length > 1 && (
               <label className="field">
                 Done destination

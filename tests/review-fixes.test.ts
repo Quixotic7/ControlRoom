@@ -440,16 +440,41 @@ test("MCP uses the execution checkout and responds during a cancellable wait", a
     review_instructions: "Check the recorded checkout path and branch.",
     run: "pwd",
     commits_since: base,
+    build: "dist/MCP Preview.app",
+    build_label: "MCP Preview",
+    build_sha: "abc123",
   });
   const reviewed = await value(2);
   assert.equal(reviewed.meta.verification.cwd, checkout);
   assert.equal(reviewed.meta.verification.output, checkout);
   assert.equal(reviewed.meta.branch, "agent-fix");
   assert.match(reviewed.meta.commits.join("\n"), /code fix/);
+  assert.equal(reviewed.meta.build.path, "dist/MCP Preview.app");
+  assert.equal(reviewed.meta.build.label, "MCP Preview");
+  assert.equal(reviewed.meta.build.sha, "abc123");
+  assert.deepEqual(reviewed.meta.build.actor, {
+    name: "Regression agent",
+    kind: "agent",
+  });
+  assert.equal(s.context("0").ticket.meta.build?.path, "dist/MCP Preview.app");
   assert.match(
     s.context("0").comments[0].body,
     /Check the recorded checkout path and branch/,
   );
+  const invalidBuildMarker = path.join(checkout, "invalid-build-ran");
+  call(8, "submit_review", {
+    id: "0",
+    etag: reviewed.revision,
+    handoff: "Must fail before verification",
+    build_label: "Orphan label",
+    run: "touch invalid-build-ran",
+  });
+  assert.equal((await response(8)).result.isError, true);
+  assert.match(
+    (await response(8)).result.content[0].text,
+    /build_label and build_sha require build/,
+  );
+  assert.equal(fs.existsSync(invalidBuildMarker), false);
   call(3, "submit_review", {
     id: "0",
     etag: reviewed.revision,

@@ -321,7 +321,7 @@ Writing (need --etag from show or context, or --latest to use the current one)
   progress ID --etag HASH --body TEXT [--percent 0..100]
   comment ID --body TEXT | ask ID --body TEXT
   claim ID [--worktree PATH] | release ID
-  review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--exceptions TEXT]
+  review ID --etag HASH --handoff TEXT [--review-notes TEXT] [--evidence TEXT] [--run "test command"] [--branch B] [--pr URL] [--commits a,b|--commits-since REF] [--build PATH] [--build-label TEXT] [--build-sha SHA] [--exceptions TEXT]
 
 Recording chat decisions (requires a matching human-granted delegation; actor stays agent)
   approve ID | accept ID | request-changes ID | archive ID | unarchive ID
@@ -356,6 +356,13 @@ async function main() {
     return;
   }
   validatePositionals(positional);
+  if (
+    command !== "review" &&
+    (has("build") || has("build-label") || has("build-sha"))
+  )
+    throw new Error(
+      "--build, --build-label and --build-sha are only supported by review; use update --set build=PATH to replace or clear a recorded build.",
+    );
   const basis = chatBasis();
   if (
     basis &&
@@ -897,6 +904,22 @@ async function main() {
     return;
   }
   if (command === "review") {
+    if (!has("build") && (has("build-label") || has("build-sha")))
+      throw new Error("--build-label and --build-sha require --build PATH");
+    if (
+      has("build") &&
+      (!option("build")?.trim() ||
+        option("build")!.includes("\0") ||
+        /^[A-Za-z][A-Za-z0-9+.-]*:/.test(option("build")!.trim()))
+    )
+      throw new Error("--build must be a nonempty local file path, not a URL");
+    const reviewBuild = has("build")
+      ? {
+          path: option("build")!,
+          ...(has("build-label") ? { label: option("build-label") } : {}),
+          ...(has("build-sha") ? { sha: option("build-sha") } : {}),
+        }
+      : undefined;
     const run = option("run");
     const verification = run
       ? await runVerification(run, executionDirectory)
@@ -936,6 +959,7 @@ async function main() {
           branch: option("branch") ?? currentBranch(executionDirectory),
           pr: option("pr"),
           commits,
+          build: reviewBuild,
           verification,
           actor: who,
         },

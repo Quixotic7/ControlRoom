@@ -30,6 +30,7 @@ export function boardSnapshot(state: ProjectState) {
           owner: meta.owner,
           blocked: meta.blocked,
           question: meta.question,
+          build: meta.build,
           updatedAt: meta.updatedAt,
           revision,
           conversationRevision: digest(

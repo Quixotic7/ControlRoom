@@ -77,6 +77,27 @@ export async function startMcp(
       actor: who,
     });
   }
+  function reviewBuild(a: any) {
+    if (
+      a.build === undefined &&
+      (a.build_label !== undefined || a.build_sha !== undefined)
+    )
+      throw new Error("build_label and build_sha require build");
+    if (
+      a.build !== undefined &&
+      (!a.build.trim() ||
+        a.build.includes("\0") ||
+        /^[A-Za-z][A-Za-z0-9+.-]*:/.test(a.build.trim()))
+    )
+      throw new Error("build must be a nonempty local file path, not a URL");
+    return a.build === undefined
+      ? undefined
+      : {
+          path: a.build,
+          ...(a.build_label === undefined ? {} : { label: a.build_label }),
+          ...(a.build_sha === undefined ? {} : { sha: a.build_sha }),
+        };
+  }
   const tools: Tool[] = [
     {
       name: "get_delegation",
@@ -483,7 +504,7 @@ export async function startMcp(
     {
       name: "update_ticket",
       description:
-        "Change fields on a ticket (title, labels, priority, owner, parent, dependencies, blocked, handoff, branch, pr) and/or replace its body. Needs the current etag.",
+        "Change fields on a ticket (title, labels, priority, owner, parent, dependencies, blocked, handoff, branch, pr, build) and/or replace its body. A build may be a local path string, null to clear, or {path,label?,sha?}; Control Room stamps its actor and time. Needs the current etag.",
       inputSchema: {
         type: "object",
         properties: {
@@ -783,7 +804,7 @@ export async function startMcp(
     {
       name: "submit_review",
       description:
-        "Submit finished work for human review with a handoff and evidence. Optionally run the verification command here so the result is recorded as it happened; a failing run is refused unless allow_failure is set. Records branch, pull request, and commits on the ticket.",
+        "Submit finished work for human review with a handoff and evidence. Optionally run the verification command here so the result is recorded as it happened; a failing run is refused unless allow_failure is set. Records branch, pull request, commits, and an optional local build artifact on the ticket. This records a path; agents cannot launch it.",
       inputSchema: {
         type: "object",
         properties: {
@@ -811,14 +832,20 @@ export async function startMcp(
           commits_since: str(
             "Git ref; records `git log REF..HEAD` as the commits",
           ),
+          build: str(
+            "Local build artifact path to record for human review; relative paths resolve from the canonical project checkout",
+          ),
+          build_label: str("Optional display label for the build"),
+          build_sha: str("Optional source or artifact revision for the build"),
           exceptions: str("Rule deviations and why"),
         },
         required: ["id", "etag", "handoff"],
       },
       run: async (a, signal) => {
-        const verification = a.run
-          ? await runVerification(a.run, cwd, { signal })
-          : undefined;
+        const build = reviewBuild(a),
+          verification = a.run
+            ? await runVerification(a.run, cwd, { signal })
+            : undefined;
         signal.throwIfAborted();
         if (verification && verification.exitCode !== 0 && !a.allow_failure)
           throw new Error(
@@ -846,6 +873,7 @@ export async function startMcp(
               (a.commits_since
                 ? commitsSince(cwd, a.commits_since)
                 : undefined),
+            build,
             verification,
             actor: who,
           },

@@ -9,6 +9,7 @@ import { ago, recordId } from "./api";
 import { BlockedIcon, Label, StageIcon } from "./Icons";
 import { priorityName, priorityOf, type Context } from "./model";
 import { approvedScope, ScopeState } from "./ApprovalActions";
+import { buildLabel, buildSha, reviewBuild } from "./BuildArtifact";
 
 export const dragType = "text/workboard-ticket";
 
@@ -60,6 +61,7 @@ export function TicketCard({
   const parent = m.parent ? ctx.byId.get(m.parent) : undefined;
   const priority = priorityOf(record);
   const live = claim && claim.expiresAt > new Date().toISOString();
+  const build = reviewBuild(record);
   const navigation = ticketNavigation(m.id, onOpen);
   const [dragging, setDragging] = useState(false);
   const details =
@@ -69,6 +71,7 @@ export function TicketCard({
     m.blocked ||
     m.verification ||
     m.assignment ||
+    build ||
     claim;
   return (
     <button
@@ -160,6 +163,15 @@ export function TicketCard({
             ))}
             <ScopeState record={record} ctx={ctx} />
             <VerificationTag record={record} />
+            {build && role === "review" && (
+              <span
+                className="tag build-badge"
+                title={`Review build: ${build.path}. Open this ticket to inspect or launch it.`}
+              >
+                Build · {buildLabel(build)}
+                {buildSha(build) && ` · ${buildSha(build)}`}
+              </span>
+            )}
             {m.assignment && role !== "done" && (
               <span className="tag">
                 {m.assignment.worker} · {m.assignment.state}
